@@ -98,9 +98,13 @@ mod map {
     pub const EXP2_START: u32 = 0x1f802000;
     pub const EXP2_END: u32 = EXP2_START + 66 - 1;
 
-    /// [IRQ CONTROL] - 8 bytes.
+    /// [IRQ Control] - 8 bytes.
     pub const IRQ_CONTROL_START: u32 = 0x1f801070;
     pub const IRQ_CONTROL_END: u32 = IRQ_CONTROL_START + 8 - 1;
+
+    /// [Timer Control] - 48 bytes.
+    pub const TIMER_CONTROL_START: u32 = 0x1f801100;
+    pub const TIMER_CONTROL_END: u32 = TIMER_CONTROL_START + 48 - 1;
 }
 
 /// Because many things repeat in memory, different segments of memory get's stored in here.
@@ -143,8 +147,12 @@ impl Bus {
                 panic!("Loading from cache control")
             },
             EXP1_START..=EXP1_END => {
-                // Only used to validate some stuff for now.
+                // TODO.
                 0xff
+            },
+            IRQ_CONTROL_START..=IRQ_CONTROL_END => {
+                // TODO.
+                0x0
             },
             _ => {
                 panic!("Trying to load invalid address to bus at {:08x}", address)
@@ -183,6 +191,9 @@ impl Bus {
             IRQ_CONTROL_START..=IRQ_CONTROL_END => {
                 // TODO.
             }
+            TIMER_CONTROL_START..=TIMER_CONTROL_END => {
+                // TODO.
+            },
              _ => {
                  panic!("Trying to store invalid address to bus at {:08x}", address)
             },

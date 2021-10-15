@@ -21,28 +21,28 @@ pub struct Cpu {
     /// Next operation to be executed.
     next_op: Opcode,
     /// Multiply/divide result.
-    // hi: u32,
-    // lo: u32,
+    hi: u32,
+    lo: u32,
     /// General purpose registers - http://problemkaputt.de/psx-spx.htm#cpuspecifications
-    /// - [R0/zero] - Constant (always 0) (this one isn't a real register).
-    /// - [R1/at] - Assembler temporary (destroyed by some pseudo opcodes!).
-    /// - [R2-R3/v0-v1] - Subroutine return values, may be changed by subroutines.
-    /// - [R4-R7/a0-a3] - Subroutine arguments, may be changed by subroutines.
-    /// - [R8-R15/t0-t7] - Temporaries, may be changed by subroutines.
-    /// - [R16-R23/s0-s7] - Static variables, must be saved by subs.
-    /// - [R24-R25/t8-t9] - Temporaries, may be changed by subroutines.
-    /// - [R26-R27/k0-k1] - Reserved for kernel (destroyed by some IRQ handlers!).
-    /// - [R28/gp] - Global pointer (rarely used).
-    /// - [R29/sp] - Stack pointer.
-    /// - [R30/fp(s8)] - Frame Pointer, or 9th Static variable, must be saved.
-    /// - [R31/ra] - Return address (used so by JAL,BLTZAL,BGEZAL opcodes).
+    /// - [0] - Always 0.
+    /// - [1] - Assembler temporary.
+    /// - [2..3] - Subroutine return values.
+    /// - [4..7] - Subroutine arguments.
+    /// - [8..15] - Temporaries.
+    /// - [16..23] - Static variables.
+    /// - [24..25] - Temporaries.
+    /// - [26..27] - Reserved for kernel.
+    /// - [28] - Global pointer.
+    /// - [29] - Stack pointer.
+    /// - [30] - Frame pointer, or static variable.
+    /// - [31] - Return address.
     registers: [u32; 32],
     pending_load: Option<DelaySlot>,
     /// CPU owns the bus for now.
     bus: Bus,
     cop0: Cop0,
     /// Instruction count for debugging.
-    instruction_count: u64,
+    cycle_count: u64,
 }
 
 const PC_START_ADDRESS: u32 = 0xbfc00000;
@@ -53,13 +53,13 @@ impl Cpu {
         Cpu {
             pc: PC_START_ADDRESS,
             next_op: Opcode::new(0x0),
-            // hi: 0x0,
-            // lo: 0x0,
+            hi: 0x0,
+            lo: 0x0,
             registers: [0x0; 32],
             pending_load: None,
             bus,
             cop0: Cop0::new(),
-            instruction_count: 0,
+            cycle_count: 0,
         }
     }
 
@@ -113,12 +113,12 @@ impl Cpu {
 
     /// Fetch and execute next instruction.
     pub fn fetch_and_exec(&mut self) {
-        if self.instruction_count % 100 == 0 {
-            println!("instruction count: {}", self.instruction_count);
+        if self.cycle_count % 100 == 0 {
+            println!("instruction count: {}", self.cycle_count);
         }
 
-        self.instruction_count += 1;
-        
+        self.cycle_count += 1;
+
         let op = self.next_op;
         self.next_op = Opcode::new(self.load::<Word>(self.pc));
         self.pc = self.pc.wrapping_add(4);
@@ -130,15 +130,24 @@ impl Cpu {
         match opcode.op() {
             0x0 => match opcode.sub_op() {
                 0x0 => self.op_sll(opcode),
+                0x2 => self.op_srl(opcode),
+                0x3 => self.op_sra(opcode),
                 0x8 => self.op_jr(opcode),
                 0x9 => self.op_jalr(opcode),
-                0x24 => self.op_and(opcode),
-                0x25 => self.op_or(opcode),
+                0x10 => self.op_mfhi(opcode),
+                0x12 => self.op_mflo(opcode),
+                0x1a => self.op_div(opcode),
+                0x1b => self.op_divu(opcode),
                 0x20 => self.op_add(opcode),
                 0x21 => self.op_addu(opcode),
+                0x23 => self.op_subu(opcode),
+                0x24 => self.op_and(opcode),
+                0x25 => self.op_or(opcode),
+                0x2a => self.op_slt(opcode),
                 0x2b => self.op_sltu(opcode),
                 _ => panic!("Unexpected subop {}", opcode),
             },
+            0x1 => self.op_bcondz(opcode),
             0x2 => self.op_j(opcode),
             0x3 => self.op_jal(opcode),
             0x4 => self.op_beq(opcode),
@@ -147,6 +156,8 @@ impl Cpu {
             0x7 => self.op_bgtz(opcode),
             0x8 => self.op_addi(opcode),
             0x9 => self.op_addiu(opcode),
+            0xa => self.op_slti(opcode),
+            0xb => self.op_sltui(opcode),
             0x10 => self.op_cop0(opcode),
             0xc => self.op_andi(opcode),
             0xd => self.op_ori(opcode),
@@ -172,6 +183,21 @@ impl Cpu {
         self.set_reg(op.destination_reg(), value);
     }
 
+    /// [SRL] - Shift right logical.
+    /// Same as SRA, but unsigned.
+    fn op_srl(&mut self, op: Opcode) {
+        let value = self.read_reg(op.target_reg()) >> op.shift();
+        self.fetch_pending_load();
+        self.set_reg(op.destination_reg(), value);
+    }
+
+    /// [SRA] - Shift right arithmetic.
+    fn op_sra(&mut self, op: Opcode) {
+        let value = (self.read_reg(op.target_reg()) as i32) >> op.shift();
+        self.fetch_pending_load();
+        self.set_reg(op.destination_reg(), value as u32);
+    }
+
     /// [AND] - Bitwise and
     fn op_and(&mut self, op: Opcode) {
         let value = self.read_reg(op.source_reg()) & self.read_reg(op.target_reg());
@@ -191,7 +217,7 @@ impl Cpu {
         // Store PC in return register
         self.set_reg(31, self.pc);
         // J fetches pending load.
-        self.op_j(op); 
+        self.op_j(op);
     }
 
     /// [JALR] - Jump and link register.
@@ -215,7 +241,14 @@ impl Cpu {
         self.fetch_pending_load();
     }
 
-    /// [SLTU] - Less than unsigned.
+    /// [SLT] - Set if less than.
+    fn op_slt(&mut self, op: Opcode) {
+        let value = (self.read_reg(op.source_reg()) as i32) < (self.read_reg(op.target_reg()) as i32);
+        self.fetch_pending_load();
+        self.set_reg(op.destination_reg(), value as u32);
+    }
+
+    /// [SLTU] - Set if less than unsigned.
     fn op_sltu(&mut self, op: Opcode) {
         let value = self.read_reg(op.source_reg()) < self.read_reg(op.target_reg());
         self.fetch_pending_load();
@@ -225,25 +258,62 @@ impl Cpu {
     /// [ADD] - Add signed.
     /// Throws on overflow.
     fn op_add(&mut self, op: Opcode) {
-        let value = match self.read_reg(op.source_reg()).checked_add(self.read_reg(op.target_reg())) {
-            Some(value) => value as u32, 
+        let value = match self
+            .read_reg(op.source_reg())
+            .checked_add(self.read_reg(op.target_reg()))
+        {
+            Some(value) => value as u32,
             None => panic!("ADD: overflow"),
         };
         self.fetch_pending_load();
         self.set_reg(op.destination_reg(), value);
     }
 
-    /// [ADDU] - Add unsigned.
-    fn op_addu(&mut self, op: Opcode) {
-        let value = self.read_reg(op.source_reg()).wrapping_add(self.read_reg(op.target_reg()));
+    /// [BCONDZ] - Multiply branch instructions.
+    /// [BLTZ] - Branch if less than zero.
+    ///     - If bit 16 of the opcode is not set, and bit 17..20 doesn't equal 0x80.
+    /// [BLTZAL] - Branch if less than zero and set return register.
+    ///     - If bit 16 of the opcode is not set, but bit 17..20 equals 0x80.
+    /// [BGEZ] - Branch if greater than or equal to zero.
+    ///     - If bit 16 of the opcode is set, but bit 17..20 doesn't equal 0x80.
+    /// [BGEZAL] - Branch if greater than or equal to zero and set return register.
+    ///     - If bit 16 of the opcode is set, and bit 17..20 equals 0x80.
+    fn op_bcondz(&mut self, op: Opcode) {
+        let value = self.read_reg(op.source_reg()) as i32;
+        let cond = (value < 0) as u32;
+        // If the instruction is to test greater or equal zero, we just
+        // xor cond, since that's the oposite result.
+        let cond = cond ^ op.bgez();
         self.fetch_pending_load();
-        self.set_reg(op.destination_reg(), value);
+        // Set return register if required.
+        if op.set_ra_on_branch() {
+            self.set_reg(31, self.pc);
+        }
+        if cond != 0 {
+            self.branch(op.signed_imm());
+        }
     }
 
     /// [J] - Jump.
     fn op_j(&mut self, op: Opcode) {
         self.pc = (self.pc & 0xf0000000) | (op.target() << 2);
         self.fetch_pending_load();
+    }
+
+    /// [MFHI] - Move from high.
+    fn op_mfhi(&mut self, op: Opcode) {
+        let value = self.hi;
+        self.fetch_pending_load();
+        // TODO: Wait on result.
+        self.set_reg(op.destination_reg(), value);
+    }
+
+    /// [MFLO] - Move from low.
+    fn op_mflo(&mut self, op: Opcode) {
+        let value = self.lo;
+        self.fetch_pending_load();
+        // TODO: Wait on result.
+        self.set_reg(op.destination_reg(), value);
     }
 
     /// [ADDUI] - Add immediate unsigned.
@@ -255,9 +325,23 @@ impl Cpu {
         self.set_reg(op.target_reg(), value);
     }
 
+    /// [SLTI] - Set if less than immediate signed.
+    fn op_slti(&mut self, op: Opcode) {
+        let value = (self.read_reg(op.source_reg()) as i32) < (op.signed_imm() as i32);
+        self.fetch_pending_load();
+        self.set_reg(op.target_reg(), value as u32);
+    }
+
+    /// [SLTI] - Set if less than immediate unsigned.
+    fn op_sltui(&mut self, op: Opcode) {
+        let value = self.read_reg(op.source_reg()) < op.signed_imm();
+        self.fetch_pending_load();
+        self.set_reg(op.target_reg(), value as u32);
+    }
+
     /// [BLEZ] - Branch if less than or equal to zero
     fn op_blez(&mut self, op: Opcode) {
-        let value = self.read_reg(op.source_reg()) as i32; 
+        let value = self.read_reg(op.source_reg()) as i32;
         if value <= 0 {
             self.branch(op.signed_imm());
         }
@@ -266,11 +350,58 @@ impl Cpu {
 
     /// [BGTZ] - Branch if greater than zero
     fn op_bgtz(&mut self, op: Opcode) {
-        let value = self.read_reg(op.source_reg()) as i32; 
+        let value = self.read_reg(op.source_reg()) as i32;
         if value > 0 {
             self.branch(op.signed_imm());
         }
         self.fetch_pending_load();
+    }
+
+    // TODO: Add pipelineing and waiting.
+    /// [DIV] - Signed division.
+    /// Stores result in hi/low registers. Division doesn't throw when dviding by 0 or overflow,
+    /// instead it gives garbage values. This takes about 36 cycles to complete, but continues executing.
+    /// It only halts if hi/low registers are fetched.
+    fn op_div(&mut self, op: Opcode) {
+        let lhs = self.read_reg(op.source_reg()) as i32;
+        let rhs = self.read_reg(op.target_reg()) as i32;
+
+        self.fetch_pending_load();
+
+        if rhs == 0 {
+            // Dividing by 0 always set hi to lhs.
+            self.hi = lhs as u32;
+            // Depending on the lhs, it sets different values to lo.
+            if lhs < 0 {
+                self.lo = 1;
+            } else {
+                self.lo = 0xffffffff;
+            }
+        } else if rhs == -1 && lhs as u32 == 0x80000000 {
+            // If the result is too large to fit in 32 bits.
+            self.hi = 0;
+            self.lo = 0x80000000;
+        } else {
+            self.hi = (lhs % rhs) as u32;
+            self.hi = (lhs / rhs) as u32;
+        }
+    }
+
+    /// [DIVU] - Unsigned division.
+    /// Almost same as DIV, but only one error case.
+    fn op_divu(&mut self, op: Opcode) {
+        let lhs = self.read_reg(op.source_reg());
+        let rhs = self.read_reg(op.target_reg());
+        
+        self.fetch_pending_load();
+
+        if rhs == 0 {
+            self.hi = lhs;
+            self.lo = 0xffffffff;
+        } else {
+            self.hi = lhs % rhs;
+            self.hi = lhs / rhs;
+        }
     }
 
     /// [ADDI] - Add immediate signed.
@@ -284,6 +415,24 @@ impl Cpu {
         };
         self.fetch_pending_load();
         self.set_reg(op.target_reg(), value as u32);
+    }
+
+    /// [ADDU] - Add unsigned.
+    fn op_addu(&mut self, op: Opcode) {
+        let value = self
+            .read_reg(op.source_reg())
+            .wrapping_add(self.read_reg(op.target_reg()));
+        self.fetch_pending_load();
+        self.set_reg(op.destination_reg(), value);
+    }
+
+    /// [SUBU] - Subtract unsigned.
+    fn op_subu(&mut self, op: Opcode) {
+        let value = self
+            .read_reg(op.source_reg())
+            .wrapping_sub(self.read_reg(op.target_reg()));
+        self.fetch_pending_load();
+        self.set_reg(op.destination_reg(), value);
     }
 
     /// [BNE] - Branch if not equal.
@@ -378,7 +527,8 @@ impl Cpu {
             }
             // [MTC0] - Move to Co-Processor0.
             0x4 => {
-                self.cop0.set_reg(op.destination_reg(), self.read_reg(op.target_reg()));
+                self.cop0
+                    .set_reg(op.destination_reg(), self.read_reg(op.target_reg()));
                 // TODO Break point flags things.
             }
             // [RFE] - Restore from exception.

@@ -4,22 +4,22 @@
 //!
 //! There are three main opcode layouts:
 //! - [immediate]:
-//!     - 6-bit op
-//!     - 5-bit source register
-//!     - 5-bit target register
-//!     - 16-bit immediate value
+//!     - 6-bit op.
+//!     - 5-bit source register.
+//!     - 5-bit target register.
+//!     - 16-bit immediate value.
 //!
 //! - [jump]:
-//!     - 6-bit op
-//!     - 26-bit target address
+//!     - 6-bit op.
+//!     - 26-bit target address.
 //!
 //! - [register]:
-//!     - 6-bit op
-//!     - 5-bit source register
-//!     - 5-bit target register
-//!     - 5-bit destination register
-//!     - 5-bit shift value
-//!     - 6-bit function field
+//!     - 6-bit op.
+//!     - 5-bit source register.
+//!     - 5-bit target register.
+//!     - 5-bit destination register.
+//!     - 5-bit shift value.
+//!     - 6-bit function field.
 //!
 
 use std::fmt;
@@ -37,51 +37,61 @@ impl Opcode {
         self.0 >> 26
     }
 
-    /// Sub operation - bits 0..5
+    /// Sub operation - bits 0..5.
     pub fn sub_op(self) -> u32 {
         self.0 & 0x3f
     }
 
     /// Cop0 operation.
-    /// This is the same as source reg, so this is just for clarity
+    /// This is the same as source reg, so this is just for clarity.
     pub fn cop0_op(self) -> u32 {
         self.source_reg()
     }
 
-    /// Immediate value - bits 0..16
+    /// Immediate value - bits 0..16.
     pub fn imm(self) -> u32 {
         self.0 & 0xffff
     }
 
-    /// Signed immediate value - bits 0..16
+    /// Signed immediate value - bits 0..16.
     pub fn signed_imm(self) -> u32 {
         let value = (self.0 & 0xffff) as i16;
         value as u32
     }
 
-    /// Target address - bits 0..25
+    /// Target address - bits 0..25.
     pub fn target(self) -> u32 {
         self.0 & 0x3ffffff
     }
 
-    /// Shift value - bits 6..10
+    /// Shift value - bits 6..10.
     pub fn shift(self) -> u32 {
         (self.0 >> 6) & 0x1f
     }
 
-    /// Destination register - bits 11..15
+    /// Destination register - bits 11..15.
     pub fn destination_reg(self) -> u32 {
         (self.0 >> 11) & 0x1f
     }
 
-    /// Target register - bits 16..20
+    /// Target register - bits 16..20.
     pub fn target_reg(self) -> u32 {
         (self.0 >> 16) & 0x1f
     }
 
-    /// Source register - bits 21..25
+    /// Source register - bits 21..25.
     pub fn source_reg(self) -> u32 {
         (self.0 >> 21) & 0x1f
+    }
+
+    /// Branch if greater or equal zero - BCONDZ needs this to determine the type of branching.
+    pub fn bgez(self) -> u32 {
+        (self.0 >> 16) & 0x1
+    }
+
+    /// Set return register on branch - Also used by BCONDZ.
+    pub fn set_ra_on_branch(self) -> bool {
+        (self.0 >> 17) & 0xf == 0x8
     }
 }
 
