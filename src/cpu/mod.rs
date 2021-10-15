@@ -23,7 +23,9 @@ pub struct Cpu {
     /// Multiply/divide result.
     hi: u32,
     lo: u32,
-    /// General purpose registers - http://problemkaputt.de/psx-spx.htm#cpuspecifications
+    /// The cycle number MUL/DIV result is ready.
+    hi_lo_ready: u64,
+    /// General purpose registers - http://problemkaputt.de/psx-spx.htm#cpuspecifications.
     /// - [0] - Always 0.
     /// - [1] - Assembler temporary.
     /// - [2..3] - Subroutine return values.
@@ -41,7 +43,6 @@ pub struct Cpu {
     /// CPU owns the bus for now.
     bus: Bus,
     cop0: Cop0,
-    /// Instruction count for debugging.
     cycle_count: u64,
 }
 
@@ -55,6 +56,7 @@ impl Cpu {
             next_op: Opcode::new(0x0),
             hi: 0x0,
             lo: 0x0,
+            hi_lo_ready: 0x0,
             registers: [0x0; 32],
             pending_load: None,
             bus,
@@ -88,7 +90,7 @@ impl Cpu {
         }
     }
 
-    /// Add pending load. If there's already one pending, fetch it
+    /// Add pending load. If there's already one pending, fetch it.
     fn add_pending_load(&mut self, register: u32, value: u32) {
         if let Some(load) = self.pending_load {
             self.set_reg(load.register, load.value);
@@ -104,6 +106,16 @@ impl Cpu {
         }
     }
 
+    fn add_pending_hi_lo(&mut self, cycles: u32, hi: u32, lo: u32) {
+        self.hi_lo_ready = self.cycle_count + cycles as u64;
+        self.hi = hi;
+        self.lo = lo;
+    }
+
+    fn fetch_pending_hi_lo(&mut self) {
+        self.cycle_count = self.hi_lo_ready; 
+    }
+
     /// Branch to relative offset.
     fn branch(&mut self, offset: u32) {
         // Offset is shifted 2 bites since PC addresses must be 32-bit aligned.
@@ -113,16 +125,11 @@ impl Cpu {
 
     /// Fetch and execute next instruction.
     pub fn fetch_and_exec(&mut self) {
-        if self.cycle_count % 100 == 0 {
-            println!("instruction count: {}", self.cycle_count);
-        }
-
-        self.cycle_count += 1;
-
         let op = self.next_op;
         self.next_op = Opcode::new(self.load::<Word>(self.pc));
         self.pc = self.pc.wrapping_add(4);
         self.exec(op);
+        self.cycle_count += 1;
     }
 
     /// Execute opcode.
@@ -136,6 +143,8 @@ impl Cpu {
                 0x9 => self.op_jalr(opcode),
                 0x10 => self.op_mfhi(opcode),
                 0x12 => self.op_mflo(opcode),
+                0x18 => self.op_mul(opcode),
+                0x19 => self.op_mulu(opcode),
                 0x1a => self.op_div(opcode),
                 0x1b => self.op_divu(opcode),
                 0x20 => self.op_add(opcode),
@@ -158,10 +167,10 @@ impl Cpu {
             0x9 => self.op_addiu(opcode),
             0xa => self.op_slti(opcode),
             0xb => self.op_sltui(opcode),
-            0x10 => self.op_cop0(opcode),
             0xc => self.op_andi(opcode),
             0xd => self.op_ori(opcode),
             0xf => self.op_lui(opcode),
+            0x10 => self.op_cop0(opcode),
             0x20 => self.op_lb(opcode),
             0x21 => self.op_lh(opcode),
             0x23 => self.op_lw(opcode),
@@ -198,7 +207,7 @@ impl Cpu {
         self.set_reg(op.destination_reg(), value as u32);
     }
 
-    /// [AND] - Bitwise and
+    /// [AND] - Bitwise and.
     fn op_and(&mut self, op: Opcode) {
         let value = self.read_reg(op.source_reg()) & self.read_reg(op.target_reg());
         self.fetch_pending_load();
@@ -214,7 +223,7 @@ impl Cpu {
 
     /// [JAL] - Jump and link.
     fn op_jal(&mut self, op: Opcode) {
-        // Store PC in return register
+        // Store PC in return register.
         self.set_reg(31, self.pc);
         // J fetches pending load.
         self.op_j(op);
@@ -302,17 +311,17 @@ impl Cpu {
 
     /// [MFHI] - Move from high.
     fn op_mfhi(&mut self, op: Opcode) {
-        let value = self.hi;
+        self.fetch_pending_hi_lo();
         self.fetch_pending_load();
-        // TODO: Wait on result.
+        let value = self.hi;
         self.set_reg(op.destination_reg(), value);
     }
 
     /// [MFLO] - Move from low.
     fn op_mflo(&mut self, op: Opcode) {
-        let value = self.lo;
+        self.fetch_pending_hi_lo();
         self.fetch_pending_load();
-        // TODO: Wait on result.
+        let value = self.lo;
         self.set_reg(op.destination_reg(), value);
     }
 
@@ -339,7 +348,7 @@ impl Cpu {
         self.set_reg(op.target_reg(), value as u32);
     }
 
-    /// [BLEZ] - Branch if less than or equal to zero
+    /// [BLEZ] - Branch if less than or equal to zero.
     fn op_blez(&mut self, op: Opcode) {
         let value = self.read_reg(op.source_reg()) as i32;
         if value <= 0 {
@@ -348,7 +357,7 @@ impl Cpu {
         self.fetch_pending_load();
     }
 
-    /// [BGTZ] - Branch if greater than zero
+    /// [BGTZ] - Branch if greater than zero.
     fn op_bgtz(&mut self, op: Opcode) {
         let value = self.read_reg(op.source_reg()) as i32;
         if value > 0 {
@@ -357,33 +366,56 @@ impl Cpu {
         self.fetch_pending_load();
     }
 
-    // TODO: Add pipelineing and waiting.
+    /// [MUL] - Signed multiplication.
+    /// Multiplication takes different amount of cycles to complete dependent on the size of the
+    /// inputs.
+    fn op_mul(&mut self, op: Opcode) {
+        let lhs = self.read_reg(op.source_reg()) as i32;
+        let rhs = self.read_reg(op.target_reg()) as i32;
+        let cycles = match if lhs < 0 { !lhs } else { lhs }.leading_zeros() {
+            00..=11 => 13,
+            12..=20 => 9,
+            _ => 7,
+        };
+        let value = (lhs as i64) * (rhs as i64);
+        self.fetch_pending_load();
+        self.add_pending_hi_lo(cycles, (value >> 32) as u32, value as u32);
+    }
+
+    /// [MULU] - Unsigned multiplication.
+    fn op_mulu(&mut self, op: Opcode) {
+        let lhs = self.read_reg(op.source_reg());
+        let rhs = self.read_reg(op.target_reg());
+        let cycles = match lhs {
+            0x00000000..=0x000007ff => 13,
+            0x00000800..=0x000fffff => 9,
+            _ => 7,
+        };
+        let value = (lhs as u64) * (rhs as u64);
+        self.fetch_pending_load();
+        self.add_pending_hi_lo(cycles, (value >> 32) as u32, value as u32);
+    }
+
+
     /// [DIV] - Signed division.
     /// Stores result in hi/low registers. Division doesn't throw when dviding by 0 or overflow,
-    /// instead it gives garbage values. This takes about 36 cycles to complete, but continues executing.
+    /// instead it gives garbage values. This takes 36 cycles to complete, but continues executing.
     /// It only halts if hi/low registers are fetched.
     fn op_div(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.source_reg()) as i32;
         let rhs = self.read_reg(op.target_reg()) as i32;
-
         self.fetch_pending_load();
-
         if rhs == 0 {
-            // Dividing by 0 always set hi to lhs.
-            self.hi = lhs as u32;
-            // Depending on the lhs, it sets different values to lo.
-            if lhs < 0 {
-                self.lo = 1;
+            let lo: u32 = if lhs < 0 {
+                1
             } else {
-                self.lo = 0xffffffff;
-            }
+                0xffffffff
+            };
+            self.add_pending_hi_lo(36, lhs as u32, lo);
         } else if rhs == -1 && lhs as u32 == 0x80000000 {
-            // If the result is too large to fit in 32 bits.
-            self.hi = 0;
-            self.lo = 0x80000000;
+            self.add_pending_hi_lo(36, 0, 0x80000000);
         } else {
-            self.hi = (lhs % rhs) as u32;
-            self.hi = (lhs / rhs) as u32;
+            self.add_pending_hi_lo(36, (lhs % rhs) as u32, (lhs / rhs) as u32);
         }
     }
 
@@ -392,15 +424,11 @@ impl Cpu {
     fn op_divu(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.source_reg());
         let rhs = self.read_reg(op.target_reg());
-        
         self.fetch_pending_load();
-
         if rhs == 0 {
-            self.hi = lhs;
-            self.lo = 0xffffffff;
+            self.add_pending_hi_lo(36, lhs, 0xffffffff);
         } else {
-            self.hi = lhs % rhs;
-            self.hi = lhs / rhs;
+            self.add_pending_hi_lo(36, lhs % rhs, lhs / rhs);
         }
     }
 
