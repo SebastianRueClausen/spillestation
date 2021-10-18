@@ -6,7 +6,7 @@ mod opcode;
 use std::fmt;
 
 use super::memory::{AddrUnit, Bus, Byte, HalfWord, Word};
-use cop0::Cop0;
+use cop0::{Cop0, Exception};
 use opcode::Opcode;
 
 #[derive(Copy, Clone)]
@@ -16,10 +16,18 @@ struct DelaySlot {
 }
 
 pub struct Cpu {
-    /// Program Counter.
+    /// At the start of each cycle, this points to the last instruction which was executed. During
+    /// the cycle, it points to the current instruction being executed.
+    last_pc: u32,
+    /// This points to the instruction about to be executed at the start of each
+    /// cycle. During the cycle it points at the next instruction.
     pc: u32,
-    /// Next operation to be executed.
-    next_op: Opcode,
+    /// Always one step ahead of PC. Used to simulate branch delay.
+    next_pc: u32,
+    /// Set if instruction is in branch delay slot.
+    in_branch_delay: bool,
+    /// This is set if the last instruction branched.
+    branched: bool,
     /// Multiply/divide result.
     hi: u32,
     lo: u32,
@@ -52,8 +60,11 @@ impl Cpu {
     pub fn new(bus: Bus) -> Self {
         // Reset values of the CPU.
         Cpu {
+            last_pc: 0x0,
             pc: PC_START_ADDRESS,
-            next_op: Opcode::new(0x0),
+            next_pc: PC_START_ADDRESS + 4,
+            in_branch_delay: false,
+            branched: false,
             hi: 0x0,
             lo: 0x0,
             hi_lo_ready: 0x0,
@@ -83,7 +94,8 @@ impl Cpu {
 
     /// Store address to bus.
     fn store<T: AddrUnit>(&mut self, address: u32, value: u32) {
-        if !self.cop0.cache_is_isolated() {
+        // Check the cache isn't isolated.
+        if !self.cop0.check_isc() {
             self.bus.store::<T>(address, value);
         } else {
             // TODO: Write to cache.
@@ -120,16 +132,41 @@ impl Cpu {
     fn branch(&mut self, offset: u32) {
         // Offset is shifted 2 bites since PC addresses must be 32-bit aligned.
         // The reason we subtract 4, is to compensate adding 4 in next fetch.
-        self.pc = self.pc.wrapping_add(offset << 2).wrapping_sub(4);
+        self.next_pc = self.pc.wrapping_add(offset << 2);
+        self.branched = true;
+    }
+
+    /// Jump sets pc to address,
+    fn jump(&mut self, address: u32) {
+        self.next_pc = address;
+        self.branched = true;
+    }
+
+    /// Throw exception.
+    fn throw_exception(&mut self, ex: Exception) {
+        self.pc = self.cop0.enter_exception(self.last_pc, self.in_branch_delay, ex);
+        self.next_pc = self.pc.wrapping_add(4);
     }
 
     /// Fetch and execute next instruction.
     pub fn fetch_and_exec(&mut self) {
-        let op = self.next_op;
-        self.next_op = Opcode::new(self.load::<Word>(self.pc));
-        self.pc = self.pc.wrapping_add(4);
+        let op = Opcode::new(self.load::<Word>(self.pc));
+        // Save the current pc.
+        self.last_pc = self.pc;
+        // Increment pc and next_pc.
+        self.pc = self.next_pc;
+        self.next_pc = self.next_pc.wrapping_add(4);
+        // If the last instruction branched we are in branch delay slot.
+        self.in_branch_delay = self.branched;
+        self.branched = false;
+        // Execute instruction.
         self.exec(op);
+        // Every cycle takes 1 cycle.
         self.cycle_count += 1;
+
+        if self.cycle_count % 1000 == 0 {
+            // println!("op: {}", op);
+        }
     }
 
     /// Execute opcode.
@@ -141,6 +178,7 @@ impl Cpu {
                 0x3 => self.op_sra(opcode),
                 0x8 => self.op_jr(opcode),
                 0x9 => self.op_jalr(opcode),
+                0xc => self.op_syscall(), 
                 0x10 => self.op_mfhi(opcode),
                 0x12 => self.op_mflo(opcode),
                 0x18 => self.op_mul(opcode),
@@ -178,7 +216,9 @@ impl Cpu {
             0x28 => self.op_sb(opcode),
             0x29 => self.op_sh(opcode),
             0x2b => self.op_sw(opcode),
-            _ => panic!("Unexpected op {}", opcode),
+            _ => {
+                panic!("Unexpected op {}", opcode);
+            },
         }
     }
 }
@@ -223,23 +263,30 @@ impl Cpu {
 
     /// [JAL] - Jump and link.
     fn op_jal(&mut self, op: Opcode) {
-        // Store PC in return register.
-        self.set_reg(31, self.pc);
-        // J fetches pending load.
+        let pc = self.next_pc;
         self.op_j(op);
+        // Store PC in return register.
+        self.set_reg(31, pc);
     }
 
     /// [JALR] - Jump and link register.
     fn op_jalr(&mut self, op: Opcode) {
-        self.set_reg(op.destination_reg(), self.pc);
-        self.pc = self.read_reg(op.source_reg());
+        let pc = self.next_pc;
+        self.jump(self.read_reg(op.source_reg()));
         self.fetch_pending_load();
+        self.set_reg(op.destination_reg(), pc);
     }
 
     /// [JR] - Jump register.
     fn op_jr(&mut self, op: Opcode) {
-        self.pc = self.read_reg(op.source_reg());
+        self.jump(self.read_reg(op.source_reg()));
         self.fetch_pending_load();
+    }
+   
+    /// [SYSCALL] - Triggers an syscall expception.
+    fn op_syscall(&mut self) {
+        self.fetch_pending_load();
+        self.throw_exception(Exception::Syscall);
     }
 
     /// [BEQ] - Branch if equal.
@@ -296,7 +343,7 @@ impl Cpu {
         self.fetch_pending_load();
         // Set return register if required.
         if op.set_ra_on_branch() {
-            self.set_reg(31, self.pc);
+            self.set_reg(31, self.next_pc);
         }
         if cond != 0 {
             self.branch(op.signed_imm());
@@ -305,7 +352,7 @@ impl Cpu {
 
     /// [J] - Jump.
     fn op_j(&mut self, op: Opcode) {
-        self.pc = (self.pc & 0xf0000000) | (op.target() << 2);
+        self.jump((self.pc & 0xf0000000) | (op.target() << 2));
         self.fetch_pending_load();
     }
 
@@ -551,17 +598,21 @@ impl Cpu {
             // [MFC0] - Move from Co-Processor0.
             0x0 => {
                 let value = self.cop0.read_reg(op.destination_reg());
-                self.add_pending_load(op.destination_reg(), value);
-            }
+                self.add_pending_load(op.target_reg(), value);
+            },
             // [MTC0] - Move to Co-Processor0.
             0x4 => {
+                self.fetch_pending_load();
                 self.cop0
                     .set_reg(op.destination_reg(), self.read_reg(op.target_reg()));
                 // TODO Break point flags things.
-            }
+            },
             // [RFE] - Restore from exception.
-            0xf => {}
-            // TODO: This should cause an exception.
+            0b10000 => {
+                println!("RFE");
+                self.fetch_pending_load();
+                self.cop0.exit_exception();
+            },
             _ => panic!("Invalid COP0 instruction {:08x}", op.cop0_op()),
         }
     }

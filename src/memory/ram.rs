@@ -10,7 +10,7 @@ pub struct Ram {
 impl Ram {
     pub fn new() -> Self {
         Self {
-            data: Box::new([0x33; RAM_SIZE]),
+            data: Box::new([0x44; RAM_SIZE]),
         }
     }
 
