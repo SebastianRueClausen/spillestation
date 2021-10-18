@@ -127,7 +127,7 @@ impl fmt::Display for Opcode {
                 0x27 => "NOR",
                 0x2a => "SLT",
                 0x2b => "SLTU",
-                _ => "N/A",
+                _ => "Illegal",
             },
             0x1 => "BCONDZ",
             0x2 => "J",
@@ -168,7 +168,7 @@ impl fmt::Display for Opcode {
             0x39 => "SWC1",
             0x3a => "SWC2",
             0x3b => "SWC3",
-            _ => "N/A",
+            _ => "Illegal",
         };
         // TODO: Add more info.
         write!(f,"op: {}, imm: {:0x}, shift: {:0x}, target: {}, source: {}, destination: {}",

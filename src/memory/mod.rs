@@ -105,6 +105,14 @@ mod map {
     /// [Timer Control] - 48 bytes.
     pub const TIMER_CONTROL_START: u32 = 0x1f801100;
     pub const TIMER_CONTROL_END: u32 = TIMER_CONTROL_START + 48 - 1;
+
+    /// [Direct Memory Access] - 128 bytes.
+    pub const DMA_START: u32 = 0x1f801080;
+    pub const DMA_END: u32 = DMA_START + 128 - 1;
+
+    /// [GPU Control] - 8 bytes.
+    pub const GPU_START: u32 = 0x1f801810;
+    pub const GPU_END: u32 = GPU_START + 8 - 1;
 }
 
 /// Because many things repeat in memory, different segments of memory get's stored in here.
@@ -125,9 +133,7 @@ impl Bus {
     }
 
     pub fn load<T: AddrUnit>(&self, address: u32) -> u32 {
-        if !T::is_aligned(address) {
-            panic!("Trying to load at unaligned address on bus: {:08x}", address);
-        }
+        assert!(T::is_aligned(address));
         let address = to_region(address);
         match address {
             RAM_START..=RAM_END => {
@@ -154,6 +160,23 @@ impl Bus {
                 // TODO.
                 0x0
             },
+            DMA_START..=DMA_END => {
+                // TODO.
+                0x0
+            },
+            SPU_START..=SPU_END => {
+                // TODO.
+                0x0
+            },
+            GPU_START..=GPU_END => {
+                // TODO.
+                let offset = address - GPU_START;
+                if offset == 4 {
+                    0x10000000
+                } else {
+                    0x0
+                }
+            },
             _ => {
                 panic!("Trying to load invalid address to bus at {:08x}", address)
             }
@@ -161,9 +184,7 @@ impl Bus {
     }
 
     pub fn store<T: AddrUnit>(&mut self, address: u32, value: u32) {
-        if !T::is_aligned(address) {
-            panic!("Trying to store at unaligned address to bus: {:08x}", address);
-        }
+        assert!(T::is_aligned(address));
         let address = to_region(address);
         match address {
             RAM_START..=RAM_END => {
@@ -192,6 +213,12 @@ impl Bus {
                 // TODO.
             }
             TIMER_CONTROL_START..=TIMER_CONTROL_END => {
+                // TODO.
+            },
+            DMA_START..=DMA_END => {
+                // TODO.
+            },
+            GPU_START..=GPU_END => {
                 // TODO.
             },
              _ => {
