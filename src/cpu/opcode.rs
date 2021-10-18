@@ -37,15 +37,15 @@ impl Opcode {
         self.0 >> 26
     }
 
-    /// Sub operation - bits 0..5.
-    pub fn sub_op(self) -> u32 {
+    /// Special - bits 0..5.
+    pub fn special(self) -> u32 {
         self.0 & 0x3f
     }
 
     /// Cop0 operation.
     /// This is the same as source reg, so this is just for clarity.
     pub fn cop0_op(self) -> u32 {
-        self.source_reg()
+        self.rs()
     }
 
     /// Immediate value - bits 0..16.
@@ -70,18 +70,18 @@ impl Opcode {
     }
 
     /// Destination register - bits 11..15.
-    pub fn destination_reg(self) -> u32 {
+    pub fn rd(self) -> u32 {
         (self.0 >> 11) & 0x1f
     }
 
     /// Target register - bits 16..20.
-    pub fn target_reg(self) -> u32 {
+    pub fn rt(self) -> u32 {
         (self.0 >> 16) & 0x1f
     }
 
     /// Source register - bits 21..25.
-    pub fn source_reg(self) -> u32 {
-        (self.0 >> 21) & 0x1f
+    pub fn rs(self) -> u32 {
+        (self.0 >> 21) & 0x1
     }
 
     /// Branch if greater or equal zero - BCONDZ needs this to determine the type of branching.
@@ -98,7 +98,7 @@ impl Opcode {
 impl fmt::Display for Opcode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let op = match self.op() {
-            0x0 => match self.sub_op() {
+            0x0 => match self.special() {
                 0x0 => "SLL",
                 0x2 => "SRL",
                 0x3 => "SRA",
@@ -172,7 +172,7 @@ impl fmt::Display for Opcode {
         };
         // TODO: Add more info.
         write!(f,"op: {}, imm: {:0x}, shift: {:0x}, target: {}, source: {}, destination: {}",
-            op, self.imm(), self.shift(), self.target_reg(), self.source_reg(), self.destination_reg()
+            op, self.imm(), self.shift(), self.rt(), self.rs(), self.rd()
         )
     }
 }
