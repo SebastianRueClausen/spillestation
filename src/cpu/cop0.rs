@@ -37,7 +37,7 @@ pub struct Cop0 {
 impl Cop0 {
     pub fn new() -> Self {
         Self {
-            registers: [0x0; 16],
+            registers: REGISTER_VALUES,
         }
     }
 
@@ -101,5 +101,9 @@ impl Cop0 {
         self.registers[12] &= !0xf;
         self.registers[12] |= flags >> 2;
     }
-
 }
+
+/// Register restart values. Just sets the register proccessor id for now.
+const REGISTER_VALUES: [u32; 16] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000002, 0,
+];
