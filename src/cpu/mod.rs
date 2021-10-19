@@ -9,12 +9,15 @@ use super::memory::{AddrUnit, Bus, Byte, HalfWord, Word};
 use cop0::{Cop0, Exception};
 use opcode::Opcode;
 
+/// Used to store pending loads from the Bus.
 #[derive(Copy, Clone)]
 struct DelaySlot {
     pub register: u32,
     pub value: u32,
 }
 
+/// Here we take advantage of the fact that the zero register always is zero. So loading this does
+/// nothing.
 impl Default for DelaySlot {
     fn default() -> Self {
         Self {
@@ -23,6 +26,22 @@ impl Default for DelaySlot {
         }
     }
 }
+
+#[derive(Copy, Clone)]
+struct CacheLine {
+    pub tag: u32,
+    pub data: u32,
+}
+
+impl Default for CacheLine {
+    fn default() -> Self {
+        Self {
+            tag: 0,
+            data: 0,
+        }
+    }
+}
+
 
 pub struct Cpu {
     /// At the start of each cycle, this points to the last instruction which was executed. During
@@ -59,10 +78,15 @@ pub struct Cpu {
     /// This takes advantage of the fact that the zero register always is zero. This means no
     /// branching is required to check of there is something in the load slot.
     load_slot: DelaySlot,
+    /// Instruction cache.
+    icache: [CacheLine; 1024],
     /// CPU owns the bus for now.
     bus: Bus,
     cop0: Cop0,
     cycle_count: u64,
+    /// Debug.
+    cache_hit: u64,
+    cache_miss: u64,
 }
 
 const PC_START_ADDRESS: u32 = 0xbfc00000;
@@ -81,9 +105,14 @@ impl Cpu {
             hi_lo_ready: 0x0,
             registers: [0x0; 32],
             load_slot: DelaySlot::default(),
+            icache: [CacheLine::default(); 1024],
             bus,
             cop0: Cop0::new(),
             cycle_count: 0,
+            // Debug.
+            cache_hit: 0,
+            cache_miss: 0,
+
         }
     }
 
@@ -95,7 +124,6 @@ impl Cpu {
     /// Set register at index.
     fn set_reg(&mut self, index: u32, value: u32) {
         self.registers[index as usize] = value;
-        self.registers[0] = 0;
     }
 
     /// Load address from bus.
@@ -115,7 +143,14 @@ impl Cpu {
 
     /// Add pending load. If there's already one pending, fetch it.
     fn add_load_slot(&mut self, register: u32, value: u32) {
-        self.set_reg(self.load_slot.register, self.load_slot.value);
+        // If there already a pending load to the same register, we avoid writing to that register.
+        // The branching is optimized away.
+        let eq = if register == self.load_slot.register {
+            0
+        } else {
+            1
+        };
+        self.set_reg(self.load_slot.register * eq, self.load_slot.value * eq);
         self.load_slot = DelaySlot {
             register,
             value
@@ -169,9 +204,38 @@ impl Cpu {
         self.next_pc = self.pc.wrapping_add(4);
     }
 
+    fn fetch_instruction(&mut self, address: u32) -> Opcode {
+        // TODO: Instruction cache could be disabled.
+        // Only KUSEG and KSEG0 are cached.
+        let data = if address < 0xa0000000 {
+            self.cache_hit += 1;
+            // Only if this tag matches the tag of the cacheline is the cache valid.
+            // This makes sure the valid flag is set, and it points at the right address.
+            let tag = ((address & 0xfffff000) >> 12) | 0x80000000;
+            let index = ((address & 0xffc) >> 2) as usize;
+            let cache = self.icache[index as usize];
+            // If the cacheline is valid, we just read from it, otherwise we fetch the instruction
+            // from memory and store it in the cache.
+            if cache.tag == tag {
+                cache.data
+            } else {
+                let data = self.load::<Word>(address);
+                // Update cacheline.
+                self.icache[index] = CacheLine { tag, data };
+                data
+            }
+        } else {
+            self.cache_miss += 1;
+            // Cache misses take about 4 cycles.
+            self.cycle_count += 4;
+            self.load::<Word>(address)
+        };
+        Opcode::new(data)    
+    }
+
     /// Fetch and execute next instruction.
     pub fn fetch_and_exec(&mut self) {
-        let op = Opcode::new(self.load::<Word>(self.pc));
+        let op = self.fetch_instruction(self.pc);
         // Save the current pc.
         self.last_pc = self.pc;
         // Increment pc and next_pc.
@@ -186,6 +250,7 @@ impl Cpu {
         self.cycle_count += 1;
 
         if self.cycle_count == 1000000000 {
+            println!("{} cache hit - {} cache miss", self.cache_hit, self.cache_miss);
             panic!("ONE BILLION INSTRUCTIONS!!!!");
         }
     }
@@ -911,7 +976,7 @@ impl Cpu {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [] - Illegal/Undefined opcode.
+    /// [ILLEGAL] - Illegal/Undefined opcode.
     fn op_illegal(&mut self) {
         self.throw_exception(Exception::ReservedInstruction);
     }
