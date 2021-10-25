@@ -80,7 +80,6 @@ pub struct Cpu {
     load_slot: DelaySlot,
     /// Instruction cache.
     icache: [CacheLine; 1024],
-    /// CPU owns the bus for now.
     bus: Bus,
     cop0: Cop0,
     cycle_count: u64,
@@ -204,11 +203,11 @@ impl Cpu {
         self.next_pc = self.pc.wrapping_add(4);
     }
 
+    /// Fetch an instruction from either memory or the icache. Also update the icache if required.
     fn fetch_instruction(&mut self, address: u32) -> Opcode {
         // TODO: Instruction cache could be disabled.
         // Only KUSEG and KSEG0 are cached.
         let data = if address < 0xa0000000 {
-            self.cache_hit += 1;
             // Only if this tag matches the tag of the cacheline is the cache valid.
             // This makes sure the valid flag is set, and it points at the right address.
             let tag = ((address & 0xfffff000) >> 12) | 0x80000000;
@@ -217,8 +216,10 @@ impl Cpu {
             // If the cacheline is valid, we just read from it, otherwise we fetch the instruction
             // from memory and store it in the cache.
             if cache.tag == tag {
+                self.cache_hit += 1;
                 cache.data
             } else {
+                self.cache_miss += 1;
                 let data = self.load::<Word>(address);
                 // Update cacheline.
                 self.icache[index] = CacheLine { tag, data };

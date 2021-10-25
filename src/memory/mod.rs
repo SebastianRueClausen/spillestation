@@ -2,6 +2,7 @@
 
 pub mod bios;
 pub mod ram;
+// pub mod dma;
 
 use bios::Bios;
 use ram::Ram;
@@ -161,7 +162,6 @@ impl Bus {
                 0x0
             },
             DMA_START..=DMA_END => {
-                // TODO.
                 0x0
             },
             SPU_START..=SPU_END => {
@@ -216,7 +216,6 @@ impl Bus {
                 // TODO.
             },
             DMA_START..=DMA_END => {
-                // TODO.
             },
             GPU_START..=GPU_END => {
                 // TODO.

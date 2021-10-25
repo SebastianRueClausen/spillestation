@@ -1,7 +1,9 @@
 //! Coprocessor 0/System coprocessor. Takes care of exceptions.
 //! Also takes care virtual memory, but that isn't used by the playstation 1.
-#[allow(dead_code)]
 
+use crate::bits::BitExtract;
+
+#[allow(dead_code)]
 pub enum Exception {
     Interrupt = 0x0,
     AddressLoadError = 0x4,
@@ -43,14 +45,14 @@ impl Cop0 {
 
     /// [ISC] - Cache isolated.
     pub fn check_isc(&self) -> bool {
-        self.registers[12] & 0x10000 != 0
+        self.registers[12].extract_bit(16) != 0
     }
 
     /// [BEV] - Boot exception vectors in RAM/ROM.
     /// - true: KSEG1.
     /// - false: KSEG0.
     pub fn check_bev(&self) -> bool {
-        self.registers[12] & (1 << 22) != 0
+        self.registers[12].extract_bit(22) != 0
     }
 
     /// Set the value of a COP0 register.
@@ -68,7 +70,7 @@ impl Cop0 {
         // Remember bits [0..5] of the status register, which keep track of interrupt and
         // kernel/user mode flags. Bits [0..1] keep track of the current flags, bits [2..3]keeps
         // track of the last flags, and bits [4..5] the ones before that. 
-        let flags = self.registers[12] & 0x3f;
+        let flags = self.registers[12].extract_bits(0, 5);
         // When entering and exception, two 0 are appended to these bits, which disables interrupts
         // and sets the CPU to kernel mode.
         self.registers[12] &= !0x3f;
@@ -97,7 +99,7 @@ impl Cop0 {
 
     /// Called just before returning from an exception.
     pub fn exit_exception(&mut self) {
-        let flags = self.registers[12] & 0x3f;
+        let flags = self.registers[12].extract_bits(0, 5);
         self.registers[12] &= !0xf;
         self.registers[12] |= flags >> 2;
     }
