@@ -2,9 +2,10 @@
 
 pub mod bios;
 pub mod ram;
-// pub mod dma;
+pub mod dma;
 
 use bios::Bios;
+use dma::{Dma, Transfer};
 use ram::Ram;
 
 pub trait AddrUnit {
@@ -121,15 +122,19 @@ mod map {
 pub struct Bus {
     bios: Bios,
     ram: Ram,
+    dma: Dma,
+    transfers: [Option<Transfer>; 7],
 }
 
 use map::*;
 
 impl Bus {
-    pub fn new(bios: Bios, ram: Ram) -> Self {
+    pub fn new(bios: Bios, ram: Ram, dma: Dma) -> Self {
         Self {
             bios,
             ram,
+            dma,
+            transfers: [None; 7], 
         }
     }
 
@@ -162,7 +167,7 @@ impl Bus {
                 0x0
             },
             DMA_START..=DMA_END => {
-                0x0
+                self.dma.load(address - DMA_START)   
             },
             SPU_START..=SPU_END => {
                 // TODO.
@@ -216,6 +221,7 @@ impl Bus {
                 // TODO.
             },
             DMA_START..=DMA_END => {
+                self.dma.store(address - DMA_START, value);
             },
             GPU_START..=GPU_END => {
                 // TODO.
