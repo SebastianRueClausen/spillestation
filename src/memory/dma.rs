@@ -1,11 +1,12 @@
 //! Emulating Direct Memory Access chip. Used to transfer data between devices. The CPU halts when
 //! this is running, but the CPU can be allowed to run in intervals called chopping.
 
-use super::Bus;
+#![allow(dead_code)]
+
 use crate::bits::BitExtract;
 
 #[derive(Clone, Copy)]
-enum ChannelId {
+pub enum ChannelPort {
     MdecIn = 0,
     MdecOut = 1,
     Gpu = 2,
@@ -15,29 +16,19 @@ enum ChannelId {
     Otc = 6,
 }
 
-impl ChannelId {
+impl ChannelPort {
     fn from_value(value: u32) -> Self {
         match value {
-            0 => ChannelId::MdecIn,
-            1 => ChannelId::MdecOut,
-            2 => ChannelId::Gpu,
-            3 => ChannelId::CdRom,
-            4 => ChannelId::Spu,
-            5 => ChannelId::Pio,
-            6 => ChannelId::Otc,
+            0 => ChannelPort::MdecIn,
+            1 => ChannelPort::MdecOut,
+            2 => ChannelPort::Gpu,
+            3 => ChannelPort::CdRom,
+            4 => ChannelPort::Spu,
+            5 => ChannelPort::Pio,
+            6 => ChannelPort::Otc,
             _ => unreachable!("Invalid MDA Port"),
         }
     }
-}
-
-/// An ongoing transfer.
-#[derive(Clone, Copy)]
-pub struct Transfer {
-    /// The number of words left.
-    pub remaining_words: u16,
-    /// The current address of the transfer.
-    pub address: u32,
-    pub cycles: u32,
 }
 
 /// Keeps track of size information for channels.
@@ -66,25 +57,25 @@ impl BlockControl {
 }
 
 /// DMA can transfer either from or to CPU.
-#[derive(Clone, Copy)]
-enum Direction {
-    ToCpu,
-    ToDma,
+#[derive(Copy, Clone)]
+pub enum Direction {
+    ToRam,
+    ToPort,
 }
 
 impl Direction {
     fn from_value(value: u32) -> Self {
         match value {
-            0 => Direction::ToCpu,
-            1 => Direction::ToDma,
-            _ => unreachable!("Invalid direction"),
+            0 => Direction::ToRam,
+            1 => Direction::ToPort,
+            _ => unreachable!("Invalid direction."),
         }
     }
 }
 
 /// How to sync the transfer with the rest of the CPU.
-#[derive(PartialEq, Eq)]
-enum SyncMode {
+#[derive(PartialEq, Eq, Copy, Clone)]
+pub enum SyncMode {
     /// Start immediately ad transfer all at once.
     Manual,
     /// Transfer blocks at intervals.
@@ -99,23 +90,24 @@ impl SyncMode {
             0 => SyncMode::Manual,
             1 => SyncMode::Request,
             2 => SyncMode::LinkedList,
-            _ => panic!("Invalid sync mode"),
+            _ => unreachable!("Invalid sync mode."),
         }
     }
 }
 
 /// Where to move from the base value.
-enum Step {
-    Forward,
-    Backward,
+#[derive(Copy, Clone)]
+pub enum Step {
+    Increment,
+    Decrement,
 }
 
 impl Step {
     fn from_value(value: u32) -> Self {
         match value {
-            0 => Step::Forward,
-            1 => Step::Backward,
-            _ => panic!("Invalid step"),
+            0 => Step::Increment,
+            1 => Step::Decrement,
+            _ => unreachable!("Invalid step."),
         }
     }
 }
@@ -151,8 +143,8 @@ impl ChannelControl {
         SyncMode::from_value(self.0.extract_bits(9, 10))
     }
 
-    /// Start busy - bit 24.
-    fn transfer_busy(self) -> bool {
+    /// Enabled - bit 24.
+    fn enabled(self) -> bool {
         self.0.extract_bit(24) == 1
     }
 
@@ -207,17 +199,17 @@ impl Channel {
             0 => self.base,
             4 => self.block_control.0,
             8 => self.control.0,
-            _ => panic!("Invalid load at offset {:08x}", offset),
+            _ => panic!("Invalid load in channel at offset {:08x}", offset),
         }
     }
 
     /// Store value in channel register.
     fn store(&mut self, offset: u32, value: u32) {
         match offset {
-            0 => self.base = value,
+            0 => self.base = value.extract_bits(0, 23),
             4 => self.block_control = BlockControl::new(value),
             8 => self.control = ChannelControl::new(value),
-            _ => panic!("Invalid store at offset {:08x}", offset),
+            _ => panic!("Invalid store at in channel at offset {:08x}", offset),
         }
     }
 }
@@ -232,12 +224,12 @@ impl Control {
         }
     }
 
-    pub fn channel_priority(self, channel: ChannelId) -> u32 {
+    pub fn channel_priority(self, channel: ChannelPort) -> u32 {
         let base = (channel as u32) << 2;
         self.0.extract_bits(base, base + 2)
     }
 
-    pub fn channel_enabled(self, channel: ChannelId) -> bool {
+    pub fn channel_enabled(self, channel: ChannelPort) -> bool {
         let base = (channel as u32) << 2;
         self.0.extract_bit(base + 3) == 1
     }
@@ -257,7 +249,7 @@ impl Interrupt {
         self.0.extract_bit(15) == 1
     }
 
-    pub fn channel_irq_enabled(self, channel: ChannelId) -> bool {
+    pub fn channel_irq_enabled(self, channel: ChannelPort) -> bool {
         self.0.extract_bit((channel as u32) + 16) == 1
     }
 
@@ -265,7 +257,7 @@ impl Interrupt {
         self.0.extract_bit(23) == 1
     }
 
-    pub fn channel_irq_flag(self, channel: ChannelId) -> bool {
+    pub fn channel_irq_flag(self, channel: ChannelPort) -> bool {
         self.0.extract_bit((channel as u32) + 24) == 1
     }
 
@@ -281,11 +273,21 @@ impl Interrupt {
     }
 }
 
+/// Either loading or storing data between device and RAM.
+#[derive(Copy, Clone)]
+pub struct Transfer {
+    pub port: ChannelPort, 
+    pub direction: Direction,
+    pub sync_mode: SyncMode,
+    pub step: Step,
+    pub size: u32,
+    pub address: u32,
+}
 
 pub struct Dma {
     control: Control,
     interrupt: Interrupt,
-    pub channels: [Channel; 7],
+    channels: [Channel; 7],
 }
 
 impl Dma {
@@ -299,8 +301,8 @@ impl Dma {
 
     /// Read a register from DMA.
     pub fn load(&self, offset: u32) -> u32 {
-        let channel = (offset & 0x70) >> 4;
-        let offset = offset & 0xc;
+        let channel = offset.extract_bits(4, 6);
+        let offset = offset.extract_bits(0, 3);
         match channel {
             0..=6 => {
                 self.channels[channel as usize].load(offset)
@@ -308,31 +310,64 @@ impl Dma {
             7 => match offset {
                 0 => self.control.0,
                 4 => self.interrupt.0,
-                _ => panic!("Invalid DMA register {:08x}", offset),
+                _ => unreachable!("Load at invalid DMA register {:08x}.", offset),
             }
-            _ => unreachable!(),
+            _ => unreachable!("Load at invalid DMA register {:08x}.", offset),
         }
     }
 
     /// Store value in DMA register.
-    pub fn store(&mut self, offset: u32, value: u32) {
-        let channel = (offset & 0x70) >> 4;
-        let register = offset & 0xc;
+    pub fn store(&mut self, transfers: &mut Vec<Transfer>, offset: u32, value: u32) {
+        let channel = offset.extract_bits(4, 6);
+        let offset = offset.extract_bits(0, 3);
         match channel {
             0..=6 => {
-                self.channels[channel as usize].store(register, value);
+                self.channels[channel as usize].store(offset, value);
             },
             7 => {
-                match register {
+                match offset {
                     0 => self.control.0 = value,
                     4 => {
                         self.interrupt.0 = value;
                         self.interrupt.update_master_irq_flag();
-                    }
-                    _ => panic!("Invalid register {:08x}", offset),
+                    },
+                    _ => unreachable!("Store at invalid DMA register {:08x}.", offset),
                 }
+            },
+            _ => unreachable!("Store at invalid DMA register {:08x}.", offset),
+        }
+        self.build_transfers(transfers);
+    }
+
+    fn build_transfers(&mut self, transfers: &mut Vec<Transfer>) {
+        for (i, channel) in self.channels.iter().enumerate() {
+            println!("Control {:08x}", channel.control.0);
+            match channel.control.sync_mode() {
+                SyncMode::Manual if channel.control.start() && channel.control.enabled() => {
+                    transfers.push(Transfer {
+                        port: ChannelPort::from_value(i as u32),
+                        direction: channel.control.direction(),
+                        sync_mode: SyncMode::Manual,
+                        size: channel.block_control.block_size(),
+                        step: channel.control.step(),  
+                        address: channel.base,
+                    });
+                },
+                SyncMode::Request if channel.control.enabled() => {
+                    transfers.push(Transfer {
+                        port: ChannelPort::from_value(i as u32),
+                        direction: channel.control.direction(),
+                        sync_mode: SyncMode::Request,
+                        size: channel.block_control.block_size() * channel.block_control.block_count(),
+                        step: channel.control.step(),  
+                        address: channel.base,
+                    });
+                }
+                SyncMode::LinkedList if channel.control.enabled() => {
+                    todo!();
+                },
+                _ => {}
             }
-            _ => unreachable!(),
         }
     }
 }

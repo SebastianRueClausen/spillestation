@@ -4,8 +4,15 @@ pub mod bios;
 pub mod ram;
 pub mod dma;
 
+use crate::bits::BitExtract;
 use bios::Bios;
-use dma::{Dma, Transfer};
+use dma::{
+    Dma,
+    Transfer,
+    SyncMode,
+    Direction,
+    Step,
+};
 use ram::Ram;
 
 pub trait AddrUnit {
@@ -117,13 +124,11 @@ mod map {
     pub const GPU_END: u32 = GPU_START + 8 - 1;
 }
 
-/// Because many things repeat in memory, different segments of memory get's stored in here.
-/// Bus makes sure load and stores gets send to the right device.
 pub struct Bus {
     bios: Bios,
     ram: Ram,
     dma: Dma,
-    transfers: [Option<Transfer>; 7],
+    transfers: Vec<Transfer>,
 }
 
 use map::*;
@@ -134,7 +139,7 @@ impl Bus {
             bios,
             ram,
             dma,
-            transfers: [None; 7], 
+            transfers: vec![],
         }
     }
 
@@ -221,7 +226,8 @@ impl Bus {
                 // TODO.
             },
             DMA_START..=DMA_END => {
-                self.dma.store(address - DMA_START, value);
+                self.dma.store(&mut self.transfers, address - DMA_START, value);
+                self.execute_transfers();
             },
             GPU_START..=GPU_END => {
                 // TODO.
@@ -229,6 +235,52 @@ impl Bus {
              _ => {
                  panic!("Trying to store invalid address to bus at {:08x}", address)
             },
+        }
+    }
+
+    fn execute_transfers(&mut self) {
+        while let Some(transfer) = self.transfers.pop() {
+            let increment = match transfer.step {
+                Step::Increment => 4,
+                Step::Decrement => (-4 as i32) as u32,
+            };
+            match transfer.sync_mode {
+                SyncMode::LinkedList => {
+                    todo!();
+                },
+                // Do manual and request mode the same for now.
+                SyncMode::Manual | SyncMode::Request => match transfer.direction {
+                    Direction::ToPort => self.to_port_transfer(&transfer, increment),
+                    Direction::ToRam => self.to_ram_transfer(&transfer, increment),
+                },
+            }
+        }
+    }
+
+    fn to_port_transfer(&self, transfer: &Transfer, increment: u32) {
+        let mut address = transfer.address;
+        for _ in 0..transfer.size {
+            let _ = self.ram.load::<Word>(address.extract_bits(2,20));
+            match transfer.port {
+                _ => {
+                    // Write to port/device.
+                },
+            }
+            address = address.wrapping_add(increment);
+            // Increment cycle count.
+        }
+    }
+
+    fn to_ram_transfer(&mut self, transfer: &Transfer, increment: u32) {
+        let mut address = transfer.address;
+        for _ in 0..transfer.size {
+            let value = match transfer.port {
+                _ => {
+                    0 as u32
+                },
+            };
+            self.ram.store::<Word>(address, value);
+            address = address.wrapping_add(increment);
         }
     }
 }

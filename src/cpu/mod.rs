@@ -2,7 +2,6 @@
 
 mod cop0;
 mod opcode;
-
 use std::fmt;
 
 use super::memory::{AddrUnit, Bus, Byte, HalfWord, Word};
@@ -936,43 +935,43 @@ impl Cpu {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [LWC0] - Load word from Coprocessor0
+    /// [LWC0] - Load word from Coprocessor0.
     fn op_lwc0(&mut self) {
         // This doesn't work on the COP0.
         self.throw_exception(Exception::CopUnusable); 
     }
 
-    /// [LWC1] - Load word from Coprocessor1
+    /// [LWC1] - Load word from Coprocessor1.
     fn op_lwc1(&mut self) {
         self.throw_exception(Exception::CopUnusable); 
     }
 
-    /// [LWC2] - Load word from Coprocessor2
+    /// [LWC2] - Load word from Coprocessor2.
     fn op_lwc2(&mut self) {
         todo!();
     }
 
-    /// [LWC3] - Load word from Coprocessor3
+    /// [LWC3] - Load word from Coprocessor3.
     fn op_lwc3(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [SWC0] - Store world in Coprocessor0
+    /// [SWC0] - Store world in Coprocessor0.
     fn op_swc0(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [SWC1] - Store world in Coprocessor0
+    /// [SWC1] - Store world in Coprocessor0.
     fn op_swc1(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [SWC2] - Store world in Coprocessor0
+    /// [SWC2] - Store world in Coprocessor0.
     fn op_swc2(&mut self) {
         todo!();
     }
 
-    /// [SWC3] - Store world in Coprocessor0
+    /// [SWC3] - Store world in Coprocessor0.
     fn op_swc3(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
