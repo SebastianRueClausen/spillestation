@@ -8,10 +8,11 @@ use crate::bits::BitExtract;
 use bios::Bios;
 use dma::{
     Dma,
-    Transfer,
-    SyncMode,
     Direction,
-    Step,
+    BlockTransfer,
+    LinkedTransfer,
+    Transfers,
+    ChannelPort,
 };
 use ram::Ram;
 
@@ -128,7 +129,7 @@ pub struct Bus {
     bios: Bios,
     ram: Ram,
     dma: Dma,
-    transfers: Vec<Transfer>,
+    transfers: Transfers,
 }
 
 use map::*;
@@ -139,7 +140,7 @@ impl Bus {
             bios,
             ram,
             dma,
-            transfers: vec![],
+            transfers: Transfers::new(),
         }
     }
 
@@ -178,11 +179,12 @@ impl Bus {
                 // TODO.
                 0x0
             },
+            TIMER_CONTROL_START..=TIMER_CONTROL_END => {
+                0x0
+            },
             GPU_START..=GPU_END => {
-                // TODO.
-                let offset = address - GPU_START;
-                if offset == 4 {
-                    0x10000000
+                if address - GPU_START == 4 {
+                    0x1c000000
                 } else {
                     0x0
                 }
@@ -239,48 +241,62 @@ impl Bus {
     }
 
     fn execute_transfers(&mut self) {
-        while let Some(transfer) = self.transfers.pop() {
-            let increment = match transfer.step {
-                Step::Increment => 4,
-                Step::Decrement => (-4 as i32) as u32,
-            };
-            match transfer.sync_mode {
-                SyncMode::LinkedList => {
-                    todo!();
-                },
-                // Do manual and request mode the same for now.
-                SyncMode::Manual | SyncMode::Request => match transfer.direction {
-                    Direction::ToPort => self.to_port_transfer(&transfer, increment),
-                    Direction::ToRam => self.to_ram_transfer(&transfer, increment),
-                },
+        while let Some(transfer) = self.transfers.block.pop() {
+            match transfer.direction {
+                Direction::ToPort => self.to_port_block_transfer(&transfer),
+                Direction::ToRam => self.to_ram_block_transfer(&transfer),
             }
+            self.dma.mark_channel_as_finished(transfer.port);
+        }
+        while let Some(transfer) = self.transfers.linked.pop() {
+            self.to_port_linked_transfer(&transfer);
+            self.dma.mark_channel_as_finished(dma::ChannelPort::Gpu);
         }
     }
 
-    fn to_port_transfer(&self, transfer: &Transfer, increment: u32) {
-        let mut address = transfer.address;
+    fn to_port_block_transfer(&self, transfer: &BlockTransfer) {
+        let mut address = transfer.start;
         for _ in 0..transfer.size {
-            let _ = self.ram.load::<Word>(address.extract_bits(2,20));
+            let _ = self.ram.load::<Word>(address & 0x1ffffc);
             match transfer.port {
                 _ => {
                     // Write to port/device.
                 },
             }
-            address = address.wrapping_add(increment);
-            // Increment cycle count.
+            address = address.wrapping_add(transfer.increment);
         }
     }
 
-    fn to_ram_transfer(&mut self, transfer: &Transfer, increment: u32) {
-        let mut address = transfer.address;
-        for _ in 0..transfer.size {
+    fn to_ram_block_transfer(&mut self, transfer: &BlockTransfer) {
+        let mut address = transfer.start;
+        for remain in (0..transfer.size).rev() {
             let value = match transfer.port {
+                ChannelPort::Otc => match remain {
+                    1 => 0xffffff,
+                    _ => address.wrapping_sub(4) & 0x1fffff,
+                }
                 _ => {
                     0 as u32
                 },
             };
-            self.ram.store::<Word>(address, value);
-            address = address.wrapping_add(increment);
+            self.ram.store::<Word>(address & 0x1ffffc, value);
+            address = address.wrapping_add(transfer.increment);
+        }
+    }
+
+    fn to_port_linked_transfer(&mut self, transfer: &LinkedTransfer) {
+        let mut address = transfer.start & 0x1ffffc;
+        loop {
+            let header = self.ram.load::<Word>(address);
+            for _ in 0..header.extract_bits(24, 31) {
+                address = address.wrapping_add(4) & 0x1ffffc;
+                let _value = self.ram.load::<Word>(address);
+                println!("Value {:08x}", _value);
+            }
+            if header.extract_bit(23) == 1 {
+                break;
+            }
+            address = header & 0x1ffffc;
         }
     }
 }

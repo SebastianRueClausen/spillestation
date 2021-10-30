@@ -5,7 +5,7 @@
 
 use crate::bits::BitExtract;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChannelPort {
     MdecIn = 0,
     MdecOut = 1,
@@ -77,11 +77,11 @@ impl Direction {
 #[derive(PartialEq, Eq, Copy, Clone)]
 pub enum SyncMode {
     /// Start immediately ad transfer all at once.
-    Manual,
+    Manual = 0,
     /// Transfer blocks at intervals.
-    Request,
+    Request = 1,
     /// Linked list, only used by GPU commands.
-    LinkedList,
+    LinkedList = 2,
 }
 
 impl SyncMode {
@@ -162,6 +162,12 @@ impl ChannelControl {
 
    fn start(self) -> bool {
         self.0.extract_bit(28) == 1
+    }
+
+   fn mark_as_finished(&mut self) {
+       // Clear both enabled and start flags.
+        self.0 &= !(1 << 24);
+        self.0 &= !(1 << 28);
     }
 }
 
@@ -273,15 +279,34 @@ impl Interrupt {
     }
 }
 
-/// Either loading or storing data between device and RAM.
 #[derive(Copy, Clone)]
-pub struct Transfer {
-    pub port: ChannelPort, 
+pub struct BlockTransfer {
+    pub port: ChannelPort,
     pub direction: Direction,
-    pub sync_mode: SyncMode,
-    pub step: Step,
+    pub start: u32,
     pub size: u32,
-    pub address: u32,
+    pub increment: u32,
+}
+
+#[derive(Copy, Clone)]
+pub struct LinkedTransfer {
+    // Linked Transfer only really works to the GPU.
+    // pub port: ChannelPort,
+    pub start: u32,
+}
+
+pub struct Transfers {
+    pub block: Vec<BlockTransfer>,
+    pub linked: Vec<LinkedTransfer>,
+}
+
+impl Transfers {
+    pub fn new() -> Self {
+        Self {
+            block: vec![],
+            linked: vec![],
+        }
+    }
 }
 
 pub struct Dma {
@@ -317,7 +342,7 @@ impl Dma {
     }
 
     /// Store value in DMA register.
-    pub fn store(&mut self, transfers: &mut Vec<Transfer>, offset: u32, value: u32) {
+    pub fn store(&mut self, transfers: &mut Transfers, offset: u32, value: u32) {
         let channel = offset.extract_bits(4, 6);
         let offset = offset.extract_bits(0, 3);
         match channel {
@@ -339,32 +364,42 @@ impl Dma {
         self.build_transfers(transfers);
     }
 
-    fn build_transfers(&mut self, transfers: &mut Vec<Transfer>) {
+    pub fn mark_channel_as_finished(&mut self, port: ChannelPort) {
+        self.channels[port as usize].control.mark_as_finished();
+    }
+
+    fn build_transfers(&mut self, transfers: &mut Transfers) {
+        fn increment(step: Step) -> u32 {
+            match step {
+                Step::Increment => 4,
+                Step::Decrement => (-4 as i32) as u32,
+            }
+        }
         for (i, channel) in self.channels.iter().enumerate() {
-            println!("Control {:08x}", channel.control.0);
             match channel.control.sync_mode() {
                 SyncMode::Manual if channel.control.start() && channel.control.enabled() => {
-                    transfers.push(Transfer {
+                    transfers.block.push(BlockTransfer {
                         port: ChannelPort::from_value(i as u32),
                         direction: channel.control.direction(),
-                        sync_mode: SyncMode::Manual,
                         size: channel.block_control.block_size(),
-                        step: channel.control.step(),  
-                        address: channel.base,
+                        increment: increment(channel.control.step()),
+                        start: channel.base,
                     });
                 },
                 SyncMode::Request if channel.control.enabled() => {
-                    transfers.push(Transfer {
+                    transfers.block.push(BlockTransfer {
                         port: ChannelPort::from_value(i as u32),
                         direction: channel.control.direction(),
-                        sync_mode: SyncMode::Request,
                         size: channel.block_control.block_size() * channel.block_control.block_count(),
-                        step: channel.control.step(),  
-                        address: channel.base,
+                        increment: increment(channel.control.step()),
+                        start: channel.base,
                     });
                 }
                 SyncMode::LinkedList if channel.control.enabled() => {
-                    todo!();
+                    assert!(ChannelPort::from_value(i as u32) == ChannelPort::Gpu);
+                    transfers.linked.push(LinkedTransfer {
+                        start: channel.base,
+                    });
                 },
                 _ => {}
             }
