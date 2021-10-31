@@ -5,6 +5,8 @@ pub mod ram;
 pub mod dma;
 
 use crate::bits::BitExtract;
+use crate::gpu::Gpu;
+
 use bios::Bios;
 use dma::{
     Dma,
@@ -130,17 +132,19 @@ pub struct Bus {
     ram: Ram,
     dma: Dma,
     transfers: Transfers,
+    gpu: Gpu,
 }
 
 use map::*;
 
 impl Bus {
-    pub fn new(bios: Bios, ram: Ram, dma: Dma) -> Self {
+    pub fn new(bios: Bios, ram: Ram, dma: Dma, gpu: Gpu) -> Self {
         Self {
             bios,
             ram,
             dma,
             transfers: Transfers::new(),
+            gpu,
         }
     }
 
@@ -232,7 +236,7 @@ impl Bus {
                 self.execute_transfers();
             },
             GPU_START..=GPU_END => {
-                // TODO.
+                self.gpu.store(address - GPU_START, value);
             },
              _ => {
                  panic!("Trying to store invalid address to bus at {:08x}", address)
@@ -284,14 +288,14 @@ impl Bus {
         }
     }
 
+    /// Linked list DMA transfer.
     fn to_port_linked_transfer(&mut self, transfer: &LinkedTransfer) {
         let mut address = transfer.start & 0x1ffffc;
         loop {
             let header = self.ram.load::<Word>(address);
             for _ in 0..header.extract_bits(24, 31) {
                 address = address.wrapping_add(4) & 0x1ffffc;
-                let _value = self.ram.load::<Word>(address);
-                println!("Value {:08x}", _value);
+                self.gpu.gp0_store(self.ram.load::<Word>(address));
             }
             if header.extract_bit(23) == 1 {
                 break;
