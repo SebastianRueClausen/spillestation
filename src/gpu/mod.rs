@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
+mod fifo;
+
 use crate::util::bits::BitExtract;
+use fifo::Fifo;
 
 /// How many Hz to output.
 enum VideoMode {
@@ -204,29 +207,28 @@ impl Status {
     }
 }
 
-/// Store a sinlge GPU command.
-struct CommandBuffer {
-    /// longest command is 12 words long.
-    buffer: [u32; 12],
-    /// Number of words used in the buffer.
-    used: u32,
-}
-
-impl CommandBuffer {
-    fn new() -> Self {
-        Self {
-            buffer: [0x0; 12],
-            used: 0,
-        }
-    }
-
-    fn read_word(&self, index: u32) -> u32 {
-        assert!(index < self.used);
-        self.buffer[index as usize]
-    }
-}
+/// Number of words in each GP0 command.
+const GP0_CMD_LEN: [u8; 0x100] = [
+    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    4, 4, 4, 4, 7, 7, 7, 7, 5, 5, 5, 5, 9, 9, 9, 9,
+    6, 6, 6, 6, 9, 9, 9, 9, 8, 8, 8, 8, 12, 12, 12, 12,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    3, 3, 3, 3, 4, 4, 4, 4, 2, 2, 2, 2, 3, 3, 3, 3,
+    2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+];
 
 pub struct Gpu {
+    fifo: Fifo,
     status: Status,
     /// Mirros textured rectangles on the x axis if true,
     rect_tex_x_flip: bool,
@@ -260,6 +262,7 @@ impl Gpu {
     pub fn new() -> Self {
         // Sets the reset values.
         Self {
+            fifo: Fifo::new(),
             status: Status::new(0x14802000),
             rect_tex_x_flip: false,
             rect_tex_y_flip: false,
@@ -296,16 +299,12 @@ impl Gpu {
 
     /// Store command in GP0 register. This is called from DMA linked transfer directly.
     pub fn gp0_store(&mut self, value: u32) {
-        match value.extract_bits(24, 31) {
-            // NOP command.
-            0x0 => {},
-            0xe1 => self.gp0_draw_mode_setting(value),
-            0xe2 => self.gp0_texture_window_setting(value),
-            0xe3 => self.gp0_draw_area_top_left(value),
-            0xe4 => self.gp0_draw_area_bottom_right(value),
-            0xe5 => self.gp0_draw_offset(value),
-            0xe6 => self.gp0_mask_bit_setting(value),
-            _ => unimplemented!("Invalid GP0 command {:08x}.", value),
+        self.fifo.push(value);
+        let len = GP0_CMD_LEN[self.fifo[0].extract_bits(24, 31) as usize];
+        println!("{} = {}", self.fifo.len(), len);
+        if self.fifo.len() == len as usize {
+            self.gp0_exec(value);
+            self.fifo.clear();
         }
     }
 
@@ -318,6 +317,28 @@ impl Gpu {
             0x7 => self.gp1_vertical_display_range(value),
             0x8 => self.gp1_display_mode(value),
             _ => unimplemented!("Invalid GP1 command {:08x}.", value),
+        }
+    }
+
+    fn gp0_exec(&mut self, value: u32) {
+        let command = self.fifo[0].extract_bits(24, 31);
+        match command & 0xe0 {
+            0x20 => println!("Draw polygon"),
+            0x40 => println!("Draw line"),
+            0x60 => println!("Draw rectangle"),
+            0x80 => println!("Copy VRAM to VRAM"),
+            0xa0 => println!("Copy RAM to VRAM"),
+            0xc0 => println!("Copy VRAM to RAM"),
+            _ => match command {
+                0x0 => {},
+                0xe1 => self.gp0_draw_mode_setting(value),
+                0xe2 => self.gp0_texture_window_setting(value),
+                0xe3 => self.gp0_draw_area_top_left(value),
+                0xe4 => self.gp0_draw_area_bottom_right(value),
+                0xe5 => self.gp0_draw_offset(value),
+                0xe6 => self.gp0_mask_bit_setting(value),
+                _ => unimplemented!("Invalid GP0 command {:08x}.", value),
+            }
         }
     }
 
