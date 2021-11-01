@@ -23,7 +23,7 @@
 //!
 
 use std::fmt;
-use crate::bits::BitExtract;
+use crate::util::bits::BitExtract;
 
 #[derive(Clone, Copy)]
 pub struct Opcode(u32);

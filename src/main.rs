@@ -1,7 +1,7 @@
 mod cpu;
 mod gpu;
 mod memory;
-mod bits;
+mod util;
 
 use memory::*;
 use cpu::*;

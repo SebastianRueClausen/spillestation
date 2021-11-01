@@ -2,8 +2,8 @@
 
 mod cop0;
 mod opcode;
-use std::fmt;
 
+use std::fmt;
 use super::memory::{AddrUnit, Bus, Byte, HalfWord, Word};
 use cop0::{Cop0, Exception};
 use opcode::Opcode;

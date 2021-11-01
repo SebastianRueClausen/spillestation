@@ -1,7 +1,7 @@
 //! Coprocessor 0/System coprocessor. Takes care of exceptions.
 //! Also takes care virtual memory, but that isn't used by the playstation 1.
 
-use crate::bits::BitExtract;
+use crate::util::bits::BitExtract;
 
 #[allow(dead_code)]
 pub enum Exception {

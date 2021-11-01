@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
-use crate::bits::BitExtract;
+use crate::util::bits::BitExtract;
 
 /// How many Hz to output.
 enum VideoMode {
     /// 60 Hz.
-    Ntsc = 0,
+    Ntsc = 60,
     /// 50 Hz.
-    Pal = 1,
+    Pal = 50,
 }
 
 impl VideoMode {
@@ -40,9 +40,7 @@ impl DmaDirection {
 
 /// Interlace output split into two fields.
 enum InterlaceField {
-    /// Bottom field is even lines.
     Bottom = 0,
-    /// Top field is odd lines.
     Top = 1,
 }
 
@@ -57,10 +55,8 @@ impl InterlaceField {
 
 /// Number of bits used to represent 1 pixel.
 enum ColorDepth {
-    /// 15 bits pr. pixel.
-    B15 = 0,
-    /// 24 bits pr. pixel.
-    B24 = 1,
+    B15 = 15,
+    B24 = 24,
 }
 
 impl ColorDepth {
@@ -74,12 +70,9 @@ impl ColorDepth {
 
 /// Number of bits used to represent 1 texture pixel.
 enum TextureDepth {
-    /// 4 bits pr. pixel.
-    B4 = 0,
-    /// 8 bits pr. pixel.
-    B8 = 1,
-    /// 15 bits pr. pixel.
-    B15 = 2,
+    B4 = 4,
+    B8 = 8,
+    B15 = 15,
     
 }
 
@@ -208,6 +201,28 @@ impl Status {
     /// Direction of DMA request.
     fn dma_direction(self) -> DmaDirection {
         DmaDirection::from_value(self.0.extract_bits(29, 30))
+    }
+}
+
+/// Store a sinlge GPU command.
+struct CommandBuffer {
+    /// longest command is 12 words long.
+    buffer: [u32; 12],
+    /// Number of words used in the buffer.
+    used: u32,
+}
+
+impl CommandBuffer {
+    fn new() -> Self {
+        Self {
+            buffer: [0x0; 12],
+            used: 0,
+        }
+    }
+
+    fn read_word(&self, index: u32) -> u32 {
+        assert!(index < self.used);
+        self.buffer[index as usize]
     }
 }
 

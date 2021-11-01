@@ -4,7 +4,7 @@ pub mod bios;
 pub mod ram;
 pub mod dma;
 
-use crate::bits::BitExtract;
+use crate::util::bits::BitExtract;
 use crate::gpu::Gpu;
 
 use bios::Bios;

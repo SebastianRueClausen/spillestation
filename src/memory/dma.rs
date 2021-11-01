@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use crate::bits::BitExtract;
+use crate::util::bits::BitExtract;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ChannelPort {
