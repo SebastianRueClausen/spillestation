@@ -1,9 +1,19 @@
 #![allow(dead_code)]
 
 mod fifo;
+mod primitive;
+mod vram;
+mod rasterize;
+mod command;
 
 use crate::util::bits::BitExtract;
 use fifo::Fifo;
+use vram::Vram;
+use primitive::{
+    Vertex,
+    Point,
+    //Color,
+};
 
 /// How many Hz to output.
 enum VideoMode {
@@ -76,7 +86,6 @@ enum TextureDepth {
     B4 = 4,
     B8 = 8,
     B15 = 15,
-    
 }
 
 impl TextureDepth {
@@ -94,12 +103,6 @@ impl TextureDepth {
 struct Status(u32);
 
 impl Status {
-    fn new(value: u32) -> Self {
-        Self {
-            0: value,
-        }
-    }
-
     /// Texture page x base coordinate. N * 64.
     fn texture_page_x_base(self) -> u32 {
         self.0.extract_bits(0, 3) * 64
@@ -161,7 +164,6 @@ impl Status {
         240 * (self.0.extract_bit(19) + 1)
     }
 
-
     fn video_mode(self) -> VideoMode {
         VideoMode::from_value(self.0.extract_bit(20) == 1)
     }
@@ -173,9 +175,9 @@ impl Status {
 
     /// Draw interlaced instead of progressive.
     fn vertical_interlace_enabled(self) -> bool {
-        self.0.extract_bit(22) == 1 
+        self.0.extract_bit(22) == 1
     }
-   
+
     fn display_enabled(self) -> bool {
         self.0.extract_bit(23) == 1
     }
@@ -209,26 +211,20 @@ impl Status {
 
 /// Number of words in each GP0 command.
 const GP0_CMD_LEN: [u8; 0x100] = [
-    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    4, 4, 4, 4, 7, 7, 7, 7, 5, 5, 5, 5, 9, 9, 9, 9,
-    6, 6, 6, 6, 9, 9, 9, 9, 8, 8, 8, 8, 12, 12, 12, 12,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    3, 3, 3, 3, 4, 4, 4, 4, 2, 2, 2, 2, 3, 3, 3, 3,
-    2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    4, 4, 4, 4, 7, 7, 7, 7, 5, 5, 5, 5, 9, 9, 9, 9, 6, 6, 6, 6, 9, 9, 9, 9, 8, 8, 8, 8, 12, 12, 12,
+    12, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 3, 3, 3, 3, 4, 4, 4, 4, 2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3,
+    3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1,
 ];
 
 pub struct Gpu {
     fifo: Fifo,
+    vram: Vram,
     status: Status,
     /// Mirros textured rectangles on the x axis if true,
     rect_tex_x_flip: bool,
@@ -263,7 +259,8 @@ impl Gpu {
         // Sets the reset values.
         Self {
             fifo: Fifo::new(),
-            status: Status::new(0x14802000),
+            vram: Vram::new(),
+            status: Status(0x14802000),
             rect_tex_x_flip: false,
             rect_tex_y_flip: false,
             tex_window_x_mask: 0x0,
@@ -301,7 +298,6 @@ impl Gpu {
     pub fn gp0_store(&mut self, value: u32) {
         self.fifo.push(value);
         let len = GP0_CMD_LEN[self.fifo[0].extract_bits(24, 31) as usize];
-        println!("{} = {}", self.fifo.len(), len);
         if self.fifo.len() == len as usize {
             self.gp0_exec(value);
             self.fifo.clear();
@@ -322,24 +318,40 @@ impl Gpu {
 
     fn gp0_exec(&mut self, value: u32) {
         let command = self.fifo[0].extract_bits(24, 31);
-        match command & 0xe0 {
-            0x20 => println!("Draw polygon"),
-            0x40 => println!("Draw line"),
-            0x60 => println!("Draw rectangle"),
-            0x80 => println!("Copy VRAM to VRAM"),
-            0xa0 => println!("Copy RAM to VRAM"),
-            0xc0 => println!("Copy VRAM to RAM"),
-            _ => match command {
-                0x0 => {},
-                0xe1 => self.gp0_draw_mode_setting(value),
-                0xe2 => self.gp0_texture_window_setting(value),
-                0xe3 => self.gp0_draw_area_top_left(value),
-                0xe4 => self.gp0_draw_area_bottom_right(value),
-                0xe5 => self.gp0_draw_offset(value),
-                0xe6 => self.gp0_mask_bit_setting(value),
-                _ => unimplemented!("Invalid GP0 command {:08x}.", value),
-            }
+        // println!("{:08x}", command);
+        match command{
+            0x0 => {}
+            0xe1 => self.gp0_draw_mode_setting(value),
+            0xe2 => self.gp0_texture_window_setting(value),
+            0xe3 => self.gp0_draw_area_top_left(value),
+            0xe4 => self.gp0_draw_area_bottom_right(value),
+            0xe5 => self.gp0_draw_offset(value),
+            0xe6 => self.gp0_mask_bit_setting(value),
+            // Draw commands.
+            0x28 => self.gp0_four_point_poly(),
+            _ => unimplemented!("Invalid GP0 command {:08x}.", command),
         }
+    }
+
+    fn gp0_three_point_poly(&mut self) {
+        let mut verts = [Vertex::default(); 3];
+        for vertex in verts.iter_mut() {
+            vertex.point = Point::from_cmd(self.fifo.pop());
+            vertex.point.x += i32::from(self.draw_x_offset);
+            vertex.point.y += i32::from(self.draw_y_offset);
+        }
+        self.draw_triangle(&verts[0], &verts[1], &verts[2]);
+    }
+
+    fn gp0_four_point_poly(&mut self) {
+        let mut verts = [Vertex::default(); 4];
+        for vertex in verts.iter_mut() {
+            vertex.point = Point::from_cmd(self.fifo.pop());
+            vertex.point.x += i32::from(self.draw_x_offset);
+            vertex.point.y += i32::from(self.draw_y_offset);
+        }
+        self.draw_triangle(&verts[0], &verts[1], &verts[2]);
+        self.draw_triangle(&verts[1], &verts[2], &verts[3]);
     }
 
     /// [GP0 - Draw Mode Setting] - Set various flags in the GPU.
@@ -355,7 +367,7 @@ impl Gpu {
         self.rect_tex_x_flip = value.extract_bit(13) == 1;
     }
 
-    /// [GP0 - Texture window setting].
+    //p [GP0 - Texture window setting].
     ///  - [0..4] - Texture window mask x.
     ///  - [5..9] - Texture window mask y.
     ///  - [10..14] - Texture window offset x.
@@ -383,8 +395,8 @@ impl Gpu {
     /// - [10..18] - Draw area top.
     /// TODO this differs between GPU versions.
     fn gp0_draw_area_top_left(&mut self, value: u32) {
-       self.draw_area_left = value.extract_bits(0, 9) as u16;
-       self.draw_area_top = value.extract_bits(10, 18) as u16;
+        self.draw_area_left = value.extract_bits(0, 9) as u16;
+        self.draw_area_top = value.extract_bits(10, 18) as u16;
     }
 
     /// [GP0 - Set draw area bottom right].
@@ -392,8 +404,8 @@ impl Gpu {
     /// - [10..18] - Draw area bottom.
     /// TODO this differs between GPU versions.
     fn gp0_draw_area_bottom_right(&mut self, value: u32) {
-       self.draw_area_right = value.extract_bits(0, 9) as u16;
-       self.draw_area_bottom = value.extract_bits(10, 18) as u16;
+        self.draw_area_right = value.extract_bits(0, 9) as u16;
+        self.draw_area_bottom = value.extract_bits(10, 18) as u16;
     }
 
     /// [GP0 - Set drawing offset].
@@ -419,7 +431,7 @@ impl Gpu {
     ///  - [0..1] - DMA direction.
     ///  - [2..23] - Not used.
     fn gp1_dma_direction(&mut self, value: u32) {
-       self.status.0 |= value.extract_bits(0, 1) << 29; 
+        self.status.0 |= value.extract_bits(0, 1) << 29;
     }
 
     /// [GP1 - Start display area in VRAM] - What area of the VRAM to display.
@@ -427,8 +439,8 @@ impl Gpu {
     ///  - [10..18] - y (address in VRAM).
     ///  - [19..23] - Not used.
     fn gp1_start_display_area(&mut self, value: u32) {
-       self.display_vram_x_start = value.extract_bits(0, 9) as u16;
-       self.display_vram_y_start = value.extract_bits(10, 18) as u16;
+        self.display_vram_x_start = value.extract_bits(0, 9) as u16;
+        self.display_vram_y_start = value.extract_bits(10, 18) as u16;
     }
 
     /// [GP1 - Horizontal display range] - Sets the vertical range of the display area in screen.
@@ -446,7 +458,6 @@ impl Gpu {
         self.display_line_start = value.extract_bits(0, 11) as u16;
         self.display_line_end = value.extract_bits(12, 23) as u16;
     }
-
 
     /// [GP1 - Display Mode] - Sets display mode, video mode, resolution and interlacing.
     ///  - [0..1] - Horizontal resolution 1.
