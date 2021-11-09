@@ -4,7 +4,6 @@ mod fifo;
 mod primitive;
 mod vram;
 mod rasterize;
-mod command;
 
 use crate::util::bits::BitExtract;
 use fifo::Fifo;
