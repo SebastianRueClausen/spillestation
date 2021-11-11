@@ -2,8 +2,8 @@
 
 mod fifo;
 mod primitive;
-mod vram;
 mod rasterize;
+pub mod vram;
 
 use crate::util::bits::BitExtract;
 use fifo::Fifo;

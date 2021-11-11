@@ -1,7 +1,6 @@
-
 use super::primitive::Point;
 
-const VRAM_SIZE: usize = 1024 * 1024;
+pub const VRAM_SIZE: usize = 1024 * 1024;
 
 /// VRAM consists of 512 lines of 2048 bytes each, which equals 1 megabyte.
 pub struct Vram {
@@ -36,6 +35,10 @@ impl Vram {
         println!("{:?}", offset);
         self.data[offset + 0] = (value >> 0) as u8;
         self.data[offset + 1] = (value >> 8) as u8;
+    }
+
+    pub fn raw_data(&self) -> &[u8] {
+        &self.data[..]
     }
 }
 

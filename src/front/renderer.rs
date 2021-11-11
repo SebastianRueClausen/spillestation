@@ -4,6 +4,117 @@ use ultraviolet::{
 };
 use winit::window::Window;
 use wgpu::util::DeviceExt;
+use crate::gpu::vram::{
+    VRAM_SIZE,
+    Vram,
+};
+
+struct ComputePipeline {
+    input_buffer: wgpu::Buffer,    
+    bind_group: wgpu::BindGroup,
+    pipeline: wgpu::ComputePipeline,
+}
+
+impl ComputePipeline {
+    fn new(device: &wgpu::Device, render_texture: &RenderTexture) -> Self {
+        let shader = device.create_shader_module(
+            &wgpu::include_spirv!("compute.spv"),
+        );
+        let input_buffer = device.create_buffer(
+            &wgpu::BufferDescriptor {
+                label: Some("Compute Storage Buffer"),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+                size: VRAM_SIZE as u64,
+            },
+        );
+        let bind_group_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("Compute Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage {
+                                read_only: true,
+                            },
+                            has_dynamic_offset: true,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float {
+                                filterable: true,
+                            },
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            },
+        );
+        let bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("VRAM Input"),
+                layout: &bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: input_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&render_texture.view),
+                    },
+                ],
+            }
+        );
+        let pipeline_layout = device.create_pipeline_layout(
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("Compute Shader Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            },
+        );
+        let pipeline = device.create_compute_pipeline(
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("Compute pipeline"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: "main",
+            },
+        );
+        Self {
+            input_buffer,
+            bind_group,
+            pipeline,
+        }
+    }
+
+    fn generate_render_texture(
+        &mut self,
+        vram: &Vram,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        render_texture: &RenderTexture,
+    ) {
+        queue.write_buffer(&self.input_buffer, 0, vram.raw_data());
+        let mut pass = encoder.begin_compute_pass(
+            &wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+            },
+        );
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.dispatch(render_texture.extent.width, render_texture.extent.height, 1);
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ScissorRect {
@@ -13,7 +124,7 @@ struct ScissorRect {
     height: u32,
 }
 
-struct Renderer {
+struct RenderPipeline {
     vertex_buffer: wgpu::Buffer, 
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -23,7 +134,7 @@ struct Renderer {
     scissor_rect: ScissorRect,
 }
 
-impl Renderer {
+impl RenderPipeline {
     fn new(
         device: &wgpu::Device,
         surface_size: SurfaceSize,
@@ -85,7 +196,7 @@ impl Renderer {
         );
         let bind_group_layout = device.create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
-                label: Some("Bind Group Layout"),
+                label: Some("Render Bind Group Layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -123,7 +234,7 @@ impl Renderer {
         );
         let bind_group = device.create_bind_group(
             &wgpu::BindGroupDescriptor {
-                label: Some("Bind Group"),
+                label: Some("Render Bind Group"),
                 layout: &bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -285,7 +396,8 @@ pub struct Context {
     surface_format: wgpu::TextureFormat,
     surface_size: SurfaceSize,
     render_texture: RenderTexture,
-    renderer: Renderer,
+    render_pipeline: RenderPipeline,
+    compute_pipeline: ComputePipeline,
 }
 
 impl Context {
@@ -327,7 +439,8 @@ impl Context {
             },
         );
         let render_texture = RenderTexture::new(&device, (width, height));
-        let renderer = Renderer::new(&device, surface_size, surface_format, &render_texture);
+        let render_pipeline = RenderPipeline::new(&device, surface_size, surface_format, &render_texture);
+        let compute_pipeline = ComputePipeline::new(&device, &render_texture);
         Self {
             device,
             queue,
@@ -335,7 +448,8 @@ impl Context {
             surface_format,
             surface_size,
             render_texture,
-            renderer,
+            render_pipeline,
+            compute_pipeline,
         }
     }
 
@@ -356,8 +470,7 @@ impl Context {
                     present_mode: wgpu::PresentMode::Fifo,
                 },
             );
-            // Resize renderer.
-            self.renderer.resize(&self.queue, surface_size, &self.render_texture);
+            self.render_pipeline.resize(&self.queue, surface_size, &self.render_texture);
         }
     }
 }
