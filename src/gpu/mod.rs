@@ -5,9 +5,9 @@ mod primitive;
 mod rasterize;
 pub mod vram;
 
+pub use vram::Vram;
 use crate::util::bits::BitExtract;
 use fifo::Fifo;
-use vram::Vram;
 use primitive::{
     Vertex,
     Point,
@@ -301,6 +301,10 @@ impl Gpu {
             self.gp0_exec(value);
             self.fifo.clear();
         }
+    }
+
+    pub fn vram(&self) -> &Vram {
+        &self.vram
     }
 
     fn gp1_store(&mut self, value: u32) {

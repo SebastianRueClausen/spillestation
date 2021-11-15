@@ -90,7 +90,7 @@ pub struct Cpu {
 const PC_START_ADDRESS: u32 = 0xbfc00000;
 
 impl Cpu {
-    pub fn new(bus: Bus) -> Self {
+    pub fn new() -> Self {
         // Reset values of the CPU.
         Cpu {
             last_pc: 0x0,
@@ -104,7 +104,7 @@ impl Cpu {
             registers: [0x0; 32],
             load_slot: DelaySlot::default(),
             icache: [CacheLine::default(); 1024],
-            bus,
+            bus: Bus::new(),
             cop0: Cop0::new(),
             cycle_count: 0,
             // Debug.
@@ -253,6 +253,10 @@ impl Cpu {
             println!("{} cache hit - {} cache miss", self.cache_hit, self.cache_miss);
             panic!("ONE BILLION INSTRUCTIONS!!!!");
         }
+    }
+
+    pub fn bus(&self) -> &Bus {
+        &self.bus
     }
 
     /// Execute opcode.

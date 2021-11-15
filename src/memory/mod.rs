@@ -5,7 +5,10 @@ pub mod ram;
 pub mod dma;
 
 use crate::util::bits::BitExtract;
-use crate::gpu::Gpu;
+use crate::gpu::{
+    Gpu,
+    Vram,
+};
 
 use bios::Bios;
 use dma::{
@@ -138,13 +141,13 @@ pub struct Bus {
 use map::*;
 
 impl Bus {
-    pub fn new(bios: Bios, ram: Ram, dma: Dma, gpu: Gpu) -> Self {
+    pub fn new() -> Self {
         Self {
-            bios,
-            ram,
-            dma,
+            bios: Bios::new(include_bytes!("../SCPH1001.BIN")),
+            ram: Ram::new(),
+            dma: Dma::new(),
             transfers: Transfers::new(),
-            gpu,
+            gpu: Gpu::new(),
         }
     }
 
@@ -242,6 +245,10 @@ impl Bus {
                  panic!("Trying to store invalid address to bus at {:08x}", address)
             },
         }
+    }
+
+    pub fn vram(&self) -> &Vram {
+       self.gpu.vram() 
     }
 
     fn execute_transfers(&mut self) {
