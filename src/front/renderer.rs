@@ -14,7 +14,7 @@ impl ComputePipeline {
         let shader = device.create_shader_module(&wgpu::include_spirv!("shader/comp.spv"));
         let input_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Compute Storage Buffer"),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
             size: VRAM_SIZE as u64,
         });
@@ -26,7 +26,7 @@ impl ComputePipeline {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: true,
+                        has_dynamic_offset: false,
                         min_binding_size: None,
                     },
                     count: None,
@@ -92,7 +92,7 @@ impl ComputePipeline {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ScissorRect {
     x: u32,
     y: u32,
@@ -175,15 +175,26 @@ impl RenderPipeline {
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::ReadOnly,
-                        format: RENDER_TEXTURE_FORMAT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float {
+                            filterable: true,
+                        },
+                        multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler {
+                        filtering: true,
+                        comparison: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -204,6 +215,10 @@ impl RenderPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&texture_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
                     resource: uniform_buffer.as_entire_binding(),
                 },
             ],
@@ -272,6 +287,7 @@ impl RenderPipeline {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        println!("{:?}", self.scissor_rect);
         render_pass.set_scissor_rect(
             self.scissor_rect.x,
             self.scissor_rect.y,
@@ -305,7 +321,7 @@ struct RenderTexture {
     extent: wgpu::Extent3d,
 }
 
-const RENDER_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uint;
+const RENDER_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 impl RenderTexture {
     fn new(device: &wgpu::Device, surface_size: (u32, u32)) -> Self {
@@ -322,7 +338,9 @@ impl RenderTexture {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: RENDER_TEXTURE_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::STORAGE_BINDING,
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
@@ -462,23 +480,28 @@ fn generate_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect)
             .min(screen.y / texture.y)
             .max(1.0)
             .floor();
-    let ss = scale / screen;
-    let st = Vec2::new(
+    let scaled = scale * screen;
+    let scaled_screen = scaled / screen;
+    let scaled_texture = Vec2::new(
         (texture.x / screen.x - 1.0).max(0.0),
         (1.0 - texture.y / screen.y).min(0.0),
     );
-    let clip = (screen - scale) * 0.5;
     let translation = Mat4::from([
-        [ss.x, 0.0, 0.0, 0.0],
-        [0.0, -ss.y, 0.0, 0.0],
+        [scaled_screen.x, 0.0, 0.0, 0.0],
+        [0.0, -scaled_screen.y, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
-        [st.x, st.y, 0.0, 1.0],
+        [scaled_texture.x, scaled_texture.y, 0.0, 1.0],
     ]);
+    let scaled = Vec2::new(
+        scaled.x.min(screen.x),
+        scaled.y.min(screen.y),
+    );
+    let clip = (screen - scaled) * 0.5;
     let scissor_rect = ScissorRect {
-        x: scale.x.min(screen.x) as u32,
-        y: scale.y.min(screen.y) as u32,
-        width: clip.x as u32,
-        height: clip.y as u32,
+        x: clip.x as u32,
+        y: clip.y as u32,
+        width: scaled.x as u32,
+        height: scaled.y as u32,
     };
     (translation, scissor_rect)
 }

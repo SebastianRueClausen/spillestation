@@ -5,7 +5,7 @@ layout(location = 1) in vec2 in_texcoord;
 
 layout(location = 0) out vec2 out_texcoord;
 
-layout(set = 0, binding = 1) uniform Block {
+layout(set = 0, binding = 2) uniform Block {
 	mat4x4 transform;
 };
 

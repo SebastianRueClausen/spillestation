@@ -3,8 +3,8 @@
 layout (set = 0, binding = 0) uniform Vram {
 	uint vram[(1024 * 1024) / 4];
 };
-layout (set = 0, binding = 1, rgba8ui) uniform writeonly uimage2D tex;
+layout (set = 0, binding = 1, rgba16f) uniform writeonly image2D tex;
 
 void main() {
-	imageStore(tex, ivec2(gl_WorkGroupID.xy), uvec4(1.0, 1.0, 0.0, 1.0));
+	imageStore(tex, ivec2(gl_WorkGroupID.xy), vec4(1.0, 0.0, 0.0, 1.0));
 }
