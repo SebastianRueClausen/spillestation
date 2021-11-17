@@ -249,9 +249,8 @@ impl Cpu {
         // Every cycle takes 1 cycle.
         self.cycle_count += 1;
 
-        if self.cycle_count == 1000000000 {
+        if self.cycle_count == 1000000 {
             println!("{} cache hit - {} cache miss", self.cache_hit, self.cache_miss);
-            panic!("ONE BILLION INSTRUCTIONS!!!!");
         }
     }
 

@@ -324,8 +324,8 @@ struct RenderTexture {
 const RENDER_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 impl RenderTexture {
-    fn new(device: &wgpu::Device, surface_size: (u32, u32)) -> Self {
-        let (width, height) = surface_size;
+    fn new(device: &wgpu::Device, surface_size: SurfaceSize) -> Self {
+        let SurfaceSize { width, height } = surface_size;
         let extent = wgpu::Extent3d {
             width,
             height,
@@ -407,7 +407,7 @@ impl RenderCtx {
                 present_mode: wgpu::PresentMode::Fifo,
             },
         );
-        let render_texture = RenderTexture::new(&device, (width, height));
+        let render_texture = RenderTexture::new(&device, surface_size);
         let render_pipeline =
             RenderPipeline::new(&device, surface_size, surface_format, &render_texture);
         let compute_pipeline = ComputePipeline::new(&device, &render_texture);
