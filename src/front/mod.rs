@@ -12,12 +12,13 @@ use winit::{
     },
 };
 use renderer::{
-    Renderer,
+    RenderCtx,
     SurfaceSize,
 };
 use crate::cpu::Cpu;
 
 mod renderer;
+mod gui;
 
 pub fn run() {
     env_logger::init();
@@ -28,7 +29,7 @@ pub fn run() {
         .with_title("Spillestation")
         .build(&event_loop)
         .unwrap();
-    let mut renderer = Renderer::new(&window);
+    let mut renderer = RenderCtx::new(&window);
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
         match event {
@@ -60,12 +61,15 @@ pub fn run() {
                     },
                     WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                         renderer.resize(SurfaceSize::new(new_inner_size.width, new_inner_size.height));
+                        renderer.gui.set_scale_factor(window.scale_factor() as f32);
                     },
-                    _ => {},
+                    _ => {
+                        renderer.gui.handle_window_event(event); 
+                    },
                 }
             },
             Event::RedrawRequested(_) => {
-                renderer.render(cpu.bus().vram());  
+                renderer.render(&window, cpu.bus().vram());
             },
             _ => {
             },

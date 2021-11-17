@@ -6,5 +6,5 @@ layout (set = 0, binding = 0) uniform Vram {
 layout (set = 0, binding = 1, rgba16f) uniform writeonly image2D tex;
 
 void main() {
-	imageStore(tex, ivec2(gl_WorkGroupID.xy), vec4(1.0, 0.0, 0.0, 1.0));
+	imageStore(tex, ivec2(gl_WorkGroupID.xy), vec4(1.0, 1.0, 0.0, 1.0));
 }

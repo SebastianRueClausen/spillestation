@@ -2,6 +2,7 @@ use crate::gpu::vram::{Vram, VRAM_SIZE};
 use ultraviolet::{Mat4, Vec2};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
+use super::gui::GuiCtx;
 
 struct ComputePipeline {
     input_buffer: wgpu::Buffer,
@@ -287,7 +288,6 @@ impl RenderPipeline {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        println!("{:?}", self.scissor_rect);
         render_pass.set_scissor_rect(
             self.scissor_rect.x,
             self.scissor_rect.y,
@@ -353,8 +353,8 @@ impl RenderTexture {
 
 #[derive(Clone, Copy)]
 pub struct SurfaceSize {
-    width: u32,
-    height: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl SurfaceSize {
@@ -363,18 +363,19 @@ impl SurfaceSize {
     }
 }
 
-pub struct Renderer {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+pub struct RenderCtx {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub surface_format: wgpu::TextureFormat,
+    pub surface_size: SurfaceSize,
     surface: wgpu::Surface,
-    surface_format: wgpu::TextureFormat,
-    surface_size: SurfaceSize,
     render_texture: RenderTexture,
     render_pipeline: RenderPipeline,
     compute_pipeline: ComputePipeline,
+    pub gui: GuiCtx,
 }
 
-impl Renderer {
+impl RenderCtx {
     pub fn new(window: &Window) -> Self {
         let (width, height) = (window.inner_size().width, window.inner_size().height);
         let instance = wgpu::Instance::new(wgpu::Backends::all());
@@ -410,6 +411,12 @@ impl Renderer {
         let render_pipeline =
             RenderPipeline::new(&device, surface_size, surface_format, &render_texture);
         let compute_pipeline = ComputePipeline::new(&device, &render_texture);
+        let gui = GuiCtx::new(
+            window.scale_factor() as f32,
+            &device,
+            surface_format,
+            surface_size,
+        );
         Self {
             device,
             queue,
@@ -419,10 +426,11 @@ impl Renderer {
             render_texture,
             render_pipeline,
             compute_pipeline,
+            gui,
         }
     }
 
-    pub fn render(&mut self, vram: &Vram) {
+    pub fn render(&mut self, window: &Window, vram: &Vram) {
         let frame = self
             .surface
             .get_current_texture()
@@ -434,9 +442,11 @@ impl Renderer {
                 _ => panic!("Surface Error {}", err),
             })
             .unwrap();
+        self.gui.prepare_frame(window);
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("") });
+        // Generate render texture.
         self.compute_pipeline.compute_render_texture(
             vram,
             &mut encoder,
@@ -446,7 +456,10 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // Draw render texture.
         self.render_pipeline.render(&mut encoder, &view);
+        // Draw GUI.
+        self.gui.render(&mut encoder, &view, &self.device, &self.queue).unwrap();
         self.queue.submit(Some(encoder.finish()));
         frame.present();
     }
@@ -468,8 +481,8 @@ impl Renderer {
         if surface_size.width != 0 && surface_size.height != 0 {
             self.surface_size = surface_size;
             self.configure_surface();
-            self.render_pipeline
-                .resize(&self.queue, surface_size, &self.render_texture);
+            self.render_pipeline.resize(&self.queue, surface_size, &self.render_texture);
+            self.gui.resize(surface_size);
         }
     }
 }
