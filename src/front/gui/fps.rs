@@ -1,35 +1,40 @@
 use std::time::{Instant, Duration};
 use super::app::App;
 
-/// How many times the counter updates a second.
-const UPDATE_RATE: u64 = 10;
+const ALPHA: f64 = 0.7;
 
-/// Duration between updates.
-const UPDATE_INTERVAL: Duration = Duration::from_millis(UPDATE_RATE * 10);
-
-/// Simple FPS counter.
 pub struct FrameCounter {
-    /// Last time the it was updated.
-    last: Instant,
-    /// How many frams since last update.
+    average: f64,
     frames: u64,
-    /// The number being displayed on screen.
-    display: u64,
+    last: Instant,
+    show: String,
+}
+
+impl FrameCounter {
+    pub fn new() -> Self {
+        Self {
+            average: 60.0,
+            frames: 0,
+            last: Instant::now(),
+            show: String::from(""),
+        }
+    }
 }
 
 impl App for FrameCounter {
     fn update(&mut self, ui: &mut egui::Ui) {
-        self.frames += 1; 
+        self.frames += 1;
         let now = Instant::now();
-        if now.duration_since(self.last) > UPDATE_INTERVAL {
+        if now.duration_since(self.last) > Duration::from_secs(1) {
             self.last = now;
-            self.display = self.frames * UPDATE_RATE;
+            self.average = ALPHA * self.average + (1.0 - ALPHA) * self.frames as f64;
+            self.show = format!("{:.2}", self.average);
             self.frames = 0;
         };
         ui.label("Frames Per Second");
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x /= 2.0;
-            ui.label(format!("{}", self.display));
+            ui.label(&self.show);
         });
     }
 
@@ -37,16 +42,6 @@ impl App for FrameCounter {
         egui::Window::new("Frame Rate")
             .open(open)
             .show(ctx, |ui| self.update(ui));
-         
     }
-}
-
-impl FrameCounter {
-    pub fn new() -> Self {
-        Self {
-            last: Instant::now(),
-            frames: 0,
-            display: 0,
-        }
-    }
+    
 }
