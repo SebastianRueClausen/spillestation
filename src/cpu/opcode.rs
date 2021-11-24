@@ -24,6 +24,7 @@
 
 use std::fmt;
 use crate::util::bits::BitExtract;
+use super::REGISTER_NAMES;
 
 #[derive(Clone, Copy)]
 pub struct Opcode(u32);
@@ -97,82 +98,98 @@ impl Opcode {
 
 impl fmt::Display for Opcode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let op = match self.op() {
+        fn reg(reg: u32) -> &'static str {
+            REGISTER_NAMES[reg as usize]
+        }
+        match self.op() {
             0x0 => match self.special() {
-                0x0 => "SLL",
-                0x2 => "SRL",
-                0x3 => "SRA",
-                0x4 => "SLLV",
-                0x6 => "SRLV",
-                0x7 => "SRAV",
-                0x8 => "JR",
-                0x9 => "JALR",
-                0xc => "SYSCALL",
-                0xd => "BREAK",
-                0x10 => "MFHI",
-                0x11 => "MTHI",
-                0x12 => "MFLO",
-                0x13 => "MTLO",
-                0x18 => "MULT",
-                0x19 => "MULTU",
-                0x1a => "DIV",
-                0x1b => "DIVU",
-                0x20 => "ADD",
-                0x21 => "ADDU",
-                0x22 => "SUB",
-                0x23 => "SUBU",
-                0x24 => "AND",
-                0x25 => "OR",
-                0x26 => "XOR",
-                0x27 => "NOR",
-                0x2a => "SLT",
-                0x2b => "SLTU",
-                _ => "Illegal",
+                0x0 => write!(f, "sll ${} ${} {}", reg(self.rt()), reg(self.rd()), self.shift()),
+                0x2 => write!(f, "srl ${} ${} {}", reg(self.rt()), reg(self.rd()), self.shift()),
+                0x3 => write!(f, "sra ${} ${} {}", reg(self.rt()), reg(self.rd()), self.shift()),
+                0x4 => write!(f, "sllv ${} ${} ${}", reg(self.rt()), reg(self.rs()), reg(self.rd())),
+                0x6 => write!(f, "srlv ${} ${} ${}", reg(self.rt()), reg(self.rs()), reg(self.rd())),
+                0x7 => write!(f, "srav ${} ${} ${}", reg(self.rt()), reg(self.rs()), reg(self.rd())),
+                0x8 => write!(f, "jr ${}", reg(self.rs())),
+                0x9 => write!(f, "jalr ${} ${}", reg(self.rs()), reg(self.rd())),
+                0xc => write!(f, "syscall"),
+                0xd => write!(f, "break"),
+                0x10 => write!(f, "mfhi ${}", reg(self.rd())),
+                0x11 => write!(f, "mthi ${}", reg(self.rs())),
+                0x12 => write!(f, "mflo ${}", reg(self.rd())),
+                0x13 => write!(f, "mtlo ${}", reg(self.rs())),
+                0x18 => write!(f, "mult ${} ${}", reg(self.rs()), reg(self.rt())),
+                0x19 => write!(f, "multu ${} ${}", reg(self.rs()), reg(self.rt())),
+                0x1a => write!(f, "div ${} ${}", reg(self.rs()), reg(self.rt())),
+                0x1b => write!(f, "divu ${} ${}", reg(self.rs()), reg(self.rt())),
+                0x20 => write!(f, "add ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                0x21 => write!(f, "addu ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                0x22 => write!(f, "sub ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                0x23 => write!(f, "subu ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                0x24 => write!(f, "and ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                0x25 => write!(f, "or ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                0x26 => write!(f, "xor ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                0x27 => write!(f, "nor ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                0x2a => write!(f, "slt ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                0x2b => write!(f, "sltu ${} ${} ${}", reg(self.rs()), reg(self.rt()), reg(self.rd())),
+                _ => write!(f, "illegal"),
             },
-            0x1 => "BCONDZ",
-            0x2 => "J",
-            0x3 => "JAL",
-            0x4 => "BEQ",
-            0x5 => "BNE",
-            0x6 => "BLEZ",
-            0x7 => "BGTZ",
-            0x8 => "ADDI",
-            0x9 => "ADDIU",
-            0xa => "SLTI",
-            0xb => "SLTIU",
-            0xc => "ANDI",
-            0xd => "ORI",
-            0xe => "XORI",
-            0xf => "LUI",
-            0x10 => "COP0",
-            0x11 => "COP1",
-            0x12 => "COP2",
-            0x13 => "COP3",
-            0x20 => "LB",
-            0x21 => "LH",
-            0x22 => "LWL",
-            0x23 => "LW",
-            0x24 => "LBU",
-            0x25 => "LHU",
-            0x26 => "LWR",
-            0x28 => "SB",
-            0x29 => "SH",
-            0x2a => "SWL",
-            0x2b => "SW",
-            0x2e => "SWR",
-            0x30 => "LWC0",
-            0x31 => "LWC1",
-            0x32 => "LWC2",
-            0x33 => "LWC3",
-            0x38 => "SWC0",
-            0x39 => "SWC1",
-            0x3a => "SWC2",
-            0x3b => "SWC3",
-            _ => "Illegal",
-        };
-        // TODO: Add more info.
-        write!(f,"op: {}, imm: {:0x}, shift: {:0x}, target: {}, source: {}, destination: {}",
-            op, self.imm(), self.shift(), self.rt(), self.rs(), self.rd()
-        )
+            0x1 => {
+                let op = if self.set_ra_on_branch() {
+                    if self.bgez() == 1 {
+                        "bgezal"
+                    } else {
+                        "bltzal"
+                    }
+                } else {
+                    if self.bgez() == 1 {
+                        "bgez" 
+                    } else {
+                        "bltz"       
+                    }
+                };
+                write!(f, "{} ${} {}", op, reg(self.rs()), self.signed_imm())
+            },
+            0x2 => write!(f, "j {:08x}", self.target()),
+            0x3 => write!(f, "jal {:08x}", self.target()),
+            0x4 => write!(f, "beq ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x5 => write!(f, "bne ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x6 => write!(f, "blez ${} {}", reg(self.rs()), self.signed_imm()),
+            0x7 => write!(f, "bgtz ${} {}", reg(self.rs()), self.signed_imm()),
+            0x8 => write!(f, "addi ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x9 => write!(f, "addiu ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0xa => write!(f, "slti ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0xb => write!(f, "sltui ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0xc => write!(f, "andi ${} ${} {}", reg(self.rs()), reg(self.rt()), self.imm()),
+            0xd => write!(f, "ori ${} ${} {}", reg(self.rs()), reg(self.rt()), self.imm()),
+            0xe => write!(f, "xori ${} ${} {}", reg(self.rs()), reg(self.rt()), self.imm()),
+            0xf => write!(f, "lui ${} {}", reg(self.rt()), self.imm()),
+            // TODO: Make this better.
+            0x10 => write!(f, "cop0"),
+            0x11 => write!(f,"cop1"),
+            0x12 => write!(f, "cop2"),
+            0x13 => write!(f, "cop3"),
+            0x20 => write!(f, "lb ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x21 => write!(f, "lh ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x22 => write!(f, "lwl ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x23 => write!(f, "lw ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x24 => write!(f, "lbu ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x25 => write!(f, "lhu ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x26 => write!(f, "lwr ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x28 => write!(f, "sb ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x29 => write!(f, "sh ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x2a => write!(f, "swl ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x2b => write!(f, "sw ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x2e => write!(f, "swr ${} ${} {}", reg(self.rs()), reg(self.rt()), self.signed_imm()),
+            0x30 => write!(f, "lwc0"),
+            0x31 => write!(f, "lwc1"),
+            0x32 => write!(f, "lwc2"),
+            0x33 => write!(f, "lwc3"),
+            0x38 => write!(f, "swc0"),
+            0x39 => write!(f, "swc1"),
+            0x3a => write!(f, "swc2"),
+            0x3b => write!(f, "swc3"),
+            _ => write!(f, "illegal"),
+        }
     }
 }
+

@@ -21,17 +21,18 @@ use render::{
 use gui::{
     GuiCtx,
     fps::FrameCounter,
+    cpu::CpuInfo,
 };
 use crate::cpu::Cpu;
+use std::time::{Instant, Duration};
 
 mod render;
-mod gui;
+pub mod gui;
 
 pub fn run() {
     env_logger::init();
 
     let mut cpu = Cpu::new();
-    cpu.fetch_and_exec();
 
     let event_loop = EventLoop::new();
 
@@ -48,6 +49,7 @@ pub fn run() {
     );
 
     let mut fps = FrameCounter::new();
+    let mut cpu_info = CpuInfo::new();
 
     let render_texture = RenderTexture::new(&render_ctx.device, SurfaceSize {
         width: 640,
@@ -57,24 +59,34 @@ pub fn run() {
     let mut compute = ComputeStage::new(
         &render_ctx.device,
         &render_texture
-
     );
+
     let mut draw = DrawStage::new(
         &render_ctx,
         &render_texture,
     );
 
+    let mut last_update = Instant::now();
+
     event_loop.run(move |event, _, control_flow| {
+        for _ in 0..60 {
+            cpu.fetch_and_exec();
+        }
+        cpu_info.update_info(&cpu);
         *control_flow = ControlFlow::Poll;
         match event {
-            Event::MainEventsCleared => {
-                window.request_redraw();
+            Event::RedrawEventsCleared => {
+                // Lock frame to 60 fps.
+                let since_last_redraw = last_update.elapsed();
+                if since_last_redraw >= Duration::from_secs_f32(1.0 / 60.0) {
+                    window.request_redraw();
+                    last_update = Instant::now();
+                } else {
+                    *control_flow = ControlFlow::WaitUntil(
+                        Instant::now() + Duration::from_secs_f32(1.0 / 60.0) - since_last_redraw
+                    );
+                }
             },
-            /*
-            Event::DeviceEvent { ref event, .. } => {
-                // TODO: Handle input.
-            },
-            */
             Event::WindowEvent {
                 ref event, window_id,
             } if window_id == window.id() => {
@@ -87,7 +99,6 @@ pub fn run() {
                         },
                         ..
                     } => {
-                        // Close window.
                         *control_flow = ControlFlow::Exit;
                     },
                     WindowEvent::Resized(physical_size) => {
@@ -124,13 +135,15 @@ pub fn run() {
                     );
                     gui.begin_frame(&window);
                     gui.show_app(&mut fps); 
+                    gui.show_app(&mut cpu_info);
                     gui.end_frame(&window);
                     gui.render(
                         encoder,
                         view,
                         &renderer.device,
                         &renderer.queue,
-                    ).expect("Failed to render gui");
+                    )
+                    .expect("Failed to render gui");
                 });
             },
             _ => {

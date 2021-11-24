@@ -1,4 +1,5 @@
 use std::time::{Instant, Duration};
+use std::fmt::Write;
 use super::app::App;
 
 const ALPHA: f64 = 0.7;
@@ -28,7 +29,8 @@ impl App for FrameCounter {
         if now.duration_since(self.last) > Duration::from_secs(1) {
             self.last = now;
             self.average = ALPHA * self.average + (1.0 - ALPHA) * self.frames as f64;
-            self.show = format!("{:.2}", self.average);
+            self.show.clear();
+            write!(&mut self.show, "{:.2}", self.average).unwrap();
             self.frames = 0;
         };
         ui.label("Frames Per Second");

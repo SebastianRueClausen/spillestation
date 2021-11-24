@@ -101,7 +101,7 @@ impl RenderCtx {
                 format: surface_format,
                 width,
                 height,
-                present_mode: wgpu::PresentMode::Fifo,
+                present_mode: wgpu::PresentMode::Mailbox,
             },
         );
         Self {
