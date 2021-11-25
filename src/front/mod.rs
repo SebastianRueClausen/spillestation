@@ -21,7 +21,7 @@ use render::{
 use gui::{
     GuiCtx,
     fps::FrameCounter,
-    cpu::CpuInfo,
+    cpu::{CpuStatus, CpuCtrl},
 };
 use crate::cpu::Cpu;
 use std::time::{Instant, Duration};
@@ -49,7 +49,8 @@ pub fn run() {
     );
 
     let mut fps = FrameCounter::new();
-    let mut cpu_info = CpuInfo::new();
+    let mut cpu_status = CpuStatus::new();
+    let mut cpu_ctrl = CpuCtrl::new();
 
     let render_texture = RenderTexture::new(&render_ctx.device, SurfaceSize {
         width: 640,
@@ -66,24 +67,23 @@ pub fn run() {
         &render_texture,
     );
 
+    let mut last_draw = Instant::now();
     let mut last_update = Instant::now();
 
     event_loop.run(move |event, _, control_flow| {
-        for _ in 0..60 {
-            cpu.fetch_and_exec();
-        }
-        cpu_info.update_info(&cpu);
         *control_flow = ControlFlow::Poll;
         match event {
             Event::RedrawEventsCleared => {
-                // Lock frame to 60 fps.
-                let since_last_redraw = last_update.elapsed();
-                if since_last_redraw >= Duration::from_secs_f32(1.0 / 60.0) {
+                // Lock frame to 60 fps. This seems to be required to avoid huge memory leaks on
+                // mac, whe you minimize or switch workspace. It also runs much smoother for some
+                // reason.
+                let duration = last_draw.elapsed();
+                if duration >= Duration::from_secs_f32(1.0 / 60.0) {
                     window.request_redraw();
-                    last_update = Instant::now();
+                    last_draw = Instant::now();
                 } else {
                     *control_flow = ControlFlow::WaitUntil(
-                        Instant::now() + Duration::from_secs_f32(1.0 / 60.0) - since_last_redraw
+                        Instant::now() + Duration::from_secs_f32(1.0 / 60.0) - duration
                     );
                 }
             },
@@ -122,7 +122,6 @@ pub fn run() {
             },
             Event::RedrawRequested(_) => {
                 render_ctx.render(|encoder, view, renderer| {
-                    // Genrate render texture.
                     compute.compute_render_texture(
                         cpu.bus().vram(),
                         encoder,
@@ -135,7 +134,8 @@ pub fn run() {
                     );
                     gui.begin_frame(&window);
                     gui.show_app(&mut fps); 
-                    gui.show_app(&mut cpu_info);
+                    gui.show_app(&mut cpu_status);
+                    gui.show_app(&mut cpu_ctrl);
                     gui.end_frame(&window);
                     gui.render(
                         encoder,
@@ -145,6 +145,12 @@ pub fn run() {
                     )
                     .expect("Failed to render gui");
                 });
+            },
+            Event::MainEventsCleared => {
+                let dt = last_update.elapsed();
+                cpu_ctrl.run_cpu(dt, &mut cpu);
+                cpu_status.update_info(&cpu);
+                last_update = Instant::now(); 
             },
             _ => {
             },

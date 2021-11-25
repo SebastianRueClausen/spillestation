@@ -1,8 +1,9 @@
 use crate::cpu::{Cpu, REGISTER_NAMES};
 use std::fmt::Write;
+use std::time::Duration;
 use super::App;
 
-pub struct CpuInfo {
+pub struct CpuStatus {
     registers: [String; 32],
     hi: String,
     lo: String,
@@ -10,7 +11,7 @@ pub struct CpuInfo {
     ins: String,
 }
 
-impl CpuInfo {
+impl CpuStatus {
     pub fn new() -> Self {
         Self {
             registers: Default::default(),
@@ -38,7 +39,7 @@ impl CpuInfo {
 }
 
 
-impl App for CpuInfo {
+impl App for CpuStatus {
     fn update(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("Status", |ui| {
             egui::Grid::new("Status Grid").show(ui, |ui| {
@@ -73,12 +74,97 @@ impl App for CpuInfo {
     }
 
     fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
-        egui::Window::new("CPU Info")
+        egui::Window::new("CPU Status")
             .open(open)
             .resizable(true)
             .min_width(120.0)
             .default_width(240.0)
             .default_height(240.0)
+            .show(ctx, |ui| {
+                self.update(ui);
+            });
+    }
+}
+
+const MAX_CYCLE_HZ: usize = 30_000_000;
+
+pub struct CpuCtrl {
+    cycle_hz: usize,
+    step_amount: usize,
+    paused: bool,
+    stepped: bool,
+    remainder: Duration,
+}
+
+impl CpuCtrl {
+    pub fn new() -> Self {
+        Self {
+            cycle_hz: 100000,
+            step_amount: 1,
+            paused: true,
+            stepped: false,
+            remainder: Duration::ZERO,
+        }
+    }
+
+    pub fn run_cpu(&mut self, mut dt: Duration, cpu: &mut Cpu) {
+        if !self.paused {
+            dt += self.remainder;
+            while let Some(new) = dt.checked_sub(Duration::from_secs(1) / self.cycle_hz as u32) {
+                dt = new;
+                cpu.fetch_and_exec();
+            }
+            self.remainder = dt;
+        } else if self.stepped {
+            for _ in 0..self.step_amount {
+                cpu.fetch_and_exec();
+            }
+            self.stepped = false;
+        }
+    }
+}
+
+impl App for CpuCtrl {
+    fn update(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.paused, true, "Step"); 
+            ui.radio_value(&mut self.paused, false, "Run"); 
+        });
+        ui.separator();
+        if self.paused {
+            let suffix = if self.step_amount > 1 {
+                " cycles"
+            } else {
+                " cycle"
+            };
+            ui.add(egui::Slider::new(&mut self.step_amount, 1..=MAX_CYCLE_HZ)
+                .suffix(suffix)
+                .logarithmic(true)
+                .clamp_to_range(true)
+                .smart_aim(true)
+                .text("Step amount")
+            );
+            if ui.button("Step").clicked() {
+                self.stepped = true;
+            }
+        } else {
+            ui.add(egui::Slider::new(&mut self.cycle_hz, 1..=MAX_CYCLE_HZ)
+                .suffix("hz")
+                .logarithmic(true)
+                .clamp_to_range(true)
+                .smart_aim(true)
+                .text("CPU Speed")
+            );
+        }
+    }
+
+    fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+        egui::Window::new("CPU Control")
+            .open(open)
+            .resizable(true)
+            .min_width(80.0)
+            .default_width(100.0)
+            .default_height(100.0)
             .show(ctx, |ui| {
                 self.update(ui);
             });
