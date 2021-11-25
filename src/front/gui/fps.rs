@@ -1,39 +1,36 @@
-use std::time::{Instant, Duration};
+use std::time::Duration;
 use std::fmt::Write;
 use super::app::App;
 
-const ALPHA: f64 = 0.7;
-
 pub struct FrameCounter {
-    average: f64,
     frames: u64,
-    last: Instant,
+    last_update: Duration,
     show: String,
 }
 
 impl FrameCounter {
     pub fn new() -> Self {
         Self {
-            average: 60.0,
             frames: 0,
-            last: Instant::now(),
+            last_update: Duration::ZERO,
             show: String::from(""),
+        }
+    }
+
+    pub fn tick(&mut self, dt: Duration) {
+        self.frames += 1;
+        self.last_update += dt;
+        if self.last_update > Duration::from_secs(1) {
+            self.show.clear();
+            self.last_update = Duration::ZERO;
+            write!(&mut self.show, "{} fps", self.frames).unwrap();
+            self.frames = 0;
         }
     }
 }
 
 impl App for FrameCounter {
     fn update(&mut self, ui: &mut egui::Ui) {
-        self.frames += 1;
-        let now = Instant::now();
-        if now.duration_since(self.last) > Duration::from_secs(1) {
-            self.last = now;
-            self.average = ALPHA * self.average + (1.0 - ALPHA) * self.frames as f64;
-            self.show.clear();
-            write!(&mut self.show, "{:.2}", self.average).unwrap();
-            self.frames = 0;
-        };
-        ui.label("Frames Per Second");
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x /= 2.0;
             ui.label(&self.show);

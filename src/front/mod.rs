@@ -77,13 +77,14 @@ pub fn run() {
                 // Lock frame to 60 fps. This seems to be required to avoid huge memory leaks on
                 // mac, whe you minimize or switch workspace. It also runs much smoother for some
                 // reason.
-                let duration = last_draw.elapsed();
-                if duration >= Duration::from_secs_f32(1.0 / 60.0) {
+                let dt = last_draw.elapsed();
+                if dt >= Duration::from_secs_f32(1.0 / 60.0) {
+                    fps.tick(dt);
                     window.request_redraw();
                     last_draw = Instant::now();
                 } else {
                     *control_flow = ControlFlow::WaitUntil(
-                        Instant::now() + Duration::from_secs_f32(1.0 / 60.0) - duration
+                        Instant::now() + Duration::from_secs_f32(1.0 / 60.0) - dt
                     );
                 }
             },
