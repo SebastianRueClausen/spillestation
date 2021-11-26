@@ -22,6 +22,7 @@ use gui::{
     GuiCtx,
     fps::FrameCounter,
     cpu::{CpuStatus, CpuCtrl},
+    mem::MemView,
 };
 use crate::cpu::Cpu;
 use std::time::{Instant, Duration};
@@ -51,6 +52,7 @@ pub fn run() {
     let mut fps = FrameCounter::new();
     let mut cpu_status = CpuStatus::new();
     let mut cpu_ctrl = CpuCtrl::new();
+    let mut mem_view = MemView::new();
 
     let render_texture = RenderTexture::new(&render_ctx.device, SurfaceSize {
         width: 640,
@@ -137,6 +139,7 @@ pub fn run() {
                     gui.show_app(&mut fps); 
                     gui.show_app(&mut cpu_status);
                     gui.show_app(&mut cpu_ctrl);
+                    gui.show_app(&mut mem_view);
                     gui.end_frame(&window);
                     gui.render(
                         encoder,
@@ -151,6 +154,7 @@ pub fn run() {
                 let dt = last_update.elapsed();
                 cpu_ctrl.run_cpu(dt, &mut cpu);
                 cpu_status.update_info(&cpu);
+                mem_view.update_info(cpu.bus());
                 last_update = Instant::now(); 
             },
             _ => {

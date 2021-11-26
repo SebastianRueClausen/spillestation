@@ -42,20 +42,25 @@ impl CpuStatus {
 impl App for CpuStatus {
     fn update(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("Status", |ui| {
-            egui::Grid::new("Status Grid").show(ui, |ui| {
-                ui.label("hi");
-                ui.label(&self.hi);
-                ui.end_row();
-                ui.label("lo");
-                ui.label(&self.lo);
-                ui.end_row();
-                ui.label("pc");
-                ui.label(&self.pc);
-                ui.end_row();
-                ui.label("ins");
-                ui.label(&self.ins);
-                ui.end_row();
-            });
+            egui::ScrollArea::vertical()
+                .max_height(100.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    egui::Grid::new("Status Grid").show(ui, |ui| {
+                        ui.label("hi");
+                        ui.label(&self.hi);
+                        ui.end_row();
+                        ui.label("lo");
+                        ui.label(&self.lo);
+                        ui.end_row();
+                        ui.label("pc");
+                        ui.label(&self.pc);
+                        ui.end_row();
+                        ui.label("ins");
+                        ui.label(&self.ins);
+                        ui.end_row();
+                    });
+                });
         });
         ui.collapsing("Registers", |ui| {
             egui::ScrollArea::vertical()

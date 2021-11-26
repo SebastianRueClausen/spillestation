@@ -8,6 +8,7 @@ use app::App;
 pub mod fps;
 pub mod cpu;
 pub mod app;
+pub mod mem;
 
 /// All the egui stuff required to draw gui to the screen.
 pub struct GuiCtx {

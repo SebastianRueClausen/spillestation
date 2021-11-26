@@ -151,55 +151,56 @@ impl Bus {
         }
     }
 
-    pub fn load<T: AddrUnit>(&self, address: u32) -> u32 {
+    pub fn try_load<T: AddrUnit>(&self, address: u32) -> Option<u32> {
         assert!(T::is_aligned(address));
         let address = to_region(address);
         match address {
             RAM_START..=RAM_END => {
-                self.ram.load::<T>(address)
+                Some(self.ram.load::<T>(address))
             },
             BIOS_START..=BIOS_END => {
-                self.bios.load::<T>(address - BIOS_START)
+                Some(self.bios.load::<T>(address - BIOS_START))
             },
             // Some of these io devices might need to be read from, so we just crash to find out.
             MEMCTRL_START..=MEMCTRL_END => {
-                panic!("Loading from memory control")
+                None
             }
             RAM_SIZE_START..=RAM_SIZE_END => {
-                panic!("Loading from ram size io port")
+                None
             },
             CACHE_CONTROL_START..=CACHE_CONTROL_END => {
-                panic!("Loading from cache control")
+                None
             },
             EXP1_START..=EXP1_END => {
-                // TODO.
-                0xff
+                Some(0xff)
             },
             IRQ_CONTROL_START..=IRQ_CONTROL_END => {
-                // TODO.
-                0x0
+                Some(0x0)
             },
             DMA_START..=DMA_END => {
-                self.dma.load(address - DMA_START)   
+                Some(self.dma.load(address - DMA_START))
             },
             SPU_START..=SPU_END => {
-                // TODO.
-                0x0
+                Some(0x0)
             },
             TIMER_CONTROL_START..=TIMER_CONTROL_END => {
-                0x0
+                Some(0x0)
             },
             GPU_START..=GPU_END => {
-                if address - GPU_START == 4 {
+                Some(if address - GPU_START == 4 {
                     0x1c000000
                 } else {
                     0x0
-                }
+                })
             },
             _ => {
-                panic!("Trying to load invalid address to bus at {:08x}", address)
+                None
             }
         }
+    }
+
+    pub fn load<T: AddrUnit>(&self, address: u32) -> u32 {
+        self.try_load::<T>(address).expect(&format!("Trying to load invalid address to bus at {:08x}", address))
     }
 
     pub fn store<T: AddrUnit>(&mut self, address: u32, value: u32) {
