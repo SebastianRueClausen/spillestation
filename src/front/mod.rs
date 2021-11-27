@@ -27,6 +27,8 @@ use gui::{
 use crate::cpu::Cpu;
 use std::time::{Instant, Duration};
 
+pub use render::compute::DrawInfo;
+
 mod render;
 pub mod gui;
 
@@ -127,6 +129,7 @@ pub fn run() {
                 render_ctx.render(|encoder, view, renderer| {
                     compute.compute_render_texture(
                         cpu.bus().vram(),
+                        &cpu.bus().gpu().draw_info(),
                         encoder,
                         &renderer.queue,
                         &render_texture,

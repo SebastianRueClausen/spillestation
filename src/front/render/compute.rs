@@ -1,5 +1,46 @@
-use crate::gpu::vram::{Vram,VRAM_SIZE};
+use crate::gpu::vram::{Vram, VRAM_SIZE};
 use super::{RenderTexture, RENDER_TEXTURE_FORMAT};
+use crate::gpu::InterlaceField;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod)]
+pub struct DrawInfo {
+    width: u32,
+    height: u32,
+    field: u32,
+    display_area_x: u32,
+    display_area_y: u32,
+}
+
+unsafe impl bytemuck::Zeroable for DrawInfo {
+    fn zeroed() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            field: 0,
+            display_area_x: 0,
+            display_area_y: 0,
+        }
+    }
+}
+
+impl DrawInfo {
+    pub fn new(
+        width: u32,
+        height: u32,
+        field: InterlaceField,
+        display_area_x: u32,
+        display_area_y: u32,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            field: field as u32,
+            display_area_x,
+            display_area_y,
+        }
+    }
+}
 
 /// Used to generate the ['RenderTexture'] from the playstation VRAM directly using compute shaders.
 /// This is called before every rendered frame. This means that 1 mb of data is uploaded to the GPU
@@ -33,7 +74,7 @@ impl ComputeStage {
             // and CPU has shared memory. It's not supported on all systems however.
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-            size: VRAM_SIZE as u64,
+            size: (VRAM_SIZE + std::mem::size_of::<DrawInfo>()) as u64,
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Compute Bind Group Layout"),
@@ -54,7 +95,7 @@ impl ComputeStage {
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
                         format: RENDER_TEXTURE_FORMAT,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                       view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
                 },
@@ -97,6 +138,7 @@ impl ComputeStage {
     pub fn compute_render_texture(
         &mut self,
         vram: &Vram,
+        draw_info: &DrawInfo,
         encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
         render_texture: &RenderTexture,
@@ -106,7 +148,8 @@ impl ComputeStage {
         // means that either write_buffer does the same under the hood, or it just isn't a
         // bottleneck. Perhaps it's faster on some systems, in which case it probably should be
         // used, but since it made the code more complicated, i opted not to use i it for now.
-        queue.write_buffer(&self.input_buffer, 0, vram.raw_data());
+        queue.write_buffer(&self.input_buffer, 0, bytemuck::bytes_of(draw_info));
+        queue.write_buffer(&self.input_buffer, std::mem::size_of::<DrawInfo>() as u64, vram.raw_data());
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Compute Pass"),
         });

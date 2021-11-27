@@ -13,6 +13,7 @@ use primitive::{
     Point,
     //Color,
 };
+use crate::front::DrawInfo;
 
 /// How many Hz to output.
 enum VideoMode {
@@ -51,7 +52,7 @@ impl DmaDirection {
 }
 
 /// Interlace output split into two fields.
-enum InterlaceField {
+pub enum InterlaceField {
     Bottom = 0,
     Top = 1,
 }
@@ -99,6 +100,7 @@ impl TextureDepth {
 }
 
 /// Status register of the GPU.
+#[derive(Clone, Copy)]
 struct Status(u32);
 
 impl Status {
@@ -142,7 +144,7 @@ impl Status {
     }
 
     /// The interlace field currently being displayed.
-    fn interlace_fields(self) -> InterlaceField {
+    fn interlace_field(self) -> InterlaceField {
         InterlaceField::from_value(self.0.extract_bit(13) == 1)
     }
 
@@ -305,6 +307,16 @@ impl Gpu {
 
     pub fn vram(&self) -> &Vram {
         &self.vram
+    }
+
+    pub fn draw_info(&self) -> DrawInfo {
+        DrawInfo::new(
+            self.status.horizontal_res(),
+            self.status.vertical_res(),
+            self.status.interlace_field(),
+            self.display_vram_x_start as u32,
+            self.display_vram_y_start as u32,
+        )
     }
 
     fn gp1_store(&mut self, value: u32) {

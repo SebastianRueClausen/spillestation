@@ -252,6 +252,10 @@ impl Bus {
        self.gpu.vram() 
     }
 
+    pub fn gpu(&self) -> &Gpu {
+        &self.gpu
+    }
+
     fn execute_transfers(&mut self) {
         while let Some(transfer) = self.transfers.block.pop() {
             match transfer.direction {

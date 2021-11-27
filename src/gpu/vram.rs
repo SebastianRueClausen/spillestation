@@ -32,7 +32,6 @@ impl Vram {
 
     pub fn store_16(&mut self, point: Point, value: u16) {
         let offset = offset(&point);
-        println!("{:?}", offset);
         self.data[offset + 0] = (value >> 0) as u8;
         self.data[offset + 1] = (value >> 8) as u8;
     }

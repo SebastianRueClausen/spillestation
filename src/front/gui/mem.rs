@@ -29,7 +29,7 @@ impl MemView {
     pub fn update_info(&mut self, bus: &Bus) {
         if self.ins_mode {
             // Align to next multiple of 4.
-            let aligned = self.start_addr + (-(self.start_addr as i32) & (4 - 1)) as u32;
+            let aligned = (self.start_addr + 4 - 1) / 4 * 4;
             for (i, ins) in self.instructions.iter_mut().enumerate() {
                 ins.clear();
                 match bus.try_load::<Word>(aligned + (i * 4) as u32) {
@@ -68,7 +68,7 @@ impl App for MemView {
             ui.radio_value(&mut self.ins_mode, false, "Values");
         });
         if self.ins_mode {
-            let aligned = self.start_addr + (-(self.start_addr as i32) & (4 - 1)) as u32;
+            let aligned = (self.start_addr + 4 - 1) / 4 * 4;
             egui::Grid::new("Instructions Grid").show(ui, |ui| {
                 for (i, ins) in self.instructions.iter().enumerate() {
                     ui.label(format!("{:06x}: ", aligned + (4 * i) as u32));
