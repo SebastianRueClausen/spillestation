@@ -1,4 +1,5 @@
 use crate::util::bits::BitExtract;
+use ultraviolet::vec::Vec3;
 
 /// The PSX uses 2D coordinates for everything.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -18,23 +19,22 @@ impl Point {
         Self::new(cmd.extract_bits(0, 10) as i32, cmd.extract_bits(16, 26) as i32)
     }
 
-    pub fn barycentric(points: &[Point; 3], p: &Point) -> (f32, f32, f32) {
-        let v1 = [
+    pub fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
+        let v1 = Vec3::new(
             (points[2].x - points[0].x) as f32,
             (points[1].x - points[0].x) as f32,
             (points[0].x - p.x) as f32,
-        ];
-        let v2 = [
+        );
+        let v2 = Vec3::new(
             (points[2].y - points[0].y) as f32,
             (points[1].y - points[0].y) as f32,
             (points[0].y - p.y) as f32,
-        ];
-        // Cross product.
-        let u = (v1[1] * v2[2] - v1[2] * v2[1], v1[2] * v2[0] - v1[0] * v2[2], v1[0] * v2[1] - v1[1] * v1[0]);
-        if f32::abs(u.2) < 1.0 {
-            (-1.0, 1.0, 1.0)
+        );
+        let u = v1.cross(v2);
+        if f32::abs(u.z) < 1.0 {
+            Vec3::new(-1.0, 1.0, 1.0)
         } else {
-            (1.0 - (u.0 + u.1) / u.2, u.1 / u.2, u.0 / u.2)
+            Vec3::new(1.0 - (u.x + u.y) / u.z, u.y / u.z, u.x / u.z)
         }
     }
 }
