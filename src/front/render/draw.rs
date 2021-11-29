@@ -233,7 +233,7 @@ fn generate_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect)
         .max(1.0)
         .floor();
     // Scaled tetxure dimension.
-    let scaled = texture * scale * screen;
+    let scaled = texture * scale;
     // Scaling of the vertices.
     let s = scaled / screen;
     // Translation of the vertices. The min/max just makes sure the texture doesn't go off screen.
@@ -244,7 +244,7 @@ fn generate_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect)
     // Transformation matrix.
     let transform = Mat4::from([
         [s.x, 0.0, 0.0, 0.0],
-        [0.0, -s.y, 0.0, 0.0],
+        [0.0, s.y, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
         [t.x, t.y, 0.0, 1.0],
     ]);

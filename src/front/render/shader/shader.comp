@@ -1,5 +1,7 @@
 #version 450
 
+const uint VRAM_SIZE = 1024 * 1024;
+
 layout (set = 0, binding = 0) buffer readonly Vram {
 		uint width;
 		uint height;
@@ -7,31 +9,31 @@ layout (set = 0, binding = 0) buffer readonly Vram {
 		uint display_area_x;
 		uint display_area_y;
 
-		uint vram[(1024 * 1024) / 4];
+		uint vram[VRAM_SIZE / 4];
 };
 layout (set = 0, binding = 1, rgba16f) uniform writeonly image2D tex;
 
-uint addr(uint x, uint y) {
-		return ((x * 2 + y * 2048) & (1024 * 1024 - 1)) / 4;
+uint coords(uint x, uint y) {
+		return (x * 2 + y * 2024) & (VRAM_SIZE - 1);
 }
 
 void main() {
 		uint y_start = display_area_y + field;
 		uint x_start = display_area_x;
 		uint dy = height / 240;
-
 		uint y = y_start + (gl_WorkGroupID.y * dy);
 		uint x = x_start + gl_WorkGroupID.x;
 
-		uint color = vram[addr(x, y)];
+		uint coord = coords(x, y);
 
+		uint c1 = vram[coord >> 2] & (0xff << (coord & 3));
+		uint c2 = vram[(coord + 1) >> 2] & (0xff << ((coord + 1) & 3));
+
+		uint color = (c2 << 8) | c1;
+	
 		float r = float(((color & 0x1f) * 0x21) >> 2);
 		float g = float(((color & 0x3e0) * 0x420) >> 12);
 		float b = float(((color & 0x7c00) * 0x8400) >> 22);
-
-		// float r = float((color >> 10) & 31);
-		// float g = float((color >>  5) & 31);
-		// float b = float((color >>  0) & 31);
-
+		
 		imageStore(tex, ivec2(gl_WorkGroupID.xy), vec4(r / 256.0, g / 256.0, b / 256.0, 1.0));
 }

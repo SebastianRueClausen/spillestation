@@ -414,9 +414,16 @@ impl Gpu {
             0xe5 => self.gp0_draw_offset(),
             0xe6 => self.gp0_mask_bit_setting(),
             // Draw commands.
-            0x28 => self.gp0_four_point_poly(),
-            0x2c => {},
-            0x30 => {},
+            0x28 => {
+                println!("Monochrome four point poly");
+                self.gp0_four_point_poly();
+            },
+            0x2c => {
+                println!("Textured four point poly");
+            },
+            0x30 => {
+                println!("shaded three point poly");
+            },
             0x38 => {},
             // Opaque no shading.
             0x44 => self.gp0_line(),

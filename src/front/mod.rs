@@ -58,22 +58,18 @@ pub fn run() {
 
     let render_texture = RenderTexture::new(&render_ctx.device, SurfaceSize {
         width: 640,
-        height: 480,
+        height: 240,
     });
-
     let mut compute = ComputeStage::new(
         &render_ctx.device,
         &render_texture
     );
-
     let mut draw = DrawStage::new(
         &render_ctx,
         &render_texture,
     );
-
     let mut last_draw = Instant::now();
     let mut last_update = Instant::now();
-
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
         match event {
