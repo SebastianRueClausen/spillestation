@@ -19,6 +19,13 @@ impl Point {
         Self::new(cmd.extract_bits(0, 10) as i32, cmd.extract_bits(16, 26) as i32)
     }
 
+    pub fn with_offset(&self, x: i16, y: i16) -> Self {
+        Self {
+            x: self.x + x as i32,
+            y: self.y + y as i32,
+        }
+    }
+
     pub fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
         let v1 = Vec3::new(
             (points[2].x - points[0].x) as f32,

@@ -127,4 +127,7 @@ impl Gpu {
     pub fn draw_triangle(&mut self, v1: &Vertex, v2: &Vertex, v3: &Vertex) {
         self.draw_triangle_scalar(v1, v2, v3);
     }
+
+    pub fn draw_line(&mut self, _start: Point, _end: Point) {
+    }
 }

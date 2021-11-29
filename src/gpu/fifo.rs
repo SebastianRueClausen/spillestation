@@ -40,9 +40,9 @@ impl Fifo {
     }
 
     pub fn pop(&mut self) -> u32 {
-        let index = self.tail as usize & (FIFO_SIZE - 1);
+        let value = self[0];
         self.tail = self.tail.wrapping_add(1);
-        self.data[index]
+        value
     }
 }
 

@@ -72,7 +72,7 @@ impl ComputeStage {
             // There could be some performance gained by using the flag MAP_WRITE,
             // which maps the buffer directly to the CPU if the GPU
             // and CPU has shared memory. It's not supported on all systems however.
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_WRITE,
             mapped_at_creation: false,
             size: (VRAM_SIZE + std::mem::size_of::<DrawInfo>()) as u64,
         });
