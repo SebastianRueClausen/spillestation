@@ -16,6 +16,6 @@ egui-winit = { version = "0.15", default-features = false, features = ["links"] 
 winit = "0.25.0"
 wgpu = { version = "0.11", features = [ "spirv" ] }
 pollster = "0.2.4"
-ultraviolet = "0.8.1"
+ultraviolet = { version = "0.8.1", features = [ "int" ] }
 bytemuck = { version = "1.7.2", features = [ "derive" ] }
 env_logger = "0.9"

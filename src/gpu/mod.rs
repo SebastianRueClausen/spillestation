@@ -6,14 +6,13 @@ mod rasterize;
 pub mod vram;
 
 pub use vram::Vram;
+
 use crate::util::bits::BitExtract;
-use fifo::Fifo;
-use primitive::{
-    Vertex,
-    Point,
-    //Color,
-};
 use crate::front::DrawInfo;
+use fifo::Fifo;
+use primitive::{Vertex, FromCmd, Color};
+use ultraviolet::int::IVec2;
+use rasterize::{Shading, UnShaded, Shaded};
 
 /// How many Hz to output.
 enum VideoMode {
@@ -205,7 +204,16 @@ impl Status {
     }
 
     fn horizontal_res(self) -> u32 {
-        self.0.extract_bits(16, 18)
+        match self.0.extract_bit(16) {
+            1 => 368,
+            _ => match self.0.extract_bits(17, 18) {
+                0 => 256,
+                1 => 480,
+                2 => 512,
+                3 => 640,
+                _ => unreachable!("Invalid vres"),
+            }
+        }
     }
 
     fn vertical_res(self) -> u32 {
@@ -362,7 +370,7 @@ impl Gpu {
             GpuState::WaitForData(ref mut transfer) => {
                 for (lo, hi) in [(0, 15), (16, 31)] {
                     let value = value.extract_bits(lo, hi) as u16;
-                    self.vram.store_16(Point::new(transfer.x, transfer.y), value);
+                    self.vram.store_16(IVec2::new(transfer.x, transfer.y), value);
                     if transfer.next() == None {
                         self.state = GpuState::WaitForCmd;
                         break;
@@ -414,16 +422,9 @@ impl Gpu {
             0xe5 => self.gp0_draw_offset(),
             0xe6 => self.gp0_mask_bit_setting(),
             // Draw commands.
-            0x28 => {
-                println!("Monochrome four point poly");
-                self.gp0_four_point_poly();
-            },
-            0x2c => {
-                println!("Textured four point poly");
-            },
-            0x30 => {
-                println!("shaded three point poly");
-            },
+            0x28 => self.gp0_four_point_poly::<UnShaded>(),
+            0x2c => self.gp0_four_point_poly::<UnShaded>(),
+            0x30 => self.gp0_three_point_poly::<Shaded>(),
             0x38 => {},
             // Opaque no shading.
             0x44 => self.gp0_line(),
@@ -433,34 +434,50 @@ impl Gpu {
         }
     }
 
-    fn gp0_three_point_poly(&mut self) {
-        self.fifo.pop();
+    fn gp0_three_point_poly<S: Shading>(&mut self) {
+        let color = if !S::is_shaded() {
+            Color::from_cmd(self.fifo.pop())
+        } else {
+            // This isn't used.
+            Color::from_rgb(0, 0, 0)
+        };
         let mut verts = [Vertex::default(); 3];
         for vertex in verts.iter_mut() {
-            vertex.point = Point::from_cmd(self.fifo.pop())
-                .with_offset(self.draw_x_offset, self.draw_y_offset);
+            if S::is_shaded() {
+                vertex.color = Color::from_cmd(self.fifo.pop());
+            }
+            vertex.point = IVec2::from_cmd(self.fifo.pop())
+                + IVec2::new(self.draw_x_offset as i32, self.draw_y_offset as i32);
         }
-        self.draw_triangle(&verts[0], &verts[1], &verts[2]);
+        self.draw_triangle::<S>(color, &verts[0], &verts[1], &verts[2]);
     }
 
-    fn gp0_four_point_poly(&mut self) {
-        self.fifo.pop();
+    fn gp0_four_point_poly<S: Shading>(&mut self) {
+        let color = if !S::is_shaded() {
+            Color::from_cmd(self.fifo.pop().extract_bits(0, 24))
+        } else {
+            // This isn't used.
+            Color::from_rgb(0, 0, 0)
+        };
         let mut verts = [Vertex::default(); 4];
         for vertex in verts.iter_mut() {
-            vertex.point = Point::from_cmd(self.fifo.pop())
-                .with_offset(self.draw_x_offset, self.draw_y_offset);
+            // If it's shaded the color is always the first.
+            if S::is_shaded() {
+                vertex.color = Color::from_cmd(self.fifo.pop());
+            }
+            vertex.point = IVec2::from_cmd(self.fifo.pop())
+                + IVec2::new(self.draw_x_offset as i32, self.draw_y_offset as i32);
         }
-        self.draw_triangle(&verts[0], &verts[1], &verts[2]);
-        self.draw_triangle(&verts[1], &verts[2], &verts[3]);
+        self.draw_triangle::<S>(color, &verts[0], &verts[1], &verts[2]);
+        self.draw_triangle::<S>(color, &verts[1], &verts[2], &verts[3]);
     }
 
     fn gp0_line(&mut self) {
         self.fifo.pop();
-        let start = Point::from_cmd(self.fifo.pop())
-            .with_offset(self.draw_x_offset, self.draw_y_offset);
-        let end = Point::from_cmd(self.fifo.pop())
-            .with_offset(self.draw_x_offset, self.draw_y_offset);
-        println!("draw line at {:?} to {:?}", start, end);
+        let start = IVec2::from_cmd(self.fifo.pop())
+            + IVec2::new(self.draw_x_offset as i32, self.draw_y_offset as i32);
+        let end = IVec2::from_cmd(self.fifo.pop())
+            + IVec2::new(self.draw_x_offset as i32, self.draw_y_offset as i32);
         self.draw_line(start, end);
     }
 

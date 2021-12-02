@@ -1,48 +1,13 @@
+use ultraviolet::int::IVec2;
 use crate::util::bits::BitExtract;
-use ultraviolet::vec::Vec3;
 
-/// The PSX uses 2D coordinates for everything.
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
-pub struct Point {
-    pub x: i32,
-    pub y: i32,
+pub trait FromCmd {
+    fn from_cmd(cmd: u32) -> Self;
 }
 
-impl Point {
-    pub fn new(x: i32, y: i32) -> Self {
-        Self {
-            x, y,
-        }
-    }
-
-    pub fn from_cmd(cmd: u32) -> Self {
+impl FromCmd for IVec2 {
+    fn from_cmd(cmd: u32) -> Self {
         Self::new(cmd.extract_bits(0, 10) as i32, cmd.extract_bits(16, 26) as i32)
-    }
-
-    pub fn with_offset(&self, x: i16, y: i16) -> Self {
-        Self {
-            x: self.x + x as i32,
-            y: self.y + y as i32,
-        }
-    }
-
-    pub fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
-        let v1 = Vec3::new(
-            (points[2].x - points[0].x) as f32,
-            (points[1].x - points[0].x) as f32,
-            (points[0].x - p.x) as f32,
-        );
-        let v2 = Vec3::new(
-            (points[2].y - points[0].y) as f32,
-            (points[1].y - points[0].y) as f32,
-            (points[0].y - p.y) as f32,
-        );
-        let u = v1.cross(v2);
-        if f32::abs(u.z) < 1.0 {
-            Vec3::new(-1.0, 1.0, 1.0)
-        } else {
-            Vec3::new(1.0 - (u.x + u.y) / u.z, u.y / u.z, u.x / u.z)
-        }
     }
 }
 
@@ -83,9 +48,19 @@ impl Color {
     }
 }
 
+impl FromCmd for Color {
+    fn from_cmd(cmd: u32) -> Self {
+        Self {
+            r: (cmd & 0xff) as u8,
+            g: ((cmd >> 8) & 0xff) as u8,
+            b: ((cmd >> 16) & 0xff) as u8,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct Vertex {
-    pub point: Point,
+    pub point: IVec2,
     pub color: Color,
     pub texcoord: TexCoord,
 }
@@ -93,8 +68,8 @@ pub struct Vertex {
 impl Default for Vertex {
     fn default() -> Self {
         Self {
-            point: Point::new(0, 0),
-            color: Color::from_rgb(0, 0, 0),
+            point: IVec2::new(0, 0),
+            color: Color::from_rgb(255, 0, 0),
             texcoord: TexCoord::new(0, 0),
         }
     }

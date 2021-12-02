@@ -1,4 +1,4 @@
-use super::primitive::Point;
+use ultraviolet::int::IVec2;
 
 pub const VRAM_SIZE: usize = 1024 * 1024;
 
@@ -9,24 +9,18 @@ pub struct Vram {
 
 impl Vram {
     pub fn new() -> Self {
-        let mut s = Self {
+        Self {
             data: Box::new([0x0; VRAM_SIZE]),
-        };
-        let mut val: u8 = 0;
-        for byte in &mut (*s.data) {
-            *byte = val;
-            val = val.wrapping_add(1);
         }
-        s
     }
 
-    pub fn load_16(&self, point: Point) -> u16 {
+    pub fn load_16(&self, point: IVec2) -> u16 {
         let offset = offset_16(&point);
         let (hi, lo) = (self.data[offset] as u16, self.data[offset + 1] as u16); 
         (hi << 8) | lo
     }
 
-    pub fn load_24(&self, point: Point) -> u32 {
+    pub fn load_24(&self, point: IVec2) -> u32 {
         let offset = offset_24(&point);
         let (hi, mid, lo) = (
             self.data[offset + 0] as u32,
@@ -36,7 +30,7 @@ impl Vram {
         (hi << 16) | (mid << 8) | lo
     }
 
-    pub fn store_16(&mut self, point: Point, value: u16) {
+    pub fn store_16(&mut self, point: IVec2, value: u16) {
         let offset = offset_16(&point);
         self.data[offset + 0] = (value >> 0) as u8;
         self.data[offset + 1] = (value >> 8) as u8;
@@ -47,21 +41,11 @@ impl Vram {
     }
 }
 
-fn offset_16(point: &Point) -> usize {
+fn offset_16(point: &IVec2) -> usize {
     (point.x * 2 + point.y * 2048) as usize & (VRAM_SIZE - 1)
-    /*
-    let x = point.x & (1024 - 1);
-    let y = point.y & (512 - 1);
-    (y * 1024 + x) as usize
-    */
 }
 
 
-fn offset_24(point: &Point) -> usize {
+fn offset_24(point: &IVec2) -> usize {
     (point.x * 3 + point.y * 2048) as usize & (VRAM_SIZE - 1)
-    /*
-    let x = point.x & (1024 - 1);
-    let y = point.y & (512 - 1);
-    (y * 1024 + x) as usize
-    */
 }
