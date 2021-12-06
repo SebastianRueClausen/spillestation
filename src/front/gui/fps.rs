@@ -29,6 +29,12 @@ impl FrameCounter {
     }
 }
 
+impl Default for FrameCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App for FrameCounter {
     fn update(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {

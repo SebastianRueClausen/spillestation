@@ -18,12 +18,7 @@ use render::{
     DrawStage,
     ComputeStage,
 };
-use gui::{
-    GuiCtx,
-    fps::FrameCounter,
-    cpu::{CpuStatus, CpuCtrl},
-    mem::MemView,
-};
+use gui::{GuiCtx, app_menu::AppMenu};
 use crate::cpu::Cpu;
 use std::time::{Instant, Duration};
 
@@ -34,28 +29,18 @@ pub mod gui;
 
 pub fn run() {
     env_logger::init();
-
     let mut cpu = Cpu::new();
-
     let event_loop = EventLoop::new();
-
     let window = WindowBuilder::new()
         .with_title("Spillestation")
         .build(&event_loop)
         .unwrap();
-
     let mut render_ctx = RenderCtx::new(&window);
-
     let mut gui = GuiCtx::new(
         window.scale_factor() as f32,
         &render_ctx,
     );
-
-    let mut fps = FrameCounter::new();
-    let mut cpu_status = CpuStatus::new();
-    let mut cpu_ctrl = CpuCtrl::new();
-    let mut mem_view = MemView::new();
-
+    let mut app_menu = AppMenu::new();
     let render_texture = RenderTexture::new(&render_ctx.device, SurfaceSize {
         width: 640,
         height: 480,
@@ -79,8 +64,8 @@ pub fn run() {
                 // reason.
                 let dt = last_draw.elapsed();
                 if dt >= Duration::from_secs_f32(1.0 / 60.0) {
-                    fps.tick(dt);
                     window.request_redraw();
+                    app_menu.draw_tick(dt);
                     last_draw = Instant::now();
                 } else {
                     *control_flow = ControlFlow::WaitUntil(
@@ -135,25 +120,19 @@ pub fn run() {
                         &view,
                     );
                     gui.begin_frame(&window);
-                    gui.show_app(&mut fps); 
-                    gui.show_app(&mut cpu_status);
-                    gui.show_app(&mut cpu_ctrl);
-                    gui.show_app(&mut mem_view);
+                    app_menu.show_apps(&mut gui);
+                    app_menu.show(&mut gui.egui_ctx);
                     gui.end_frame(&window);
                     gui.render(
+                        renderer,
                         encoder,
                         view,
-                        &renderer.device,
-                        &renderer.queue,
                     )
                     .expect("Failed to render gui");
                 });
             },
             Event::MainEventsCleared => {
-                let dt = last_update.elapsed();
-                cpu_ctrl.run_cpu(dt, &mut cpu);
-                cpu_status.update_info(&cpu);
-                mem_view.update_info(cpu.bus());
+                app_menu.update_tick(last_update.elapsed(), &mut cpu);
                 last_update = Instant::now(); 
             },
             _ => {

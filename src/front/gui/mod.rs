@@ -1,18 +1,19 @@
-use egui::{ClippedMesh,CtxRef};
-use egui_wgpu_backend::{BackendError,RenderPass,ScreenDescriptor};
+use egui::{ClippedMesh, CtxRef};
+use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
 use egui_winit::State as WinState;
 use winit::window::Window;
-use super::{SurfaceSize,RenderCtx};
-use app::App;
+use super::{SurfaceSize, RenderCtx};
+pub use app::App;
 
 pub mod fps;
 pub mod cpu;
 pub mod app;
 pub mod mem;
+pub mod app_menu;
 
 /// All the egui stuff required to draw gui to the screen.
 pub struct GuiCtx {
-    ctx: CtxRef,
+    pub egui_ctx: CtxRef,
     win_state: WinState,
     screen_descriptor: ScreenDescriptor,
     render_pass: RenderPass,
@@ -24,7 +25,7 @@ impl GuiCtx {
         scale_factor: f32,
         render_ctx: &RenderCtx,
     ) -> Self {
-        let ctx = CtxRef::default();
+        let egui_ctx = CtxRef::default();
         let win_state = WinState::from_pixels_per_point(scale_factor);
         let SurfaceSize {
             width: physical_width,
@@ -41,7 +42,7 @@ impl GuiCtx {
             1,
         );
         Self {
-            ctx,
+            egui_ctx,
             win_state,
             screen_descriptor,
             render_pass,
@@ -50,7 +51,7 @@ impl GuiCtx {
     }
 
     pub fn handle_window_event(&mut self, event: &winit::event::WindowEvent) {
-        self.win_state.on_event(&self.ctx, event);
+        self.win_state.on_event(&self.egui_ctx, event);
     }
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
@@ -65,41 +66,37 @@ impl GuiCtx {
         }
     }
 
-    /// Show an app. Must be called between 'begin_frame' and 'end_frame'.
-    pub fn show_app<T: App>(&self, app: &mut T) {
-        let mut _open: bool = true;
-        app.show(&self.ctx, &mut _open);
-    }
-
     /// Prepare egui to take commands.
     pub fn begin_frame(&mut self, window: &Window) {
        let input = self.win_state.take_egui_input(window); 
-       self.ctx.begin_frame(input);
+       self.egui_ctx.begin_frame(input);
     }
 
     /// Prepare egui to render all the windows.
     pub fn end_frame(&mut self, window: &Window) {
-       let (output, jobs) = self.ctx.end_frame();
-       self.win_state.handle_output(window, &self.ctx, output);
-       self.jobs = self.ctx.tessellate(jobs);
+       let (output, jobs) = self.egui_ctx.end_frame();
+       self.win_state.handle_output(window, &self.egui_ctx, output);
+       self.jobs = self.egui_ctx.tessellate(jobs);
     }
 
     pub fn render(
         &mut self,
+        render_ctx: &RenderCtx,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
     ) -> Result<(), BackendError> {
         self.render_pass.update_texture(
-            device,
-            queue,
-            &self.ctx.texture(),
+            &render_ctx.device,
+            &render_ctx.queue,
+            &self.egui_ctx.texture(),
         );
-        self.render_pass.update_user_textures(device, queue);
+        self.render_pass.update_user_textures(
+            &render_ctx.device,
+            &render_ctx.queue,
+        );
         self.render_pass.update_buffers(
-            device,
-            queue,
+            &render_ctx.device,
+            &render_ctx.queue,
             &self.jobs,
             &self.screen_descriptor,
         );

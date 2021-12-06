@@ -60,6 +60,12 @@ impl MemView {
     }
 }
 
+impl Default for MemView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App for MemView {
     fn update(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {

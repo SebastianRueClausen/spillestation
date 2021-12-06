@@ -38,6 +38,11 @@ impl CpuStatus {
     }
 }
 
+impl Default for CpuStatus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl App for CpuStatus {
     fn update(&mut self, ui: &mut egui::Ui) {
@@ -126,6 +131,12 @@ impl CpuCtrl {
             }
             self.stepped = false;
         }
+    }
+}
+
+impl Default for CpuCtrl {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
