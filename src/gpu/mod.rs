@@ -10,9 +10,8 @@ pub use vram::Vram;
 use crate::util::bits::BitExtract;
 use crate::front::DrawInfo;
 use fifo::Fifo;
-use primitive::{Vertex, FromCmd, Color};
-use ultraviolet::int::IVec2;
-use rasterize::{Shading, UnShaded, Shaded};
+use primitive::{Vertex, Point, TextureParams, Color, TexCoord};
+use rasterize::{Shading, UnShaded, Shaded, Textureing, UnTextured, Textured};
 
 /// How many Hz to output.
 enum VideoMode {
@@ -370,7 +369,7 @@ impl Gpu {
             GpuState::WaitForData(ref mut transfer) => {
                 for (lo, hi) in [(0, 15), (16, 31)] {
                     let value = value.extract_bits(lo, hi) as u16;
-                    self.vram.store_16(IVec2::new(transfer.x, transfer.y), value);
+                    self.vram.store_16(transfer.x, transfer.y, value);
                     if transfer.next() == None {
                         self.state = GpuState::WaitForCmd;
                         break;
@@ -422,10 +421,10 @@ impl Gpu {
             0xe5 => self.gp0_draw_offset(),
             0xe6 => self.gp0_mask_bit_setting(),
             // Draw commands.
-            0x28 => self.gp0_four_point_poly::<UnShaded>(),
-            0x2c => self.gp0_four_point_poly::<UnShaded>(),
-            0x30 => self.gp0_three_point_poly::<Shaded>(),
-            0x38 => {},
+            0x28 => self.gp0_four_point_poly::<UnShaded, UnTextured>(),
+            0x2c => self.gp0_four_point_poly::<UnShaded, Textured>(),
+            0x30 => self.gp0_three_point_poly::<Shaded, UnTextured>(),
+            0x38 => self.gp0_four_point_poly::<Shaded, UnTextured>(),
             // Opaque no shading.
             0x44 => self.gp0_line(),
             // Copy react command.
@@ -434,50 +433,107 @@ impl Gpu {
         }
     }
 
-    fn gp0_three_point_poly<S: Shading>(&mut self) {
-        let color = if !S::is_shaded() {
-            Color::from_cmd(self.fifo.pop())
-        } else {
-            // This isn't used.
-            Color::from_rgb(0, 0, 0)
-        };
+    fn gp0_three_point_poly<S: Shading, T: Textureing>(&mut self) {
         let mut verts = [Vertex::default(); 3];
-        for vertex in verts.iter_mut() {
-            if S::is_shaded() {
-                vertex.color = Color::from_cmd(self.fifo.pop());
-            }
-            vertex.point = IVec2::from_cmd(self.fifo.pop())
-                + IVec2::new(self.draw_x_offset as i32, self.draw_y_offset as i32);
+        let mut params = TextureParams::default();
+        let mut color = Color::from_rgb(0, 0, 0);
+        if !S::is_shaded() {
+            color = Color::from_u32(self.fifo.pop());
         }
-        self.draw_triangle::<S>(color, &verts[0], &verts[1], &verts[2]);
+        for (i, vertex) in verts.iter_mut().enumerate() {
+            if S::is_shaded() {
+                vertex.color = Color::from_u32(self.fifo.pop());
+            }
+            vertex.point = Point::from_u32(self.fifo.pop());
+            // Add draw offset.
+            vertex.point.x += self.draw_x_offset as i32;
+            vertex.point.y += self.draw_y_offset as i32;
+            if T::is_textured() {
+                let value = self.fifo.pop();
+                match i {
+                    0 => {
+                        let value = (value >> 16) as i32;
+                        params.palette_page_x = (value & 0x3f) << 4;
+                        params.palette_page_y = (value >> 6) & 0x1ff;
+                        // params.palette_page_x = value.extract_bits(15, 20) as i32;
+                        // params.palette_page_y = value.extract_bits(21, 29) as i32;
+                    },
+                    1 => {
+                        // params.texture_page_x = value.extract_bits(15, 18) as i32;
+                        // params.texture_page_y = value.extract_bit(19) as i32;
+                        // params.texture_page_colors = value.extract_bits(22, 23) as i32;
+                        let value = (value >> 16) as i32;
+                        params.texture_page_colors = (value >> 7) & 3;
+                        params.texture_page_x = (value << 6) & 0x3C0;
+                        params.texture_page_y = (value << 4) & 0x100;
+
+                    },
+                    _ => {},
+                }
+                vertex.texcoord = TexCoord {
+                    u: value.extract_bits(0, 7) as u8,
+                    v: value.extract_bits(8, 15) as u8,
+                };
+            }
+        }
+        self.draw_triangle::<S, T>(color, &params, &verts[0], &verts[1], &verts[2]);
     }
 
-    fn gp0_four_point_poly<S: Shading>(&mut self) {
-        let color = if !S::is_shaded() {
-            Color::from_cmd(self.fifo.pop().extract_bits(0, 24))
-        } else {
-            // This isn't used.
-            Color::from_rgb(0, 0, 0)
-        };
+    fn gp0_four_point_poly<S: Shading, T: Textureing>(&mut self) {
         let mut verts = [Vertex::default(); 4];
-        for vertex in verts.iter_mut() {
+        let mut params = TextureParams::default();
+        let mut color = Color::from_rgb(0, 0, 0);
+        if !S::is_shaded() {
+            color = Color::from_u32(self.fifo.pop());
+        }
+        for (i, vertex) in verts.iter_mut().enumerate() {
             // If it's shaded the color is always the first.
             if S::is_shaded() {
-                vertex.color = Color::from_cmd(self.fifo.pop());
+                vertex.color = Color::from_u32(self.fifo.pop());
             }
-            vertex.point = IVec2::from_cmd(self.fifo.pop())
-                + IVec2::new(self.draw_x_offset as i32, self.draw_y_offset as i32);
+            vertex.point = Point::from_u32(self.fifo.pop());
+            // Add draw offset.
+            vertex.point.x += self.draw_x_offset as i32;
+            vertex.point.y += self.draw_y_offset as i32;
+            if T::is_textured() {
+                let value = self.fifo.pop();
+                match i {
+                    0 => {
+                        let value = (value >> 16) as i32;
+                        params.palette_page_x = (value & 0x3f) << 4;
+                        params.palette_page_y = (value >> 6) & 0x1ff;
+                        // params.palette_page_x = value.extract_bits(16, 21) as i32;
+                        // params.palette_page_y = value.extract_bits(22, 30) as i32;
+                    },
+                    1 => {
+                        let value = (value >> 16) as i32;
+                        // params.texture_page_x = value.extract_bits(16, 19) as i32;
+                        // params.texture_page_y = value.extract_bit(20) as i32;
+                        // params.texture_page_colors = value.extract_bits(23, 24) as i32;
+                        params.texture_page_colors = (value >> 7) & 3;
+                        params.texture_page_x = (value << 6) & 0x3C0;
+                        params.texture_page_y = (value << 4) & 0x100;
+                    },
+                    _ => {},
+                }
+                vertex.texcoord = TexCoord {
+                    u: value.extract_bits(0, 7) as u8,
+                    v: value.extract_bits(8, 15) as u8,
+                };
+            }
         }
-        self.draw_triangle::<S>(color, &verts[0], &verts[1], &verts[2]);
-        self.draw_triangle::<S>(color, &verts[1], &verts[2], &verts[3]);
+        self.draw_triangle::<S, T>(color, &params, &verts[0], &verts[1], &verts[2]);
+        self.draw_triangle::<S, T>(color, &params, &verts[1], &verts[2], &verts[3]);
     }
 
     fn gp0_line(&mut self) {
         self.fifo.pop();
-        let start = IVec2::from_cmd(self.fifo.pop())
-            + IVec2::new(self.draw_x_offset as i32, self.draw_y_offset as i32);
-        let end = IVec2::from_cmd(self.fifo.pop())
-            + IVec2::new(self.draw_x_offset as i32, self.draw_y_offset as i32);
+        let mut start = Point::from_u32(self.fifo.pop());
+        start.x += self.draw_x_offset as i32;
+        start.y += self.draw_y_offset as i32;
+        let mut end = Point::from_u32(self.fifo.pop());
+        end.x += self.draw_x_offset as i32;
+        end.y += self.draw_y_offset as i32;
         self.draw_line(start, end);
     }
 

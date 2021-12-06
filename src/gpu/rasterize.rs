@@ -1,7 +1,6 @@
-use super::Gpu;
-use super::primitive::{Color, Vertex};
+use super::{Gpu, TextureDepth};
+use super::primitive::{Color, Point, TexCoord, Vertex, TextureParams};
 use ultraviolet::vec::Vec3;
-use ultraviolet::int::IVec2;
 
 pub trait Shading {
     fn is_shaded() -> bool;
@@ -23,7 +22,49 @@ impl Shading for Shaded {
     }
 }
 
-pub fn barycentric(points: &[IVec2; 3], p: &IVec2) -> Vec3 {
+pub trait Textureing {
+    fn is_textured() -> bool;
+    fn is_raw() -> bool;
+}
+
+pub struct UnTextured;
+
+impl Textureing for UnTextured {
+    fn is_textured() -> bool {
+        false
+    }
+    
+    fn is_raw() -> bool {
+        false
+    }
+}
+
+pub struct Textured;
+
+impl Textureing for Textured {
+    fn is_textured() -> bool {
+        true
+    }
+
+    fn is_raw() -> bool {
+        false
+    }
+}
+
+pub struct TexturedRaw;
+
+impl Textureing for TexturedRaw {
+    fn is_textured() -> bool {
+        true
+    }
+
+    fn is_raw() -> bool {
+        true
+    }
+}
+
+
+pub fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
     let v1 = Vec3::new(
         (points[2].x - points[0].x) as f32,
         (points[1].x - points[0].x) as f32,
@@ -43,34 +84,70 @@ pub fn barycentric(points: &[IVec2; 3], p: &IVec2) -> Vec3 {
 }
 
 impl Gpu {
-    fn draw_pixel(&mut self, point: IVec2, color: Color) {
-        self.vram.store_16(point, color.as_u16());
+    fn draw_pixel(&mut self, point: Point, color: Color) {
+        self.vram.store_16(point.x, point.y, color.as_u16());
     }
 
-    pub fn draw_triangle<S: Shading>(&mut self, color: Color, v1: &Vertex, v2: &Vertex, v3: &Vertex) {
+    fn load_texture_color(&self, params: &TextureParams, coord: TexCoord) -> Color {
+        match self.status.texture_depth() {
+            TextureDepth::B4 => {
+                let value = self.vram.load_16(
+                    params.texture_page_x + (coord.u >> 2) as i32,
+                    params.texture_page_y + coord.v as i32,
+                );
+                let offset = (value >> ((coord.u & 0x3) << 2)) & 0xf;
+                let value = self.vram.load_16(params.palette_page_x + offset as i32, params.palette_page_y);
+                Color::from_u16(value)
+            },
+            TextureDepth::B8 => {
+                let value = self.vram.load_16(
+                    params.texture_page_x + (coord.u >> 1) as i32,
+                    params.texture_page_y + coord.v as i32,
+                );
+                let offset = (value >> ((coord.u & 0x1) << 3)) & 0xff;
+                Color::from_u16(self.vram.load_16(params.palette_page_x + offset as i32, params.palette_page_y))
+            },
+            TextureDepth::B15 => {
+                let value = self.vram.load_16(
+                    params.texture_page_x + coord.u as i32,
+                    params.texture_page_y + coord.v as i32,
+                );
+                Color::from_u16(value)
+            },
+        }
+    }
+
+    pub fn draw_triangle<S: Shading, T: Textureing>(
+        &mut self,
+        color: Color,
+        params: &TextureParams,
+        v1: &Vertex,
+        v2: &Vertex,
+        v3: &Vertex,
+    ) {
         let points = [v1.point, v2.point, v3.point];
         // Calculate bounding box.
-        let max = IVec2 {
+        let max = Point {
             x: i32::max(points[0].x, i32::max(points[1].x, points[2].x)),
             y: i32::max(points[1].y, i32::max(points[1].y, points[2].y)),
         };
-        let min = IVec2 {
+        let min = Point {
             x: i32::min(points[0].x, i32::min(points[1].x, points[2].x)),
             y: i32::min(points[0].y, i32::min(points[1].y, points[2].y)),
         };
         // Clip screen bounds.
-        let max = IVec2 {
+        let max = Point {
             x: i32::max(max.x, self.draw_area_right as i32),
             y: i32::max(max.y, self.draw_area_top as i32),
         };
-        let min = IVec2 {
+        let min = Point {
             x: i32::min(min.x, self.draw_area_left as i32),
             y: i32::min(min.y, self.draw_area_bottom as i32),
         };
         // Rasterize.
         for y in min.y..=max.y {
             for x in min.x..=max.x {
-                let p = IVec2::new(x, y);
+                let p = Point::new(x, y);
                 let res = barycentric(&points, &p);
                 if res.x < 0.0 || res.y < 0.0 || res.z < 0.0 {
                     continue;
@@ -83,7 +160,15 @@ impl Gpu {
                 } else {
                     color 
                 };
-                // TODO: Texture lerp.
+                let color = if T::is_textured() {
+                    let uv = TexCoord {
+                        u: (v1.texcoord.u as f32 * res.x + v2.texcoord.u as f32 * res.y + v3.texcoord.u as f32 * res.z) as u8,
+                        v: (v1.texcoord.v as f32 * res.x + v2.texcoord.v as f32 * res.y + v3.texcoord.v as f32 * res.z) as u8,
+                    };
+                    self.load_texture_color(params, uv)
+                } else {
+                   color 
+                };
                 self.draw_pixel(p, color);
             }
         }
@@ -166,6 +251,6 @@ impl Gpu {
     }
     */
 
-    pub fn draw_line(&mut self, _start: IVec2, _end: IVec2) {
+    pub fn draw_line(&mut self, _start: Point, _end: Point) {
     }
 }
