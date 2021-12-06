@@ -92,25 +92,25 @@ impl Gpu {
         match self.status.texture_depth() {
             TextureDepth::B4 => {
                 let value = self.vram.load_16(
-                    params.texture_page_x + (coord.u >> 2) as i32,
-                    params.texture_page_y + coord.v as i32,
+                    params.texture_x + (coord.u >> 2) as i32,
+                    params.texture_y + coord.v as i32,
                 );
                 let offset = (value >> ((coord.u & 0x3) << 2)) & 0xf;
-                let value = self.vram.load_16(params.palette_page_x + offset as i32, params.palette_page_y);
+                let value = self.vram.load_16(params.clut_x + offset as i32, params.clut_y);
                 Color::from_u16(value)
             },
             TextureDepth::B8 => {
                 let value = self.vram.load_16(
-                    params.texture_page_x + (coord.u >> 1) as i32,
-                    params.texture_page_y + coord.v as i32,
+                    params.texture_x + (coord.u >> 1) as i32,
+                    params.texture_y + coord.v as i32,
                 );
                 let offset = (value >> ((coord.u & 0x1) << 3)) & 0xff;
-                Color::from_u16(self.vram.load_16(params.palette_page_x + offset as i32, params.palette_page_y))
+                Color::from_u16(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
             },
             TextureDepth::B15 => {
                 let value = self.vram.load_16(
-                    params.texture_page_x + coord.u as i32,
-                    params.texture_page_y + coord.v as i32,
+                    params.texture_x + coord.u as i32,
+                    params.texture_y + coord.v as i32,
                 );
                 Color::from_u16(value)
             },

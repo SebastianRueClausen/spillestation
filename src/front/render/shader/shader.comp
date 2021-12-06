@@ -3,12 +3,8 @@
 const uint VRAM_SIZE = 1024 * 1024;
 
 layout (set = 0, binding = 0) buffer readonly Vram {
-		uint width;
-		uint height;
-		uint field;
 		uint display_area_x;
 		uint display_area_y;
-
 		uint vram[VRAM_SIZE / 4];
 };
 layout (set = 0, binding = 1, rgba16f) uniform writeonly image2D tex;

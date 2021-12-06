@@ -1,43 +1,19 @@
 use crate::gpu::vram::{Vram, VRAM_SIZE};
 use super::{Canvas, CANVAS_FORMAT};
-use crate::gpu::InterlaceField;
 
+/// Info used to compute ['Canvas'] from VRAM.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod)]
 pub struct DrawInfo {
-    width: u32,
-    height: u32,
-    field: u32,
-    display_area_x: u32,
-    display_area_y: u32,
+    pub x_start: u32,
+    pub y_start: u32,
 }
 
 unsafe impl bytemuck::Zeroable for DrawInfo {
     fn zeroed() -> Self {
         Self {
-            width: 0,
-            height: 0,
-            field: 0,
-            display_area_x: 0,
-            display_area_y: 0,
-        }
-    }
-}
-
-impl DrawInfo {
-    pub fn new(
-        width: u32,
-        height: u32,
-        field: InterlaceField,
-        display_area_x: u32,
-        display_area_y: u32,
-    ) -> Self {
-        Self {
-            width,
-            height,
-            field: field as u32,
-            display_area_x,
-            display_area_y,
+            x_start: 0,
+            y_start: 0,
         }
     }
 }

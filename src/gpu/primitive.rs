@@ -76,21 +76,21 @@ impl Color {
 }
 
 pub struct TextureParams {
-    pub palette_page_x: i32,
-    pub palette_page_y: i32,
-    pub texture_page_x: i32,
-    pub texture_page_y: i32,
-    pub texture_page_colors: i32,
+    pub clut_x: i32,
+    pub clut_y: i32,
+    pub texture_x: i32,
+    pub texture_y: i32,
+    pub texture_colors: i32,
 }
 
 impl Default for TextureParams {
     fn default() -> Self {
         Self {
-            palette_page_x: 0,
-            palette_page_y: 0,
-            texture_page_x: 0,
-            texture_page_y: 0,
-            texture_page_colors: 0,
+            clut_x: 0,
+            clut_y: 0,
+            texture_x: 0,
+            texture_y: 0,
+            texture_colors: 0,
         }
     }
 }

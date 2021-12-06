@@ -384,13 +384,10 @@ impl Gpu {
     }
 
     pub fn draw_info(&self) -> DrawInfo {
-        DrawInfo::new(
-            self.status.horizontal_res(),
-            self.status.vertical_res(),
-            self.status.interlace_field(),
-            self.display_vram_x_start as u32,
-            self.display_vram_y_start as u32,
-        )
+        DrawInfo {
+            x_start: self.display_vram_x_start as u32,
+            y_start: self.display_vram_y_start as u32,
+        }
     }
 
     fn gp1_store(&mut self, value: u32) {
@@ -453,8 +450,8 @@ impl Gpu {
                 match i {
                     0 => {
                         let value = (value >> 16) as i32;
-                        params.palette_page_x = (value & 0x3f) << 4;
-                        params.palette_page_y = (value >> 6) & 0x1ff;
+                        params.clut_x = (value & 0x3f) << 4;
+                        params.clut_y = (value >> 6) & 0x1ff;
                         // params.palette_page_x = value.extract_bits(15, 20) as i32;
                         // params.palette_page_y = value.extract_bits(21, 29) as i32;
                     },
@@ -463,9 +460,9 @@ impl Gpu {
                         // params.texture_page_y = value.extract_bit(19) as i32;
                         // params.texture_page_colors = value.extract_bits(22, 23) as i32;
                         let value = (value >> 16) as i32;
-                        params.texture_page_colors = (value >> 7) & 3;
-                        params.texture_page_x = (value << 6) & 0x3C0;
-                        params.texture_page_y = (value << 4) & 0x100;
+                        params.texture_colors = (value >> 7) & 3;
+                        params.texture_x = (value << 6) & 0x3C0;
+                        params.texture_y = (value << 4) & 0x100;
 
                     },
                     _ => {},
@@ -500,8 +497,8 @@ impl Gpu {
                 match i {
                     0 => {
                         let value = (value >> 16) as i32;
-                        params.palette_page_x = (value & 0x3f) << 4;
-                        params.palette_page_y = (value >> 6) & 0x1ff;
+                        params.clut_x = (value & 0x3f) << 4;
+                        params.clut_y = (value >> 6) & 0x1ff;
                         // params.palette_page_x = value.extract_bits(16, 21) as i32;
                         // params.palette_page_y = value.extract_bits(22, 30) as i32;
                     },
@@ -510,9 +507,9 @@ impl Gpu {
                         // params.texture_page_x = value.extract_bits(16, 19) as i32;
                         // params.texture_page_y = value.extract_bit(20) as i32;
                         // params.texture_page_colors = value.extract_bits(23, 24) as i32;
-                        params.texture_page_colors = (value >> 7) & 3;
-                        params.texture_page_x = (value << 6) & 0x3C0;
-                        params.texture_page_y = (value << 4) & 0x100;
+                        params.texture_colors = (value >> 7) & 3;
+                        params.texture_x = (value << 6) & 0x3C0;
+                        params.texture_y = (value << 4) & 0x100;
                     },
                     _ => {},
                 }
