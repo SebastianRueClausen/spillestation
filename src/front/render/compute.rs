@@ -1,5 +1,5 @@
 use crate::gpu::vram::{Vram, VRAM_SIZE};
-use super::{RenderTexture, RENDER_TEXTURE_FORMAT};
+use super::{Canvas, CANVAS_FORMAT};
 use crate::gpu::InterlaceField;
 
 #[repr(C)]
@@ -42,7 +42,7 @@ impl DrawInfo {
     }
 }
 
-/// Used to generate the ['RenderTexture'] from the playstation VRAM directly using compute shaders.
+/// Used to generate the ['Canvas'] from the playstation VRAM directly using compute shaders.
 /// This is called before every rendered frame. This means that 1 mb of data is uploaded to the GPU
 /// each frame, which could be quite expensive. However generating the texture on the CPU would
 /// take a lot of time, and the generated texture, which would be almost as big or bigger, still has to
@@ -58,14 +58,14 @@ pub struct ComputeStage {
     /// };
     /// layout (set = 0, binding = 1, rgba16f) uniform writeonly image2D tex;
     /// '''
-    /// The first is 'input_buffer', the second is ['RenderTexture'].
+    /// The first is 'input_buffer', the second is ['Canvas'].
     bind_group: wgpu::BindGroup,
-    /// The dispatches the compute shader for each pixel in ['RenderTexture'].
+    /// The dispatches the compute shader for each pixel in ['Canvas'].
     pipeline: wgpu::ComputePipeline,
 }
 
 impl ComputeStage {
-    pub fn new(device: &wgpu::Device, render_texture: &RenderTexture) -> Self {
+    pub fn new(device: &wgpu::Device, canvas: &Canvas) -> Self {
         let shader = device.create_shader_module(&wgpu::include_spirv!("shader/comp.spv"));
         let input_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Compute Storage Buffer"),
@@ -94,7 +94,7 @@ impl ComputeStage {
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: RENDER_TEXTURE_FORMAT,
+                        format: CANVAS_FORMAT,
                        view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
@@ -111,7 +111,7 @@ impl ComputeStage {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&render_texture.view),
+                    resource: wgpu::BindingResource::TextureView(&canvas.view),
                 },
             ],
         });
@@ -133,15 +133,15 @@ impl ComputeStage {
         }
     }
 
-    /// Generate ['RenderTexture'] from the playstations VRAM. First it transfers the entire VRAM
-    /// to the shdader, then it dispatches the compute shader for each pixel in ['RenderTexture'].
+    /// Generate ['Canvas'] from the playstations VRAM. First it transfers the entire VRAM
+    /// to the shdader, then it dispatches the compute shader for each pixel in ['Canvas'].
     pub fn compute_render_texture(
         &mut self,
         vram: &Vram,
         draw_info: &DrawInfo,
         encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
-        render_texture: &RenderTexture,
+        canvas: &Canvas,
     ) {
         // Transfer the entire VRAM. This could be done with a staging belt, which should be faster
         // in theory. However in the testing i have done, that didn't seem to be the case, which
@@ -155,6 +155,6 @@ impl ComputeStage {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.dispatch(render_texture.extent.width, render_texture.extent.height, 1);
+        pass.dispatch(canvas.extent.width, canvas.extent.height, 1);
     }
 }

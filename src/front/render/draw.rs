@@ -1,4 +1,4 @@
-use super::{RenderCtx, RenderTexture};
+use super::{RenderCtx, Canvas};
 use ultraviolet::{Mat4, Vec2};
 use wgpu::util::DeviceExt;
 
@@ -12,8 +12,8 @@ struct ScissorRect {
     height: u32,
 }
 
-/// The draw stage for displaying the ['RenderTexture'] on screen. It's for the most part
-/// very simple. It draws a single triangle, which get's textured by the ['RenderTexture']. The
+/// The draw stage for displaying the ['Canvas'] on screen. It's for the most part
+/// very simple. It draws a single triangle, which get's textured by the ['Canvas']. The
 /// only complicated part is the transforming and clipping of the texture to display it correctly.
 pub struct DrawStage {
     /// Vertex buffex. It only contains a sinlge trianlge. Each vertex has a position and texture coordinate and it's
@@ -30,7 +30,7 @@ pub struct DrawStage {
 impl DrawStage {
     pub fn new(
         ctx: &RenderCtx, 
-        render_texture: &RenderTexture,
+        canvas: &Canvas,
     ) -> Self {
         let texture_sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Texture Sampler"),
@@ -70,8 +70,8 @@ impl DrawStage {
         };
         let (transform, scissor_rect) = generate_transform_matrix(
             Vec2::new(
-                render_texture.extent.width as f32,
-                render_texture.extent.height as f32,
+                canvas.extent.width as f32,
+                canvas.extent.height as f32,
             ),
             Vec2::new(ctx.surface_size.width as f32, ctx.surface_size.height as f32),
         );
@@ -122,7 +122,7 @@ impl DrawStage {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&render_texture.view),
+                    resource: wgpu::BindingResource::TextureView(&canvas.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -209,12 +209,12 @@ impl DrawStage {
     pub fn resize(
         &mut self,
         ctx: &RenderCtx,
-        render_texture: &RenderTexture,
+        canvas: &Canvas,
     ) {
         let (transform, scissor_rect) = generate_transform_matrix(
             Vec2::new(
-                render_texture.extent.width as f32,
-                render_texture.extent.height as f32,
+                canvas.extent.width as f32,
+                canvas.extent.height as f32,
             ),
             Vec2::new(ctx.surface_size.width as f32, ctx.surface_size.height as f32),
         );
