@@ -5,36 +5,34 @@ use super::App;
 
 pub struct CpuStatus {
     registers: [String; 32],
-    hi: String,
-    lo: String,
-    pc: String,
-    ins: String,
+    fields: [String; 4],
 }
 
 impl CpuStatus {
     pub fn new() -> Self {
         Self {
             registers: Default::default(),
-            hi: String::with_capacity(16),
-            lo: String::with_capacity(16),
-            pc: String::with_capacity(16),
-            ins: String::with_capacity(32),
+            fields: Default::default(),
         }
     }
 
-    pub fn update_info(&mut self, cpu: &Cpu) {
+    pub fn write_fields(&mut self, cpu: &Cpu) -> Result<(), std::fmt::Error> {
         for (show, value) in self.registers.iter_mut().zip(cpu.registers.iter()) {
-            show.clear();
-            write!(show, "{}", value).unwrap();
+            write!(show, "{}", value)?;
         }
-        self.hi.clear();
-        self.lo.clear();
-        self.pc.clear();
-        self.ins.clear();
-        write!(&mut self.hi, "{:08x}", cpu.hi).unwrap();
-        write!(&mut self.lo, "{:08x}", cpu.lo).unwrap();
-        write!(&mut self.pc, "{:08x}", cpu.pc).unwrap();
-        write!(&mut self.ins, "{}", cpu.current_instruction()).unwrap();
+        write!(&mut self.fields[0], "{:08x}", cpu.hi)?;
+        write!(&mut self.fields[1], "{:08x}", cpu.lo)?;
+        write!(&mut self.fields[2], "{:08x}", cpu.pc)?;
+        write!(&mut self.fields[3], "{}", cpu.current_instruction())?;
+        Ok(()) 
+    }
+
+    pub fn update_fields(&mut self, cpu: &Cpu) {
+        self.fields.iter_mut().for_each(|field| field.clear());
+        self.registers.iter_mut().for_each(|register| register.clear());
+        if let Err(err) = self.write_fields(cpu) {
+            eprintln!("{}", err);
+        }
     }
 }
 
@@ -48,29 +46,22 @@ impl App for CpuStatus {
     fn update(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("Status", |ui| {
             egui::ScrollArea::vertical()
-                .max_height(100.0)
-                .auto_shrink([false, false])
+                .auto_shrink([false, true])
+                .max_height(200.0)
                 .show(ui, |ui| {
                     egui::Grid::new("Status Grid").show(ui, |ui| {
-                        ui.label("hi");
-                        ui.label(&self.hi);
-                        ui.end_row();
-                        ui.label("lo");
-                        ui.label(&self.lo);
-                        ui.end_row();
-                        ui.label("pc");
-                        ui.label(&self.pc);
-                        ui.end_row();
-                        ui.label("ins");
-                        ui.label(&self.ins);
-                        ui.end_row();
+                        for (field, label) in self.fields.iter_mut().zip(FIELD_LABELS.iter()) {
+                            ui.label(label); 
+                            ui.label(field); 
+                            ui.end_row();
+                        }
                     });
                 });
         });
         ui.collapsing("Registers", |ui| {
             egui::ScrollArea::vertical()
-                .max_height(200.0)
-                .auto_shrink([false, false])
+                .auto_shrink([false, true])
+                .max_height(480.0)
                 .show(ui, |ui| {
                     egui::Grid::new("Register Grid").show(ui, |ui| {
                         for (value, name) in self.registers.iter().zip(REGISTER_NAMES.iter()) {
@@ -95,8 +86,6 @@ impl App for CpuStatus {
             });
     }
 }
-
-const MAX_CYCLE_HZ: usize = 30_000_000;
 
 pub struct CpuCtrl {
     cycle_hz: usize,
@@ -186,3 +175,12 @@ impl App for CpuCtrl {
             });
     }
 }
+
+const FIELD_LABELS: [&'static str; 4] = [
+   "hi",
+   "lo",
+   "pc",
+   "ins",
+];
+
+const MAX_CYCLE_HZ: usize = 30_000_000;

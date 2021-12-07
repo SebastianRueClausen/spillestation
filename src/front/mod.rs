@@ -1,23 +1,9 @@
 use winit::{
     window::WindowBuilder,
-    event_loop::{
-        EventLoop, ControlFlow,
-    },
-    event::{
-        Event,
-        WindowEvent,
-        KeyboardInput,
-        ElementState,
-        VirtualKeyCode,
-    },
+    event_loop::{EventLoop, ControlFlow},
+    event::{Event, WindowEvent, ElementState, VirtualKeyCode},
 };
-use render::{
-    RenderCtx,
-    SurfaceSize,
-    Canvas,
-    DrawStage,
-    ComputeStage,
-};
+use render::{RenderCtx, SurfaceSize, Canvas, DrawStage, ComputeStage};
 use gui::{GuiCtx, app_menu::AppMenu};
 use crate::cpu::Cpu;
 use std::time::{Instant, Duration};
@@ -34,7 +20,7 @@ pub fn run() {
     let window = WindowBuilder::new()
         .with_title("Spillestation")
         .build(&event_loop)
-        .unwrap();
+        .expect("Failed to create window");
     let mut render_ctx = RenderCtx::new(&window);
     let mut gui = GuiCtx::new(
         window.scale_factor() as f32,
@@ -77,14 +63,7 @@ pub fn run() {
                 ref event, window_id,
             } if window_id == window.id() => {
                 match event {
-                    WindowEvent::CloseRequested | WindowEvent::KeyboardInput {
-                        input: KeyboardInput {
-                            state: ElementState::Pressed,
-                            virtual_keycode: Some(VirtualKeyCode::Escape),
-                            ..
-                        },
-                        ..
-                    } => {
+                    WindowEvent::CloseRequested => {
                         *control_flow = ControlFlow::Exit;
                     },
                     WindowEvent::Resized(physical_size) => {
@@ -101,6 +80,20 @@ pub fn run() {
                         draw.resize(&render_ctx, &canvas);
                         gui.set_scale_factor(window.scale_factor() as f32);
                     },
+                    WindowEvent::KeyboardInput {
+                        input,
+                        ..
+                    } => {
+                        match (input.virtual_keycode, input.state) {
+                            (Some(VirtualKeyCode::M), ElementState::Pressed) => {
+                                app_menu.open = !app_menu.open;
+                            },
+                            (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
+                                *control_flow = ControlFlow::Exit;
+                            },
+                            _ => {},
+                        } 
+                    },
                     _ => {
                         gui.handle_window_event(event); 
                     },
@@ -115,20 +108,18 @@ pub fn run() {
                         &renderer.queue,
                         &canvas,
                     );
-                    draw.render(
-                        encoder,
-                        &view,
-                    );
+                    draw.render(encoder, &view);
                     gui.begin_frame(&window);
                     app_menu.show_apps(&mut gui);
                     app_menu.show(&mut gui.egui_ctx);
                     gui.end_frame(&window);
-                    gui.render(
-                        renderer,
-                        encoder,
-                        view,
-                    )
-                    .expect("Failed to render gui");
+                    match gui.render(renderer, encoder, view) {
+                        Err(err) => {
+                            app_menu.close_apps();
+                            eprintln!("{}", err);
+                        },
+                        Ok(()) => {},
+                    }
                 });
             },
             Event::MainEventsCleared => {

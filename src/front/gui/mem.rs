@@ -4,9 +4,6 @@ use super::App;
 use std::str;
 use std::fmt::Write;
 
-const COLUMNS: usize = 8;
-const ROWS: usize = 8;
-
 type Cell = [u8; 2];
 
 pub struct MemView {
@@ -75,7 +72,7 @@ impl App for MemView {
         });
         if self.ins_mode {
             let aligned = (self.start_addr + 4 - 1) / 4 * 4;
-            egui::Grid::new("Instructions Grid").show(ui, |ui| {
+            egui::Grid::new("instruction_grid").show(ui, |ui| {
                 for (i, ins) in self.instructions.iter().enumerate() {
                     ui.label(format!("{:06x}: ", aligned + (4 * i) as u32));
                     ui.label(ins); 
@@ -107,6 +104,9 @@ impl App for MemView {
             });
     }
 }
+
+const COLUMNS: usize = 8;
+const ROWS: usize = 8;
 
 const HEX_ASCII: [u8; 16] = [
     '0' as u8,

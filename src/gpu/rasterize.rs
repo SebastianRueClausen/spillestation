@@ -1,5 +1,5 @@
 use super::{Gpu, TextureDepth};
-use super::primitive::{Color, Point, TexCoord, Vertex, TextureParams};
+use super::primitive::{Color, Texel, Point, TexCoord, Vertex, TextureParams};
 use ultraviolet::vec::Vec3;
 
 pub trait Shading {
@@ -63,6 +63,25 @@ impl Textureing for TexturedRaw {
     }
 }
 
+pub trait Transparency {
+    fn is_transparent() -> bool;
+}
+
+pub struct Transparent;
+
+impl Transparency for Transparent {
+    fn is_transparent() -> bool {
+        true
+    }
+}
+
+pub struct Opaque;
+
+impl Transparency for Opaque {
+    fn is_transparent() -> bool {
+        false
+    }
+}
 
 pub fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
     let v1 = Vec3::new(
@@ -88,7 +107,7 @@ impl Gpu {
         self.vram.store_16(point.x, point.y, color.as_u16());
     }
 
-    fn load_texture_color(&self, params: &TextureParams, coord: TexCoord) -> Color {
+    fn load_texture_color(&self, params: &TextureParams, coord: TexCoord) -> Texel {
         match self.status.texture_depth() {
             TextureDepth::B4 => {
                 let value = self.vram.load_16(
@@ -96,8 +115,7 @@ impl Gpu {
                     params.texture_y + coord.v as i32,
                 );
                 let offset = (value >> ((coord.u & 0x3) << 2)) & 0xf;
-                let value = self.vram.load_16(params.clut_x + offset as i32, params.clut_y);
-                Color::from_u16(value)
+                Texel::new(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
             },
             TextureDepth::B8 => {
                 let value = self.vram.load_16(
@@ -105,21 +123,21 @@ impl Gpu {
                     params.texture_y + coord.v as i32,
                 );
                 let offset = (value >> ((coord.u & 0x1) << 3)) & 0xff;
-                Color::from_u16(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
+                Texel::new(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
             },
             TextureDepth::B15 => {
                 let value = self.vram.load_16(
                     params.texture_x + coord.u as i32,
                     params.texture_y + coord.v as i32,
                 );
-                Color::from_u16(value)
+                Texel::new(value)
             },
         }
     }
 
-    pub fn draw_triangle<S: Shading, T: Textureing>(
+    pub fn draw_triangle<S: Shading, Tex: Textureing, Trans: Transparency>(
         &mut self,
-        color: Color,
+        shade: Color,
         params: &TextureParams,
         v1: &Vertex,
         v2: &Vertex,
@@ -158,14 +176,34 @@ impl Gpu {
                     let b = v1.color.b as f32 * res.x + v2.color.b as f32 * res.y + v3.color.b as f32 * res.z;
                     Color::from_rgb(r as u8, g as u8, b as u8)
                 } else {
-                    color 
+                    shade 
                 };
-                let color = if T::is_textured() {
+                let color = if Tex::is_textured() {
                     let uv = TexCoord {
                         u: (v1.texcoord.u as f32 * res.x + v2.texcoord.u as f32 * res.y + v3.texcoord.u as f32 * res.z) as u8,
                         v: (v1.texcoord.v as f32 * res.x + v2.texcoord.v as f32 * res.y + v3.texcoord.v as f32 * res.z) as u8,
                     };
-                    self.load_texture_color(params, uv)
+                    let texel = self.load_texture_color(params, uv);
+                    let color = if Tex::is_raw() {
+                        texel.as_color()
+                    } else {
+                        let color = texel.as_color();
+                        let r = (color.r as u16) * (shade.r as u16);
+                        let g = (color.g as u16) * (shade.g as u16);
+                        let b = (color.b as u16) * (shade.b as u16);
+                        Color {
+                            r: (r / 0x80).min(0xff) as u8,
+                            g: (g / 0x80).min(0xff) as u8,
+                            b: (b / 0x80).min(0xff) as u8,
+                        }
+                    };
+                    if Trans::is_transparent() && texel.is_transparent() {
+                        let current_color = Color::from_u16(
+                            self.vram.load_16(p.x, p.y)
+                        );
+
+                    }
+                    color
                 } else {
                    color 
                 };

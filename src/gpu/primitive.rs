@@ -36,6 +36,23 @@ impl TexCoord {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub struct Texel(u16);
+
+impl Texel {
+    pub fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    pub fn as_color(self) -> Color {
+        Color::from_u16(self.0)
+    }
+
+    pub fn is_transparent(self) -> bool {
+        (self.0 as u32).extract_bit(15) == 1
+    }
+}
+
 /// Depth of the color can be either 16 or 24 bits.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct Color {

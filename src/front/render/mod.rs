@@ -82,7 +82,7 @@ impl RenderCtx {
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }))
-        .unwrap();
+        .expect("Failed to find adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
@@ -91,7 +91,7 @@ impl RenderCtx {
             },
             None,
         ))
-        .unwrap();
+        .expect("Failed find suitable render device");
         let surface_format = surface.get_preferred_format(&adapter).unwrap();
         let surface_size = SurfaceSize { width, height };
         surface.configure(
@@ -134,7 +134,7 @@ impl RenderCtx {
                 }
                 _ => panic!("Surface Error {}", err),
             })
-            .unwrap();
+            .expect("Failed get surface");
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("") });

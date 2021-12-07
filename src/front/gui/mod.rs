@@ -3,12 +3,14 @@ use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
 use egui_winit::State as WinState;
 use winit::window::Window;
 use super::{SurfaceSize, RenderCtx};
+
 pub use app::App;
 
 pub mod fps;
 pub mod cpu;
 pub mod app;
 pub mod mem;
+pub mod gpu;
 pub mod app_menu;
 
 /// All the egui stuff required to draw gui to the screen.
