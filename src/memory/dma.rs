@@ -205,7 +205,7 @@ impl Channel {
             0 => self.base,
             4 => self.block_control.0,
             8 => self.control.0,
-            _ => panic!("Invalid load in channel at offset {:08x}", offset),
+            _ => unreachable!("Invalid load in channel at offset {:08x}", offset),
         }
     }
 
@@ -215,7 +215,7 @@ impl Channel {
             0 => self.base = value.extract_bits(0, 23),
             4 => self.block_control = BlockControl::new(value),
             8 => self.control = ChannelControl::new(value),
-            _ => panic!("Invalid store at in channel at offset {:08x}", offset),
+            _ => unreachable!("Invalid store at in channel at offset {:08x}", offset),
         }
     }
 }

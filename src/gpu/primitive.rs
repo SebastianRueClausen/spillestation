@@ -90,6 +90,49 @@ impl Color {
         let b = (self.b & 0xf8) as u16;
         (r >> 3) | (g << 2) | (b << 7)
     }
+
+    pub fn shade_blend(self, other: Self) -> Self {
+        let r = (self.r as u16) * (other.r as u16);
+        let g = (self.g as u16) * (other.g as u16);
+        let b = (self.b as u16) * (other.b as u16);
+        Self {
+            r: (r / 0x80).min(0xff) as u8,
+            g: (g / 0x80).min(0xff) as u8,
+            b: (b / 0x80).min(0xff) as u8,
+        }
+    }
+
+    pub fn avg_blend(self, other: Self) -> Self {
+        Self {
+            r: (self.r / 2).saturating_add(other.r / 2),
+            g: (self.g / 2).saturating_add(other.g / 2),
+            b: (self.b / 2).saturating_add(other.b / 2),
+        }
+    }
+
+    pub fn add_blend(self, other: Self) -> Self {
+        Self {
+            r: other.r.saturating_add(self.r),
+            g: other.g.saturating_add(self.g),
+            b: other.b.saturating_add(self.b),
+        }
+    }
+
+    pub fn sub_blend(self, other: Self) -> Self {
+        Self {
+            r: other.r.saturating_sub(self.r),
+            g: other.g.saturating_sub(self.g),
+            b: other.b.saturating_sub(self.b),
+        }
+    }
+
+    pub fn add_div_blend(self, other: Self) -> Self {
+        Self {
+            r: (other.r as i32 + ((self.r / 4) as i32)).clamp(0, 255) as u8,
+            g: (other.g as i32 + ((self.g / 4) as i32)).clamp(0, 255) as u8,
+            b: (other.b as i32 + ((self.b / 4) as i32)).clamp(0, 255) as u8,
+        }
+    }
 }
 
 pub struct TextureParams {

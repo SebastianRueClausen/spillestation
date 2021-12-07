@@ -4,6 +4,7 @@ use super::GuiCtx;
 use std::time::Duration;
 use crate::cpu::Cpu;
 
+/// Used to store an application and keep track of the it's open/closed status.
 #[derive(Default)]
 struct AppItem<T: App + Default> {
     app: T,
@@ -16,7 +17,10 @@ impl<T: App + Default> AppItem<T> {
     }
 }
 
+/// Controller/Menu for all the apps available. It's responsible for both updating, rendering and
+/// controlling when they are visible. It also provides a menu for opening and closing apps.
 pub struct AppMenu {
+    /// If the menu itself is open.
     pub open: bool,
     frame_counter: AppItem<FrameCounter>,
     cpu_ctrl: AppItem<CpuCtrl>,
@@ -37,10 +41,10 @@ impl AppMenu {
         }
     }
 
+    /// Update all the apps that require it. Called each update cycle.
     pub fn update_tick(&mut self, dt: Duration, cpu: &mut Cpu) {
-        if self.cpu_ctrl.open {
-            self.cpu_ctrl.app.run_cpu(dt, cpu); 
-        }
+        // The CPU controller always get's to run.
+        self.cpu_ctrl.app.run_cpu(dt, cpu); 
         if self.cpu_status.open {
             self.cpu_status.app.update_fields(cpu);
         }
@@ -52,10 +56,12 @@ impl AppMenu {
         }
     }
 
+    /// Called each frame.
     pub fn draw_tick(&mut self, dt: Duration) {
         self.frame_counter.app.tick(dt);
     }
 
+    /// Show all open apps.
     pub fn show_apps(&mut self, ctx: &mut GuiCtx) {
         self.cpu_ctrl.show(&ctx.egui_ctx);
         self.cpu_status.show(&ctx.egui_ctx);
@@ -64,6 +70,7 @@ impl AppMenu {
         self.gpu_status.show(&ctx.egui_ctx);
     }
 
+    /// Closed all apps. Called if rendering of the GUI has failed.
     pub fn close_apps(&mut self) {
         self.cpu_ctrl.open = false;
         self.cpu_status.open = false;

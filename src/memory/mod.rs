@@ -5,20 +5,9 @@ pub mod ram;
 pub mod dma;
 
 use crate::util::bits::BitExtract;
-use crate::gpu::{
-    Gpu,
-    Vram,
-};
-
+use crate::gpu::{Gpu, Vram};
 use bios::Bios;
-use dma::{
-    Dma,
-    Direction,
-    BlockTransfer,
-    LinkedTransfer,
-    Transfers,
-    ChannelPort,
-};
+use dma::{Dma, Direction, BlockTransfer, LinkedTransfer, Transfers, ChannelPort};
 use ram::Ram;
 
 pub trait AddrUnit {
@@ -270,12 +259,16 @@ impl Bus {
         }
     }
 
-    fn to_port_block_transfer(&self, transfer: &BlockTransfer) {
+    fn to_port_block_transfer(&mut self, transfer: &BlockTransfer) {
         let mut address = transfer.start;
         for _ in 0..transfer.size {
-            let _ = self.ram.load::<Word>(address & 0x1ffffc);
+            let value = self.ram.load::<Word>(address & 0x1ffffc);
             match transfer.port {
+                ChannelPort::Gpu => {
+                    self.gpu.dma_store(value);
+                },
                 _ => {
+                    todo!();
                     // Write to port/device.
                 },
             }
@@ -291,8 +284,12 @@ impl Bus {
                     1 => 0xffffff,
                     _ => address.wrapping_sub(4) & 0x1fffff,
                 }
+                ChannelPort::Gpu => {
+                    self.gpu.dma_load()
+                },
                 _ => {
-                    0 as u32
+                    todo!();
+                    // 0 as u32
                 },
             };
             self.ram.store::<Word>(address & 0x1ffffc, value);

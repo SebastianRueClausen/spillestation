@@ -1,11 +1,13 @@
-use super::{Gpu, TextureDepth};
+use super::{Gpu, TextureDepth, TransBlend};
 use super::primitive::{Color, Texel, Point, TexCoord, Vertex, TextureParams};
 use ultraviolet::vec::Vec3;
 
+/// The shading mode of a draw call.
 pub trait Shading {
     fn is_shaded() -> bool;
 }
 
+/// Not shaded i.e. each vertex doesn't have a color attribute.
 pub struct UnShaded;
 
 impl Shading for UnShaded {
@@ -14,6 +16,8 @@ impl Shading for UnShaded {
     }
 }
 
+/// Shaded i.e. each vertex has a color attribute. The colors get's interpolated between each
+/// vertex using linear interpolation.
 pub struct Shaded;
 
 impl Shading for Shaded {
@@ -22,11 +26,13 @@ impl Shading for Shaded {
     }
 }
 
+/// The texture mode of a draw call.
 pub trait Textureing {
     fn is_textured() -> bool;
     fn is_raw() -> bool;
 }
 
+/// The shap is only colored by shading.
 pub struct UnTextured;
 
 impl Textureing for UnTextured {
@@ -39,6 +45,7 @@ impl Textureing for UnTextured {
     }
 }
 
+/// The shape is textured and get's blended with with shading.
 pub struct Textured;
 
 impl Textureing for Textured {
@@ -51,6 +58,7 @@ impl Textureing for Textured {
     }
 }
 
+/// The shape is textured and doesn't get blended with shading.
 pub struct TexturedRaw;
 
 impl Textureing for TexturedRaw {
@@ -63,10 +71,14 @@ impl Textureing for TexturedRaw {
     }
 }
 
+/// The transparency mode of a draw call, basically how the color of a shape get's blended with the
+/// background color.
 pub trait Transparency {
     fn is_transparent() -> bool;
 }
 
+/// The shape is transparent or semi-transparent, which means the color of the shape get's blended
+/// with the backgroud color.
 pub struct Transparent;
 
 impl Transparency for Transparent {
@@ -75,6 +87,7 @@ impl Transparency for Transparent {
     }
 }
 
+/// The shape is opaque and doesn't get blended with the background.
 pub struct Opaque;
 
 impl Transparency for Opaque {
@@ -111,18 +124,18 @@ impl Gpu {
         match self.status.texture_depth() {
             TextureDepth::B4 => {
                 let value = self.vram.load_16(
-                    params.texture_x + (coord.u >> 2) as i32,
+                    params.texture_x + (coord.u / 4) as i32,
                     params.texture_y + coord.v as i32,
                 );
-                let offset = (value >> ((coord.u & 0x3) << 2)) & 0xf;
+                let offset = (value >> ((coord.u & 0x3) * 4)) & 0xf;
                 Texel::new(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
             },
             TextureDepth::B8 => {
                 let value = self.vram.load_16(
-                    params.texture_x + (coord.u >> 1) as i32,
+                    params.texture_x + (coord.u / 2) as i32,
                     params.texture_y + coord.v as i32,
                 );
-                let offset = (value >> ((coord.u & 0x1) << 3)) & 0xff;
+                let offset = (value >> ((coord.u & 0x1) * 8)) & 0xff;
                 Texel::new(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
             },
             TextureDepth::B15 => {
@@ -162,7 +175,8 @@ impl Gpu {
             x: i32::min(min.x, self.draw_area_left as i32),
             y: i32::min(min.y, self.draw_area_bottom as i32),
         };
-        // Rasterize.
+        // Loop through all points in the bounding box, and draw the pixel if it's inside the
+        // triangle.
         for y in min.y..=max.y {
             for x in min.x..=max.x {
                 let p = Point::new(x, y);
@@ -170,7 +184,9 @@ impl Gpu {
                 if res.x < 0.0 || res.y < 0.0 || res.z < 0.0 {
                     continue;
                 }
-                let color = if S::is_shaded() {
+                // If the triangle is shaded, we interpolate between the colors of each vertex.
+                // Otherwise the shade is just the base color/shade.
+                let shade = if S::is_shaded() {
                     let r = v1.color.r as f32 * res.x + v2.color.r as f32 * res.y + v3.color.r as f32 * res.z;
                     let g = v1.color.g as f32 * res.x + v2.color.g as f32 * res.y + v3.color.g as f32 * res.z;
                     let b = v1.color.b as f32 * res.x + v2.color.b as f32 * res.y + v3.color.b as f32 * res.z;
@@ -178,34 +194,52 @@ impl Gpu {
                 } else {
                     shade 
                 };
+                // This is if the triangle is textured.
                 let color = if Tex::is_textured() {
                     let uv = TexCoord {
-                        u: (v1.texcoord.u as f32 * res.x + v2.texcoord.u as f32 * res.y + v3.texcoord.u as f32 * res.z) as u8,
+                        u: (v1.texcoord.u as f32 * res.x + v2.texcoord.u as f32 * res.y + v3.texcoord.u as f32 * res.z) as u8 + 1,
                         v: (v1.texcoord.v as f32 * res.x + v2.texcoord.v as f32 * res.y + v3.texcoord.v as f32 * res.z) as u8,
                     };
                     let texel = self.load_texture_color(params, uv);
-                    let color = if Tex::is_raw() {
+                    // If the triangle is not textured raw, the texture color get's blended with the
+                    // shade. Otherwise it doesn't.
+                    let texture_color = if Tex::is_raw() {
                         texel.as_color()
                     } else {
-                        let color = texel.as_color();
-                        let r = (color.r as u16) * (shade.r as u16);
-                        let g = (color.g as u16) * (shade.g as u16);
-                        let b = (color.b as u16) * (shade.b as u16);
-                        Color {
-                            r: (r / 0x80).min(0xff) as u8,
-                            g: (g / 0x80).min(0xff) as u8,
-                            b: (b / 0x80).min(0xff) as u8,
-                        }
+                        texel.as_color().shade_blend(shade)
                     };
+                    // If both the triangle is (semi)transparent and the texel, the texture color
+                    // get's blended with the background.
                     if Trans::is_transparent() && texel.is_transparent() {
-                        let current_color = Color::from_u16(
+                        let background = Color::from_u16(
                             self.vram.load_16(p.x, p.y)
                         );
-
+                        // Apply the current blending.
+                        match self.status.trans_blending() {
+                            TransBlend::Avg => texture_color.avg_blend(background), 
+                            TransBlend::Add => texture_color.add_blend(background), 
+                            TransBlend::Sub => texture_color.sub_blend(background), 
+                            TransBlend::AddDiv => texture_color.add_div_blend(background), 
+                        }
+                    } else {
+                        texture_color
                     }
-                    color
                 } else {
-                   color 
+                    // If the triangle isn't textured, but transparent, the shade get's blended with
+                    // the background color.
+                    if Trans::is_transparent() {
+                        let background = Color::from_u16(
+                            self.vram.load_16(p.x, p.y)
+                        );
+                        match self.status.trans_blending() {
+                            TransBlend::Avg => shade.avg_blend(background), 
+                            TransBlend::Add => shade.add_blend(background), 
+                            TransBlend::Sub => shade.sub_blend(background), 
+                            TransBlend::AddDiv => shade.add_div_blend(background), 
+                        }
+                    } else {
+                        shade
+                    }
                 };
                 self.draw_pixel(p, color);
             }
@@ -280,8 +314,6 @@ impl Gpu {
                     if res.x < 0.0 || res.y < 0.0 || res.z < 0.0 {
                         continue;
                     }
-                    // TODO: Color lerp.
-                    // TODO: Texture lerp.
                     self.draw_pixel(p, Color::from_rgb(255, 255, 255));
                 }
             }
@@ -290,5 +322,6 @@ impl Gpu {
     */
 
     pub fn draw_line(&mut self, _start: Point, _end: Point) {
+
     }
 }

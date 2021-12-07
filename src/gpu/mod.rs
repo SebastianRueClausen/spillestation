@@ -1,12 +1,5 @@
 #![allow(dead_code)]
 
-mod fifo;
-mod primitive;
-mod rasterize;
-pub mod vram;
-
-pub use vram::Vram;
-
 use crate::util::bits::BitExtract;
 use crate::front::DrawInfo;
 use fifo::Fifo;
@@ -24,29 +17,25 @@ use rasterize::{
 };
 use std::fmt;
 
+pub use vram::Vram;
+
+mod fifo;
+mod primitive;
+mod rasterize;
+pub mod vram;
+
+
 pub enum TransBlend {
-    DivAdd = 0,
+    Avg = 0,
     Add = 1,
     Sub = 2,
     AddDiv = 3,
 }
 
-impl TransBlend {
-    fn from_value(value: u32) -> Self {
-        match value {
-            0 => TransBlend::DivAdd,
-            1 => TransBlend::Add,
-            2 => TransBlend::Sub,
-            3 => TransBlend::AddDiv,
-            _ => unreachable!("Invalid transparency blending"),
-        }
-    }
-}
-
 impl fmt::Display for TransBlend {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", match *self {
-            TransBlend::DivAdd => "divide and add", 
+            TransBlend::Avg => "average", 
             TransBlend::Add => "add", 
             TransBlend::Sub => "subtract", 
             TransBlend::AddDiv => "add and divide", 
@@ -60,15 +49,6 @@ pub enum VideoMode {
     Ntsc = 60,
     /// 50 Hz.
     Pal = 50,
-}
-
-impl VideoMode {
-    fn from_value(value: bool) -> Self {
-        match value {
-            false => VideoMode::Ntsc,
-            true => VideoMode::Pal,
-        }
-    }
 }
 
 impl fmt::Display for VideoMode {
@@ -85,18 +65,6 @@ pub enum DmaDirection {
     Fifo = 1,
     CpuToGp0 = 2,
     VramToCpu = 3,
-}
-
-impl DmaDirection {
-    fn from_value(value: u32) -> Self {
-        match value {
-            0 => DmaDirection::Off,
-            1 => DmaDirection::Fifo,
-            2 => DmaDirection::CpuToGp0,
-            3 => DmaDirection::VramToCpu,
-            _ => unreachable!("Invalid dma direction"),
-        }
-    }
 }
 
 impl fmt::Display for DmaDirection {
@@ -116,15 +84,6 @@ pub enum InterlaceField {
     Top = 1,
 }
 
-impl InterlaceField {
-    fn from_value(value: bool) -> Self {
-        match value {
-            false => InterlaceField::Bottom,
-            true => InterlaceField::Top,
-        }
-    }
-}
-
 impl fmt::Display for InterlaceField {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", match *self {
@@ -138,15 +97,6 @@ impl fmt::Display for InterlaceField {
 pub enum ColorDepth {
     B15 = 15,
     B24 = 24,
-}
-
-impl ColorDepth {
-    fn from_value(value: bool) -> Self {
-        match value {
-            false => ColorDepth::B15,
-            true => ColorDepth::B24,
-        }
-    }
 }
 
 impl fmt::Display for ColorDepth {
@@ -163,17 +113,6 @@ pub enum TextureDepth {
     B4 = 4,
     B8 = 8,
     B15 = 15,
-}
-
-impl TextureDepth {
-    fn from_value(value: u32) -> Self {
-        match value {
-            0 => TextureDepth::B4,
-            1 => TextureDepth::B8,
-            2 => TextureDepth::B15,
-            _ => unreachable!("Invalid texture depth"),
-        }
-    }
 }
 
 impl fmt::Display for TextureDepth {
@@ -250,12 +189,23 @@ impl Status {
 
     /// How to blend source and destination colors.
     pub fn trans_blending(self) -> TransBlend {
-        TransBlend::from_value(self.0.extract_bits(5, 6))
+        match self.0.extract_bits(5, 6) {
+            0 => TransBlend::Avg,
+            1 => TransBlend::Add,
+            2 => TransBlend::Sub,
+            3 => TransBlend::AddDiv,
+            _ => unreachable!("Invalid transparency blending"),
+        }
     }
 
     /// Depth of the texture colors.
     pub fn texture_depth(self) -> TextureDepth {
-        TextureDepth::from_value(self.0.extract_bits(7, 8))
+        match self.0.extract_bits(7, 8) {
+            0 => TextureDepth::B4,
+            1 => TextureDepth::B8,
+            2 => TextureDepth::B15,
+            _ => unreachable!("Invalid texture depth"),
+        }
     }
 
     pub fn dithering_enabled(self) -> bool {
@@ -279,7 +229,11 @@ impl Status {
 
     /// The interlace field currently being displayed.
     pub fn interlace_field(self) -> InterlaceField {
-        InterlaceField::from_value(self.0.extract_bit(13) == 1)
+        match self.0.extract_bit(13) {
+            0 => InterlaceField::Bottom,
+            1 => InterlaceField::Top,
+            _ => unreachable!("Invalid interlace field"),
+        }
     }
 
     /// ?
@@ -309,12 +263,20 @@ impl Status {
     }
 
     pub fn video_mode(self) -> VideoMode {
-        VideoMode::from_value(self.0.extract_bit(20) == 1)
+        match self.0.extract_bit(20) {
+            0 => VideoMode::Ntsc,
+            1 => VideoMode::Pal,
+            _ => unreachable!("Invalid video mode"),
+        }
     }
 
     /// Depth of each pixel being drawn.
     pub fn color_depth(self) -> ColorDepth {
-        ColorDepth::from_value(self.0.extract_bit(21) == 1)
+        match self.0.extract_bit(21) {
+            0 => ColorDepth::B15,
+            1 => ColorDepth::B24,
+            _ => unreachable!("Invalid color depth")
+        }
     }
 
     /// Draw interlaced instead of progressive.
@@ -349,7 +311,13 @@ impl Status {
 
     /// Direction of DMA request.
     pub fn dma_direction(self) -> DmaDirection {
-        DmaDirection::from_value(self.0.extract_bits(29, 30))
+        match self.0.extract_bits(29, 30) {
+            0 => DmaDirection::Off,
+            1 => DmaDirection::Fifo,
+            2 => DmaDirection::CpuToGp0,
+            3 => DmaDirection::VramToCpu,
+            _ => unreachable!("Invalid dma direction"),
+        }
     }
 }
 
@@ -373,6 +341,8 @@ pub struct Gpu {
     fifo: Fifo,
     /// Video RAM.
     vram: Vram,
+    /// To CPU Transfer.
+    to_cpu_transfer: Option<VramTransfer>,
     /// The status register.
     pub status: Status,
     /// Mirros textured rectangles on the x axis if true,
@@ -410,6 +380,7 @@ impl Gpu {
             state: GpuState::WaitForCmd,
             fifo: Fifo::new(),
             vram: Vram::new(),
+            to_cpu_transfer: None,
             status: Status(0x14802000),
             rect_tex_x_flip: false,
             rect_tex_y_flip: false,
@@ -442,6 +413,28 @@ impl Gpu {
 
     pub fn load(&mut self, _offset: u32) -> u32 {
         0
+    }
+
+    pub fn dma_store(&mut self, value: u32) {
+        self.gp0_store(value);        
+    }
+
+    fn load_from_transfer(&mut self) -> u16 {
+        if let Some(ref mut transfer) = self.to_cpu_transfer {
+            let value = self.vram.load_16(transfer.x, transfer.y);
+            if transfer.next().is_none() {
+                self.to_cpu_transfer = None;
+            }
+            value
+        } else {
+            0
+        }
+    }
+
+    pub fn dma_load(&mut self) -> u32 {
+        let low = self.load_from_transfer() as u32;
+        let high = self.load_from_transfer() as u32;
+        (high << 16) | low
     }
 
     /// Store command in GP0 register. This is called from DMA linked transfer directly.
@@ -515,6 +508,7 @@ impl Gpu {
             0x44 => self.gp0_line(),
             // Copy react command.
             0xa0 => self.gp0_copy_rect_cpu_to_vram(),
+            0xc0 => self.gp0_copy_rect_vram_to_cpu(),
             _ => unimplemented!("Invalid GP0 command {:08x}.", command),
         }
     }
@@ -531,7 +525,6 @@ impl Gpu {
                 vertex.color = Color::from_u32(self.fifo.pop());
             }
             vertex.point = Point::from_u32(self.fifo.pop());
-            // Add draw offset.
             vertex.point.x += self.draw_x_offset as i32;
             vertex.point.y += self.draw_y_offset as i32;
             if Tex::is_textured() {
@@ -578,7 +571,6 @@ impl Gpu {
                 vertex.color = Color::from_u32(self.fifo.pop());
             }
             vertex.point = Point::from_u32(self.fifo.pop());
-            // Add draw offset.
             vertex.point.x += self.draw_x_offset as i32;
             vertex.point.y += self.draw_y_offset as i32;
             if Tex::is_textured() {
@@ -621,6 +613,7 @@ impl Gpu {
         end.x += self.draw_x_offset as i32;
         end.y += self.draw_y_offset as i32;
         self.draw_line(start, end);
+        println!("{:?}, {:?}", start, end);
     }
 
     /// [GP0 - Draw Mode Setting] - Set various flags in the GPU.
@@ -704,6 +697,16 @@ impl Gpu {
         let w = dim.extract_bits(00, 15) as i32;
         let h = dim.extract_bits(16, 31) as i32;
         self.state = GpuState::WaitForData(VramTransfer::new(x, y, w, h));
+    }
+
+    fn gp0_copy_rect_vram_to_cpu(&mut self) {
+        self.fifo.pop();
+        let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
+        let x = pos.extract_bits(00, 15) as i32;
+        let y = pos.extract_bits(16, 31) as i32;
+        let w = dim.extract_bits(00, 15) as i32;
+        let h = dim.extract_bits(16, 31) as i32;
+        self.to_cpu_transfer = Some(VramTransfer::new(x, y, w, h));
     }
 
     /// [GP1 - Reset] - Resets the state of the GPU.
