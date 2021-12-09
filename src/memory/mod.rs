@@ -141,7 +141,7 @@ impl Bus {
     }
 
     pub fn try_load<T: AddrUnit>(&self, address: u32) -> Option<u32> {
-        assert!(T::is_aligned(address));
+        debug_assert!(T::is_aligned(address));
         let address = to_region(address);
         match address {
             RAM_START..=RAM_END => {
@@ -189,11 +189,14 @@ impl Bus {
     }
 
     pub fn load<T: AddrUnit>(&self, address: u32) -> u32 {
-        self.try_load::<T>(address).expect(&format!("Trying to load invalid address to bus at {:08x}", address))
+        match self.try_load::<T>(address) {
+            Some(value) => value,
+            None => panic!("Trying to load invalid address to bus at {:08x}", address),
+        }
     }
 
     pub fn store<T: AddrUnit>(&mut self, address: u32, value: u32) {
-        assert!(T::is_aligned(address));
+        debug_assert!(T::is_aligned(address));
         let address = to_region(address);
         match address {
             RAM_START..=RAM_END => {

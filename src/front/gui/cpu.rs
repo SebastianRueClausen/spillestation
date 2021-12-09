@@ -109,7 +109,8 @@ impl CpuCtrl {
     pub fn run_cpu(&mut self, mut dt: Duration, cpu: &mut Cpu) {
         if !self.paused {
             dt += self.remainder;
-            while let Some(new) = dt.checked_sub(Duration::from_secs(1) / self.cycle_hz as u32) {
+            let cycle_time = Duration::from_secs(1) / self.cycle_hz as u32;
+            while let Some(new) = dt.checked_sub(cycle_time) {
                 dt = new;
                 cpu.fetch_and_exec();
             }
