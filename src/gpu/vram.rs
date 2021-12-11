@@ -18,10 +18,11 @@ impl Vram {
         (hi << 8) | lo
     }
 
+    #[allow(dead_code)]
     pub fn load_24(&self, x: i32, y: i32) -> u32 {
         let offset = offset_24(x, y);
         let (hi, mid, lo) = (
-            self.data[offset + 0] as u32,
+            self.data[offset] as u32,
             self.data[offset + 1] as u32,
             self.data[offset + 2] as u32,
         );
@@ -30,7 +31,7 @@ impl Vram {
 
     pub fn store_16(&mut self, x: i32, y: i32, value: u16) {
         let offset = offset_16(x, y);
-        self.data[offset + 0] = (value >> 0) as u8;
+        self.data[offset] = value as u8;
         self.data[offset + 1] = (value >> 8) as u8;
     }
 

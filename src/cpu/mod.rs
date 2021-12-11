@@ -608,7 +608,7 @@ impl Cpu {
         let cond = (value < 0) as u32;
         // If the instruction is to test greater or equal zero, we just
         // xor cond, since that's the oposite result.
-        let cond = cond ^ op.bgez();
+        let cond = cond ^ op.bgez() as u32;
         self.fetch_load_slot();
         // Set return register if required.
         if op.set_ra_on_branch() {
@@ -999,7 +999,7 @@ impl fmt::Display for Cpu {
     }
 }
 
-pub const REGISTER_NAMES: [&'static str; 32] = [
+pub const REGISTER_NAMES: [&str; 32] = [
     "zero",
     "at",
     "v0",

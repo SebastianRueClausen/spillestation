@@ -1,3 +1,8 @@
+//! This module handles generating ['Canvas'] texture each frame from the Playstation VRAM using compute
+//! shaders. This means that 1 mb of data is uploaded to the GPU each frame, which could be quite expensive.
+//! However generating the texture on the CPU would take a lot of time, and the generated texture,
+//! which would be almost as big or bigger, still has to transfered to the GPU.
+
 use crate::gpu::vram::{Vram, VRAM_SIZE};
 use super::{Canvas, CANVAS_FORMAT};
 
@@ -19,21 +24,12 @@ unsafe impl bytemuck::Zeroable for DrawInfo {
 }
 
 /// Used to generate the ['Canvas'] from the playstation VRAM directly using compute shaders.
-/// This is called before every rendered frame. This means that 1 mb of data is uploaded to the GPU
-/// each frame, which could be quite expensive. However generating the texture on the CPU would
-/// take a lot of time, and the generated texture, which would be almost as big or bigger, still has to
-/// transfered to the GPU.
+/// This is called before every rendered frame.
 pub struct ComputeStage {
     /// The playstation VRAM is transfered to this buffer each frame. It's 1 mb big, so it's
     /// probably gioing to be a bottleneck on some systems.
     input_buffer: wgpu::Buffer,
-    /// The compute shader has two bindings:
-    /// '''ignore
-    /// layout (set = 0, binding = 0) uniform Vram {
-	  ///     uint vram[(1024 * 1024) / 4];
-    /// };
-    /// layout (set = 0, binding = 1, rgba16f) uniform writeonly image2D tex;
-    /// '''
+    /// The compute shader has two bindings.
     /// The first is 'input_buffer', the second is ['Canvas'].
     bind_group: wgpu::BindGroup,
     /// The dispatches the compute shader for each pixel in ['Canvas'].

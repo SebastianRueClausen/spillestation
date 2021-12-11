@@ -1,3 +1,9 @@
+//! The frontend of the emulator. Handles the window, input/output, rendering, GUI and controls the
+//! emulator itself.
+
+mod render;
+pub mod gui;
+
 use winit::{
     window::WindowBuilder,
     event_loop::{EventLoop, ControlFlow},
@@ -7,12 +13,9 @@ use render::{RenderCtx, SurfaceSize, Canvas, DrawStage, ComputeStage};
 use gui::{GuiCtx, app_menu::AppMenu};
 use crate::cpu::Cpu;
 use std::time::{Instant, Duration};
-
 pub use render::compute::DrawInfo;
 
-mod render;
-pub mod gui;
-
+/// The main loop running the emulator.
 pub fn run() {
     env_logger::init();
     let mut cpu = Cpu::new();
@@ -80,6 +83,7 @@ pub fn run() {
                         draw.resize(&render_ctx, &canvas);
                         gui.set_scale_factor(window.scale_factor() as f32);
                     },
+                    // Handle keyboard input.
                     WindowEvent::KeyboardInput {
                         input,
                         ..
@@ -91,7 +95,10 @@ pub fn run() {
                             (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
                                 *control_flow = ControlFlow::Exit;
                             },
-                            _ => {},
+                            _ => {
+                                // Send input to the GUI if it isn't capted by something else.
+                                gui.handle_window_event(event);
+                            },
                         } 
                     },
                     _ => {
@@ -108,10 +115,10 @@ pub fn run() {
                         &renderer.queue,
                         &canvas,
                     );
-                    draw.render(encoder, &view);
+                    draw.render(encoder, view);
                     gui.begin_frame(&window);
                     app_menu.show_apps(&mut gui);
-                    app_menu.show(&mut gui.egui_ctx);
+                    app_menu.show(&gui.egui_ctx);
                     gui.end_frame(&window);
                     match gui.render(renderer, encoder, view) {
                         Err(err) => {

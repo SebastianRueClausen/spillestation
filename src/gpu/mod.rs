@@ -1,4 +1,9 @@
-#![allow(dead_code)]
+//! Represent's the GPU of the Playstation 1.
+
+mod fifo;
+mod primitive;
+mod rasterize;
+pub mod vram;
 
 use crate::util::bits::BitExtract;
 use crate::front::DrawInfo;
@@ -17,12 +22,6 @@ use rasterize::{
 };
 use std::fmt;
 pub use vram::Vram;
-
-mod fifo;
-mod primitive;
-mod rasterize;
-pub mod vram;
-
 
 pub enum TransBlend {
     Avg = 0,
@@ -247,7 +246,7 @@ impl Status {
         }
     }
 
-    /// ?
+    #[allow(dead_code)]
     fn reversed(self) -> bool {
         self.0.extract_bit(14) == 1
     }
@@ -359,6 +358,7 @@ pub struct Gpu {
     /// Mirros textured rectangles on the x axis if true,
     rect_tex_x_flip: bool,
     /// Mirros textured rectangles on the y axis if true,
+    #[allow(dead_code)]
     rect_tex_y_flip: bool,
     /// Texture window x mask.
     tex_window_x_mask: u8,

@@ -372,7 +372,7 @@ impl Dma {
         fn increment(step: Step) -> u32 {
             match step {
                 Step::Increment => 4,
-                Step::Decrement => (-4 as i32) as u32,
+                Step::Decrement => (-4_i32) as u32,
             }
         }
         for (i, channel) in self.channels.iter().enumerate() {

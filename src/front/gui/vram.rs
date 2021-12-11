@@ -1,12 +1,19 @@
+//! GUI app to view the content of the playstations VRAM.
+
 use super::App;
 use crate::gpu::Gpu;
 use std::str;
 
+/// One cell in the value matrix, which represent a 16-bit integer represented as 4 hex digits.
 type Cell = [u8; 4];
 
+/// ['App'] to view the content of ['gpu::Vram'].
 pub struct VramView {
+    /// The first x address.
     x: i32,
+    /// The first y address.
     y: i32,
+    /// Value matrix starting at 'x' and 'y'.
     matrix: [[Cell; COLUMNS]; ROWS],
 }
 
@@ -74,22 +81,4 @@ impl App for VramView {
 
 const COLUMNS: usize = 8;
 const ROWS: usize = 8;
-
-const HEX_ASCII: [u8; 16] = [
-    '0' as u8,
-    '1' as u8,
-    '2' as u8,
-    '3' as u8,
-    '4' as u8,
-    '5' as u8,
-    '6' as u8,
-    '7' as u8,
-    '8' as u8,
-    '9' as u8,
-    'a' as u8,
-    'b' as u8,
-    'c' as u8,
-    'd' as u8,
-    'e' as u8,
-    'f' as u8,
-];
+const HEX_ASCII: &[u8] = "0123456789abcdef".as_bytes();

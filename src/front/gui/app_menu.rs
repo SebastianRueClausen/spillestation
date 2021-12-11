@@ -1,3 +1,5 @@
+//! The main controller and menu of all the GUI apps. 
+
 use super::{
     fps::FrameCounter,
     cpu::{CpuCtrl, CpuStatus},

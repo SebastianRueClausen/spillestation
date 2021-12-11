@@ -86,8 +86,8 @@ impl Opcode {
     }
 
     /// Branch if greater or equal zero - BCONDZ needs this to determine the type of branching.
-    pub fn bgez(self) -> u32 {
-        self.0.extract_bit(16)
+    pub fn bgez(self) -> bool {
+        self.0.extract_bit(16) == 1
     }
 
     /// Set return register on branch - Also used by BCONDZ.
@@ -134,18 +134,11 @@ impl fmt::Display for Opcode {
                 _ => write!(f, "illegal"),
             },
             0x1 => {
-                let op = if self.set_ra_on_branch() {
-                    if self.bgez() == 1 {
-                        "bgezal"
-                    } else {
-                        "bltzal"
-                    }
-                } else {
-                    if self.bgez() == 1 {
-                        "bgez" 
-                    } else {
-                        "bltz"       
-                    }
+                let op = match (self.set_ra_on_branch(), self.bgez()) {
+                    (true, true) => "bgezal", 
+                    (true, false) => "bltzal",
+                    (false, true) => "bgez",
+                    (false, false) => "bltz",
                 };
                 write!(f, "{} ${} {}", op, reg(self.rs()), self.signed_imm())
             },

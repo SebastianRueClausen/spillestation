@@ -1,8 +1,13 @@
+//! GUI app that displays information about the GPU.
+
 use super::App;
 use crate::gpu::Gpu;
 use std::fmt::Write;
 
+/// ['App'] which shows the current status of the ['Gpu'].
 pub struct GpuStatus {
+    /// All the fields. They get updated each frame, so saving them just avoids allocating a lot
+    /// of strings each frame.
     fields: [String; FIELD_COUNT],
 }
 
@@ -13,6 +18,7 @@ impl GpuStatus {
         }
     }
 
+    /// Write information to all the fields.
     fn write_fields(&mut self, gpu: &Gpu) -> Result<(), std::fmt::Error> {
         write!(self.fields[0], "{:08x}", gpu.draw_x_offset)?;
         write!(self.fields[1], "{:08x}", gpu.draw_y_offset)?;
@@ -46,6 +52,7 @@ impl GpuStatus {
         Ok(())
     }
 
+    /// Update all the fields.
     pub fn update_fields(&mut self, gpu: &Gpu) {
         self.fields.iter_mut().for_each(|field| field.clear());
         if let Err(err) = self.write_fields(gpu) {
@@ -87,7 +94,9 @@ impl App for GpuStatus {
     }
 }
 
-const FIELD_LABELS: [&'static str; FIELD_COUNT] = [
+/// The labels for all the fields. This must lign up with the order of which the fields in
+/// ['GpuStatus'] is written to.
+const FIELD_LABELS: [&str; FIELD_COUNT] = [
     "draw x offset", 
     "draw y offset", 
     "display vram x start", 

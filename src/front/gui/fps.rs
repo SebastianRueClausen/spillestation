@@ -1,10 +1,16 @@
+//! Simple FPS counter GUI app.
+
 use std::time::Duration;
 use std::fmt::Write;
 use super::app::App;
 
+/// ['App'] for displaying the current frames per second. 
 pub struct FrameCounter {
+    /// Frames since the last update.
     frames: u64,
+    /// Duration since the last update.
     last_update: Duration,
+    /// The current FPS being displayed.
     show: String,
 }
 

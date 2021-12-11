@@ -225,7 +225,7 @@ impl Bus {
             },
             DMA_START..=DMA_END => {
                 self.dma.store(&mut self.transfers, address - DMA_START, value);
-                self.execute_transfers();
+                self.exec_transfers();
             },
             GPU_START..=GPU_END => {
                 self.gpu.store(address - GPU_START, value);
@@ -244,21 +244,21 @@ impl Bus {
         &self.gpu
     }
 
-    fn execute_transfers(&mut self) {
+    fn exec_transfers(&mut self) {
         while let Some(transfer) = self.transfers.block.pop() {
             match transfer.direction {
-                Direction::ToPort => self.to_port_block_transfer(&transfer),
-                Direction::ToRam => self.to_ram_block_transfer(&transfer),
+                Direction::ToPort => self.exec_to_port_block_transfer(&transfer),
+                Direction::ToRam => self.exec_to_ram_block_transfer(&transfer),
             }
             self.dma.mark_channel_as_finished(transfer.port);
         }
         while let Some(transfer) = self.transfers.linked.pop() {
-            self.to_port_linked_transfer(&transfer);
+            self.exec_to_port_linked_transfer(&transfer);
             self.dma.mark_channel_as_finished(dma::ChannelPort::Gpu);
         }
     }
 
-    fn to_port_block_transfer(&mut self, transfer: &BlockTransfer) {
+    fn exec_to_port_block_transfer(&mut self, transfer: &BlockTransfer) {
         let mut address = transfer.start;
         for _ in 0..transfer.size {
             let value = self.ram.load::<Word>(address & 0x1ffffc);
@@ -275,7 +275,7 @@ impl Bus {
         }
     }
 
-    fn to_ram_block_transfer(&mut self, transfer: &BlockTransfer) {
+    fn exec_to_ram_block_transfer(&mut self, transfer: &BlockTransfer) {
         let mut address = transfer.start;
         for remain in (0..transfer.size).rev() {
             let value = match transfer.port {
@@ -297,7 +297,7 @@ impl Bus {
     }
 
     /// Linked list DMA transfer.
-    fn to_port_linked_transfer(&mut self, transfer: &LinkedTransfer) {
+    fn exec_to_port_linked_transfer(&mut self, transfer: &LinkedTransfer) {
         let mut address = transfer.start & 0x1ffffc;
         loop {
             let header = self.ram.load::<Word>(address);

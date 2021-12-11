@@ -29,10 +29,6 @@ impl Fifo {
         self.tail = self.head;
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == FIFO_SIZE
-    }
-
     pub fn push(&mut self, value: u32) {
         // Fast modulo.
         self.data[self.head as usize & (FIFO_SIZE - 1)] = value;

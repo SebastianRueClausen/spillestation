@@ -1,15 +1,10 @@
 
 /// Egui App/Window.
-///
-/// Allows types to draw a egui window to the screen.
 pub trait App {
-    /// Show the window.
-    ///
-    /// Sets open paramter.
+    /// Show the app as a window.
     fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool);
     
-    /// Update the window.
-    ///
-    /// Should be called by show.
+    /// Show the app on any given ['egui::Ui']. This can be used to display the app inline in
+    /// another GUI. This is most likely called by 'show' onto an empty window.
     fn update(&mut self, ui: &mut egui::Ui);
 }

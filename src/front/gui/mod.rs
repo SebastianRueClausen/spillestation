@@ -1,10 +1,5 @@
-use egui::{ClippedMesh, CtxRef};
-use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
-use egui_winit::State as WinState;
-use winit::window::Window;
-use super::{SurfaceSize, RenderCtx};
-
-pub use app::App;
+//! This module implements GUI used for debugging and more. It uses the egui crate to render it to
+//! the screen.
 
 pub mod fps;
 pub mod cpu;
@@ -14,11 +9,22 @@ pub mod gpu;
 pub mod vram;
 pub mod app_menu;
 
+use egui::{ClippedMesh, CtxRef};
+use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
+use egui_winit::State as WinState;
+use winit::window::Window;
+use super::{SurfaceSize, RenderCtx};
+pub use app::App;
+
 /// All the egui stuff required to draw gui to the screen.
 pub struct GuiCtx {
+    /// The main egui context.
     pub egui_ctx: CtxRef,
+    /// The ['egui_winit'] context.
     win_state: WinState,
+    /// Screen descriptor used by ['egui_wgpu_backend'].
     screen_descriptor: ScreenDescriptor,
+    /// Render pass used by ['egui_wgpu_backend'].
     render_pass: RenderPass,
     jobs: Vec<ClippedMesh>,
 }
@@ -32,7 +38,7 @@ impl GuiCtx {
         let win_state = WinState::from_pixels_per_point(scale_factor);
         let SurfaceSize {
             width: physical_width,
-            height: physical_height
+            height: physical_height,
         } = render_ctx.surface_size;
         let screen_descriptor = ScreenDescriptor {
             physical_width,
@@ -82,6 +88,7 @@ impl GuiCtx {
        self.jobs = self.egui_ctx.tessellate(jobs);
     }
 
+    /// Render the current frame to the screen.
     pub fn render(
         &mut self,
         render_ctx: &RenderCtx,

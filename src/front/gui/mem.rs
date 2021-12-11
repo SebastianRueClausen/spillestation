@@ -1,11 +1,18 @@
+//! Memory viewer/debugger GUI app. Can be configured to show either data or instructions from a
+//! given address on the Playstations BUS.
+
 use crate::memory::{Bus, Byte, Word};
 use crate::cpu::Opcode;
 use super::App;
 use std::str;
 use std::fmt::Write;
 
+/// One cell in the current value matrix. This is two hex characters which represent one byte.
 type Cell = [u8; 2];
 
+/// The ['MemView'] app has two modes. Value and Instruction. Value mode shows a matrix of byte
+/// vales read from the BUS of the Playstation. Instruction Mode show a list of instruction from
+/// the BUS. It obivously doesn't know if something is an instruction, so it might show junk.
 enum Mode {
     Value {
         matrix: [[Cell; COLUMNS]; ROWS],
@@ -15,9 +22,14 @@ enum Mode {
     },
 }
 
+/// An ['App'] used to view/display the memory of the Playstation.
 pub struct MemView {
+    /// The first address being shown.
     start_addr: u32,
+    /// Labels of all the addresses being shown. They get updated each frame, but saving them
+    /// avoids allocating new string each frame.
     addresses: [String; ROWS],
+    /// The current mode.
     mode: Mode,
 }
 
@@ -26,6 +38,7 @@ impl MemView {
         Self {
             start_addr: 0x0,
             addresses: Default::default(),
+            // Default to value mode.
             mode: Mode::Value {
                 matrix: [[[0x0; 2]; COLUMNS]; ROWS],
             }
@@ -63,11 +76,11 @@ impl MemView {
                         match bus.try_load::<Byte>((i * COLUMNS + j) as u32 + start_addr) {
                             Some(value) => {
                                 col[0] = HEX_ASCII[((value >> 4) & 0xf) as usize];
-                                col[1] = HEX_ASCII[((value >> 0) & 0xf) as usize];
+                                col[1] = HEX_ASCII[(value & 0xf) as usize];
                             },
                             None => {
-                                col[0] = '?' as u8;
-                                col[1] = '?' as u8;
+                                col[0] = b'?';
+                                col[1] = b'?';
                             }
                         }
                     }
@@ -142,23 +155,4 @@ impl App for MemView {
 
 const COLUMNS: usize = 8;
 const ROWS: usize = 8;
-
-const HEX_ASCII: [u8; 16] = [
-    '0' as u8,
-    '1' as u8,
-    '2' as u8,
-    '3' as u8,
-    '4' as u8,
-    '5' as u8,
-    '6' as u8,
-    '7' as u8,
-    '8' as u8,
-    '9' as u8,
-    'a' as u8,
-    'b' as u8,
-    'c' as u8,
-    'd' as u8,
-    'e' as u8,
-    'f' as u8,
-];
-
+const HEX_ASCII: &[u8] = "0123456789abcdef".as_bytes();

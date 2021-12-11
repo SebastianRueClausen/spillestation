@@ -1,10 +1,16 @@
+/// GUI Apps to view and interact with the Playstations CPU.
+
 use crate::cpu::{Cpu, REGISTER_NAMES};
 use std::fmt::Write;
 use std::time::Duration;
 use super::App;
 
+/// ['App'] which shows the status of the CPU. It shows the value of all the registers and PC and
+/// such.
 pub struct CpuStatus {
     registers: [String; 32],
+    /// Fields which aren't a registers, such as the PC and the disassembled instruction current being
+    /// run.
     fields: [String; 4],
 }
 
@@ -49,7 +55,7 @@ impl App for CpuStatus {
                 .auto_shrink([false, true])
                 .max_height(200.0)
                 .show(ui, |ui| {
-                    egui::Grid::new("Status Grid").show(ui, |ui| {
+                    egui::Grid::new("cpu_status_grid").show(ui, |ui| {
                         for (field, label) in self.fields.iter_mut().zip(FIELD_LABELS.iter()) {
                             ui.label(label); 
                             ui.label(field); 
@@ -63,7 +69,7 @@ impl App for CpuStatus {
                 .auto_shrink([false, true])
                 .max_height(480.0)
                 .show(ui, |ui| {
-                    egui::Grid::new("Register Grid").show(ui, |ui| {
+                    egui::Grid::new("cpu_register_grid").show(ui, |ui| {
                         for (value, name) in self.registers.iter().zip(REGISTER_NAMES.iter()) {
                             ui.label(name);
                             ui.label(value);
@@ -87,11 +93,20 @@ impl App for CpuStatus {
     }
 }
 
+/// ['App'] for controlling the CPU. It has two modes:
+///  - Run. Automatically runs the CPU at a given speed.
+///  - Step. Manually step through each cycle.
 pub struct CpuCtrl {
+    /// Cycles per second in run mode.
     cycle_hz: usize,
+    /// The amount of cycles which is run each time step.
     step_amount: usize,
+    /// Paused aka. in step mode.
     paused: bool,
+    /// If the step button has been pressed since last update.
     stepped: bool,
+    /// This is used to run at a more precise HZ. It's also required to run the CPU at a lower HZ
+    /// than the update rate, since there may be multiple updates between each CPU cycle.
     remainder: Duration,
 }
 
@@ -177,11 +192,12 @@ impl App for CpuCtrl {
     }
 }
 
-const FIELD_LABELS: [&'static str; 4] = [
+const FIELD_LABELS: [&str; 4] = [
    "hi",
    "lo",
    "pc",
    "ins",
 ];
 
+/// This is the native speed the Playstation.
 const MAX_CYCLE_HZ: usize = 30_000_000;
