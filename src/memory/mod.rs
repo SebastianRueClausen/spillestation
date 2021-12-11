@@ -140,7 +140,7 @@ impl Bus {
         }
     }
 
-    pub fn try_load<T: AddrUnit>(&self, address: u32) -> Option<u32> {
+    pub fn try_load<T: AddrUnit>(&mut self, address: u32) -> Option<u32> {
         debug_assert!(T::is_aligned(address));
         let address = to_region(address);
         match address {
@@ -176,11 +176,7 @@ impl Bus {
                 Some(0x0)
             },
             GPU_START..=GPU_END => {
-                Some(if address - GPU_START == 4 {
-                    0x1c000000
-                } else {
-                    0x0
-                })
+                Some(self.gpu.load(address - GPU_START))
             },
             _ => {
                 None
@@ -188,7 +184,7 @@ impl Bus {
         }
     }
 
-    pub fn load<T: AddrUnit>(&self, address: u32) -> u32 {
+    pub fn load<T: AddrUnit>(&mut self, address: u32) -> u32 {
         match self.try_load::<T>(address) {
             Some(value) => value,
             None => panic!("Trying to load invalid address to bus at {:08x}", address),

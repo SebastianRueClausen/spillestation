@@ -125,7 +125,7 @@ impl Cpu {
     }
 
     /// Load address from bus.
-    fn load<T: AddrUnit>(&self, address: u32) -> u32 {
+    fn load<T: AddrUnit>(&mut self, address: u32) -> u32 {
         self.bus.load::<T>(address)
     }
 
@@ -258,7 +258,11 @@ impl Cpu {
         &self.bus
     }
 
-    pub fn current_instruction(&self) -> Opcode {
+    pub fn bus_mut(&mut self) -> &mut Bus {
+        &mut self.bus
+    }
+
+    pub fn current_instruction(&mut self) -> Opcode {
         Opcode::new(self.load::<Word>(self.pc))
     }
 
@@ -816,7 +820,8 @@ impl Cpu {
     fn op_lw(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         if Word::is_aligned(address) {
-            self.add_load_slot(op.rt(), self.load::<Word>(address));
+            let value = self.load::<Word>(address);
+            self.add_load_slot(op.rt(), value);
         } else {
             self.cop0.set_reg(8, address);
             self.throw_exception(Exception::AddressLoadError);

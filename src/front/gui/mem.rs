@@ -32,7 +32,7 @@ impl MemView {
         }
     }
 
-    pub fn update_info(&mut self, bus: &Bus) {
+    pub fn update_info(&mut self, bus: &mut Bus) {
         // The address get's aligned if it's in instruction mode, since instructions must start on
         // 4-byte aligned address.
         let (start_addr, delta) = match self.mode {

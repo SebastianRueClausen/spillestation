@@ -57,7 +57,7 @@ impl AppMenu {
             self.cpu_status.app.update_fields(cpu);
         }
         if self.mem_view.open {
-            self.mem_view.app.update_info(cpu.bus());
+            self.mem_view.app.update_info(cpu.bus_mut());
         }
         if self.gpu_status.open {
             self.gpu_status.app.update_fields(cpu.bus().gpu());

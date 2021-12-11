@@ -16,7 +16,6 @@ use rasterize::{
     Opaque,
 };
 use std::fmt;
-
 pub use vram::Vram;
 
 mod fifo;
@@ -30,6 +29,18 @@ pub enum TransBlend {
     Add = 1,
     Sub = 2,
     AddDiv = 3,
+}
+
+impl TransBlend {
+    fn from_value(value: u32) -> Self {
+        match value {
+            0 => TransBlend::Avg,
+            1 => TransBlend::Add,
+            2 => TransBlend::Sub,
+            3 => TransBlend::AddDiv,
+            _ => unreachable!("Invalid transparency blending"),
+        }
+    }
 }
 
 impl fmt::Display for TransBlend {
@@ -115,6 +126,17 @@ pub enum TextureDepth {
     B15 = 15,
 }
 
+impl TextureDepth {
+    fn from_value(value: u32) -> Self {
+        match value {
+            0 => TextureDepth::B4,
+            1 => TextureDepth::B8,
+            2 => TextureDepth::B15,
+            _ => unreachable!("Invalid texture depth"),
+        }
+    }
+}
+
 impl fmt::Display for TextureDepth {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", match *self {
@@ -189,23 +211,12 @@ impl Status {
 
     /// How to blend source and destination colors.
     pub fn trans_blending(self) -> TransBlend {
-        match self.0.extract_bits(5, 6) {
-            0 => TransBlend::Avg,
-            1 => TransBlend::Add,
-            2 => TransBlend::Sub,
-            3 => TransBlend::AddDiv,
-            _ => unreachable!("Invalid transparency blending"),
-        }
+        TransBlend::from_value(self.0.extract_bits(5, 6))
     }
 
     /// Depth of the texture colors.
     pub fn texture_depth(self) -> TextureDepth {
-        match self.0.extract_bits(7, 8) {
-            0 => TextureDepth::B4,
-            1 => TextureDepth::B8,
-            2 => TextureDepth::B15,
-            _ => unreachable!("Invalid texture depth"),
-        }
+        TextureDepth::from_value(self.0.extract_bits(7, 8))
     }
 
     pub fn dithering_enabled(self) -> bool {
@@ -232,7 +243,7 @@ impl Status {
         match self.0.extract_bit(13) {
             0 => InterlaceField::Bottom,
             1 => InterlaceField::Top,
-            _ => unreachable!("Invalid interlace field"),
+            _ => unreachable!("Invalid interlace field."),
         }
     }
 
@@ -253,7 +264,7 @@ impl Status {
                 1 => 480,
                 2 => 512,
                 3 => 640,
-                _ => unreachable!("Invalid vres"),
+                _ => unreachable!("Invalid vres."),
             }
         }
     }
@@ -266,7 +277,7 @@ impl Status {
         match self.0.extract_bit(20) {
             0 => VideoMode::Ntsc,
             1 => VideoMode::Pal,
-            _ => unreachable!("Invalid video mode"),
+            _ => unreachable!("Invalid video mode."),
         }
     }
 
@@ -275,7 +286,7 @@ impl Status {
         match self.0.extract_bit(21) {
             0 => ColorDepth::B15,
             1 => ColorDepth::B24,
-            _ => unreachable!("Invalid color depth")
+            _ => unreachable!("Invalid color depth.")
         }
     }
 
@@ -411,8 +422,12 @@ impl Gpu {
         }
     }
 
-    pub fn load(&mut self, _offset: u32) -> u32 {
-        0
+    pub fn load(&mut self, offset: u32) -> u32 {
+        match offset {
+            0 => self.gpu_read(),
+            4 => self.status_read(),
+            _ => unreachable!("Invalid GPU load at offset {:08x}.", offset),
+        }
     }
 
     pub fn dma_store(&mut self, value: u32) {
@@ -431,10 +446,18 @@ impl Gpu {
         }
     }
 
-    pub fn dma_load(&mut self) -> u32 {
+    fn gpu_read(&mut self) -> u32 {
         let low = self.load_from_transfer() as u32;
         let high = self.load_from_transfer() as u32;
         (high << 16) | low
+    }
+
+    fn status_read(&mut self) -> u32 {
+        self.status.0 & !(1 << 19) | ((self.to_cpu_transfer.is_some() as u32) << 27)
+    }
+
+    pub fn dma_load(&mut self) -> u32 {
+        self.gpu_read()
     }
 
     /// Store command in GP0 register. This is called from DMA linked transfer directly.
@@ -531,21 +554,14 @@ impl Gpu {
                 let value = self.fifo.pop();
                 match i {
                     0 => {
-                        let value = (value >> 16) as i32;
-                        params.clut_x = (value & 0x3f) << 4;
-                        params.clut_y = (value >> 6) & 0x1ff;
-                        // params.palette_page_x = value.extract_bits(15, 20) as i32;
-                        // params.palette_page_y = value.extract_bits(21, 29) as i32;
+                        params.clut_x = (value.extract_bits(16, 21) / 16) as i32;
+                        params.clut_y = value.extract_bits(22, 30) as i32;
                     },
                     1 => {
-                        // params.texture_page_x = value.extract_bits(15, 18) as i32;
-                        // params.texture_page_y = value.extract_bit(19) as i32;
-                        // params.texture_page_colors = value.extract_bits(22, 23) as i32;
-                        let value = (value >> 16) as i32;
-                        params.texture_colors = (value >> 7) & 3;
-                        params.texture_x = (value << 6) & 0x3C0;
-                        params.texture_y = (value << 4) & 0x100;
-
+                        params.texture_x = value.extract_bits(16, 19) as i32 * 64;
+                        params.texture_y = value.extract_bit(20) as i32 * 256;
+                        params.blend_mode = TransBlend::from_value(value.extract_bits(21, 22));
+                        params.texture_depth = TextureDepth::from_value(value.extract_bits(23, 24));
                     },
                     _ => {},
                 }
@@ -561,10 +577,11 @@ impl Gpu {
     fn gp0_four_point_poly<S: Shading, Tex: Textureing, Trans: Transparency>(&mut self) {
         let mut verts = [Vertex::default(); 4];
         let mut params = TextureParams::default();
-        let mut color = Color::from_rgb(0, 0, 0);
-        if !S::is_shaded() {
-            color = Color::from_u32(self.fifo.pop());
-        }
+        let color = if !S::is_shaded() {
+            Color::from_u32(self.fifo.pop())
+        } else {
+            Color::from_rgb(0, 0, 0)
+        };
         for (i, vertex) in verts.iter_mut().enumerate() {
             // If it's shaded the color is always the first.
             if S::is_shaded() {
@@ -577,20 +594,14 @@ impl Gpu {
                 let value = self.fifo.pop();
                 match i {
                     0 => {
-                        let value = (value >> 16) as i32;
-                        params.clut_x = (value & 0x3f) << 4;
-                        params.clut_y = (value >> 6) & 0x1ff;
-                        // params.palette_page_x = value.extract_bits(16, 21) as i32;
-                        // params.palette_page_y = value.extract_bits(22, 30) as i32;
+                        params.clut_x = value.extract_bits(16, 21) as i32 * 16;
+                        params.clut_y = value.extract_bits(22, 30) as i32;
                     },
                     1 => {
-                        let value = (value >> 16) as i32;
-                        // params.texture_page_x = value.extract_bits(16, 19) as i32;
-                        // params.texture_page_y = value.extract_bit(20) as i32;
-                        // params.texture_page_colors = value.extract_bits(23, 24) as i32;
-                        params.texture_colors = (value >> 7) & 3;
-                        params.texture_x = (value << 6) & 0x3C0;
-                        params.texture_y = (value << 4) & 0x100;
+                        params.texture_x = value.extract_bits(16, 19) as i32 * 64;
+                        params.texture_y = value.extract_bit(20) as i32 * 256;
+                        params.blend_mode = TransBlend::from_value(value.extract_bits(21, 22));
+                        params.texture_depth = TextureDepth::from_value(value.extract_bits(23, 24));
                     },
                     _ => {},
                 }
@@ -598,6 +609,12 @@ impl Gpu {
                     u: value.extract_bits(0, 7) as u8,
                     v: value.extract_bits(8, 15) as u8,
                 };
+            }
+        }
+        if Tex::is_textured() {
+            // println!("pal x = {} pal y = {} tex x = {} tex y = {}", params.clut_x, params.clut_y, params.texture_x, params.texture_y);
+            for _vert in verts {
+                // println!("{:?}", vert.texcoord);
             }
         }
         self.draw_triangle::<S, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
@@ -613,7 +630,7 @@ impl Gpu {
         end.x += self.draw_x_offset as i32;
         end.y += self.draw_y_offset as i32;
         self.draw_line(start, end);
-        println!("{:?}, {:?}", start, end);
+        println!("Drawing line");
     }
 
     /// [GP0 - Draw Mode Setting] - Set various flags in the GPU.
@@ -712,7 +729,6 @@ impl Gpu {
     /// [GP1 - Reset] - Resets the state of the GPU.
     fn gp1_reset(&mut self) {
         *self = Self::new();
-        // TODO Flush FIFO.
     }
 
     /// [GP1 - DMA Direction] - Sets the DMA direction.

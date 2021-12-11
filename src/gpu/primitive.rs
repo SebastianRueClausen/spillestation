@@ -1,4 +1,5 @@
 use crate::util::bits::BitExtract;
+use super::{TransBlend, TextureDepth};
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct Point {
@@ -140,7 +141,8 @@ pub struct TextureParams {
     pub clut_y: i32,
     pub texture_x: i32,
     pub texture_y: i32,
-    pub texture_colors: i32,
+    pub texture_depth: TextureDepth,
+    pub blend_mode: TransBlend,
 }
 
 impl Default for TextureParams {
@@ -150,7 +152,8 @@ impl Default for TextureParams {
             clut_y: 0,
             texture_x: 0,
             texture_y: 0,
-            texture_colors: 0,
+            texture_depth: TextureDepth::B4,
+            blend_mode: TransBlend::Avg,
         }
     }
 }

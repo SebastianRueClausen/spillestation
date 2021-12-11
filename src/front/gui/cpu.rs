@@ -16,7 +16,7 @@ impl CpuStatus {
         }
     }
 
-    pub fn write_fields(&mut self, cpu: &Cpu) -> Result<(), std::fmt::Error> {
+    pub fn write_fields(&mut self, cpu: &mut Cpu) -> Result<(), std::fmt::Error> {
         for (show, value) in self.registers.iter_mut().zip(cpu.registers.iter()) {
             write!(show, "{}", value)?;
         }
@@ -27,7 +27,7 @@ impl CpuStatus {
         Ok(()) 
     }
 
-    pub fn update_fields(&mut self, cpu: &Cpu) {
+    pub fn update_fields(&mut self, cpu: &mut Cpu) {
         self.fields.iter_mut().for_each(|field| field.clear());
         self.registers.iter_mut().for_each(|register| register.clear());
         if let Err(err) = self.write_fields(cpu) {
@@ -98,9 +98,9 @@ pub struct CpuCtrl {
 impl CpuCtrl {
     pub fn new() -> Self {
         Self {
-            cycle_hz: 100000,
+            cycle_hz: MAX_CYCLE_HZ,
             step_amount: 1,
-            paused: true,
+            paused: false,
             stepped: false,
             remainder: Duration::ZERO,
         }

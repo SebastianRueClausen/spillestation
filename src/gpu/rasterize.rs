@@ -121,14 +121,16 @@ impl Gpu {
     }
 
     fn load_texture_color(&self, params: &TextureParams, coord: TexCoord) -> Texel {
-        match self.status.texture_depth() {
+        match params.texture_depth {
             TextureDepth::B4 => {
                 let value = self.vram.load_16(
                     params.texture_x + (coord.u / 4) as i32,
                     params.texture_y + coord.v as i32,
                 );
+                // println!("{:08x} {:08x}", params.texture_x + (coord.u / 4) as i32, params.texture_y + coord.v as i32);
                 let offset = (value >> ((coord.u & 0x3) * 4)) & 0xf;
                 Texel::new(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
+
             },
             TextureDepth::B8 => {
                 let value = self.vram.load_16(
