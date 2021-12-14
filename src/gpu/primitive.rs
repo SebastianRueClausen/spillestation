@@ -1,6 +1,7 @@
 use crate::util::bits::BitExtract;
 use super::{TransBlend, TextureDepth};
 
+/// A point on the screen or in VRAM.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct Point {
     pub x: i32,
@@ -14,6 +15,7 @@ impl Point {
         }
     }
 
+    /// Mainly for getting the point from a GP0 attribute.
     pub fn from_u32(value: u32) -> Self {
         Self {
             x: value.extract_bits(0, 10) as i32,
@@ -22,7 +24,7 @@ impl Point {
     }
 }
 
-
+/// Texture coordinate.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct TexCoord {
     pub u: u8,
@@ -37,6 +39,7 @@ impl TexCoord {
     }
 }
 
+/// Texture color.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct Texel(u16);
 
@@ -50,7 +53,7 @@ impl Texel {
     }
 
     pub fn is_transparent(self) -> bool {
-        (self.0 as u32).extract_bit(15) == 1
+        self.0.extract_bit(15) == 1
     }
 }
 
@@ -71,9 +74,9 @@ impl Color {
 
     pub fn from_u16(value: u16) -> Self {
         Self {
-            r: ((value << 3) & 0xf8) as u8,
-            g: ((value >> 2) & 0xf8) as u8,
-            b: ((value >> 7) & 0xf8) as u8,
+            r: (value.extract_bits(0, 4) << 3) as u8,
+            g: (value.extract_bits(5, 9) << 3) as u8,
+            b: (value.extract_bits(10, 14) << 3) as u8,
         }
     }
 
@@ -92,17 +95,20 @@ impl Color {
         (r >> 3) | (g << 2) | (b << 7)
     }
 
+    /// The shading used when blending with the shading. Basically multiplying the two colors
+    /// together and dividing by 128.
     pub fn shade_blend(self, other: Self) -> Self {
         let r = (self.r as u16) * (other.r as u16);
         let g = (self.g as u16) * (other.g as u16);
         let b = (self.b as u16) * (other.b as u16);
         Self {
-            r: (r / 0x80).min(0xff) as u8,
-            g: (g / 0x80).min(0xff) as u8,
-            b: (b / 0x80).min(0xff) as u8,
+            r: (r / 128).min(0xff) as u8,
+            g: (g / 128).min(0xff) as u8,
+            b: (b / 128).min(0xff) as u8,
         }
     }
 
+    /// Average blending. Finds the average between the two colors.
     pub fn avg_blend(self, other: Self) -> Self {
         Self {
             r: (self.r / 2).saturating_add(other.r / 2),
@@ -111,6 +117,7 @@ impl Color {
         }
     }
 
+    /// Add blending. Adds the colors together.
     pub fn add_blend(self, other: Self) -> Self {
         Self {
             r: other.r.saturating_add(self.r),
@@ -119,6 +126,7 @@ impl Color {
         }
     }
 
+    /// Subtract blending. Subtracts the other color from self.
     pub fn sub_blend(self, other: Self) -> Self {
         Self {
             r: other.r.saturating_sub(self.r),
@@ -127,6 +135,7 @@ impl Color {
         }
     }
 
+    /// Add and divide by 4 blending. Divide self by 4 and add with other.
     pub fn add_div_blend(self, other: Self) -> Self {
         Self {
             r: (other.r as i32 + ((self.r / 4) as i32)).clamp(0, 255) as u8,
@@ -136,12 +145,19 @@ impl Color {
     }
 }
 
+/// Parameters from GP0 draw commands, which determine how a shape is textured.
 pub struct TextureParams {
+    /// The x coordinate start of the texture color lookup table.
     pub clut_x: i32,
+    /// The y coordinate start of the texture color lookup table.
     pub clut_y: i32,
+    /// The x coordinate start of texture in VRAM.
     pub texture_x: i32,
+    /// The y coordinate start of texture in VRAM.
     pub texture_y: i32,
+    /// The depth of the texture. Essentially how many bits each texture color consists of.
     pub texture_depth: TextureDepth,
+    /// How to blend with the background color.
     pub blend_mode: TransBlend,
 }
 

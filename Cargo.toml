@@ -1,7 +1,7 @@
 [package]
 name = "spillestation"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
 resolver = "2"
 
 [profile.dev]
@@ -16,6 +16,6 @@ egui-winit = { version = "0.15", default-features = false, features = ["links"] 
 winit = "0.25.0"
 wgpu = { version = "0.11", features = [ "spirv" ] }
 pollster = "0.2.4"
-ultraviolet = { version = "0.8.1", features = [ "int" ] }
+ultraviolet = { version = "0.8.1" }
 bytemuck = { version = "1.7.2", features = [ "derive" ] }
 env_logger = "0.9"

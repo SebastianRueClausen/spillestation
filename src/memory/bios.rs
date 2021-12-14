@@ -14,7 +14,6 @@ impl Bios {
         }
     }
 
-    /// Load a memory from bios.
     pub fn load<T: AddrUnit>(&self, offset: u32) -> u32 {
         let mut value: u32 = 0;
         for i in 0..T::width() {

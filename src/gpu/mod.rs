@@ -9,20 +9,12 @@ use crate::util::bits::BitExtract;
 use crate::front::DrawInfo;
 use fifo::Fifo;
 use primitive::{Vertex, Point, TextureParams, Color, TexCoord};
-use rasterize::{
-    Shading,
-    UnShaded,
-    Shaded,
-    Textureing,
-    UnTextured,
-    Textured,
-    Transparency,
-    // Transparent,
-    Opaque,
-};
+use rasterize::{Shading, UnShaded, Shaded, Textureing, UnTextured, Textured, Transparency, Opaque};
 use std::fmt;
 pub use vram::Vram;
 
+/// How to blend two colors. Used mainly for blending the color of a shape being drawn with the color
+/// behind it.
 pub enum TransBlend {
     Avg = 0,
     Add = 1,
@@ -40,6 +32,15 @@ impl TransBlend {
             _ => unreachable!("Invalid transparency blending"),
         }
     }
+
+    pub fn blend(self, a: Color, b: Color) -> Color {
+        match self {
+            TransBlend::Avg => a.avg_blend(b), 
+            TransBlend::Add => a.add_blend(b), 
+            TransBlend::Sub => a.sub_blend(b), 
+            TransBlend::AddDiv => a.add_div_blend(b), 
+        }
+    }
 }
 
 impl fmt::Display for TransBlend {
@@ -53,7 +54,7 @@ impl fmt::Display for TransBlend {
     }
 }
 
-/// How many Hz to output.
+/// The frequency of the frames being drawn to the screen.
 pub enum VideoMode {
     /// 60 Hz.
     Ntsc = 60,
@@ -331,19 +332,6 @@ impl Status {
     }
 }
 
-/// Number of words in each GP0 command.
-const GP0_CMD_LEN: [u8; 0x100] = [
-    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    4, 4, 4, 4, 7, 7, 7, 7, 5, 5, 5, 5, 9, 9, 9, 9, 6, 6, 6, 6, 9, 9, 9, 9, 8, 8, 8, 8, 12, 12, 12,
-    12, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 3, 3, 3, 3, 4, 4, 4, 4, 2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3,
-    3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1,
-];
-
 pub struct Gpu {
     /// The current state of the GPU.
     state: GpuState,
@@ -442,6 +430,7 @@ impl Gpu {
             }
             value
         } else {
+            // TODO: This should return GPU info generated from GP1(10).
             0
         }
     }
@@ -465,8 +454,7 @@ impl Gpu {
         match self.state {
             GpuState::WaitForCmd => {
                 self.fifo.push(value);
-                let len = GP0_CMD_LEN[self.fifo[0].extract_bits(24, 31) as usize];
-                if self.fifo.len() == len as usize {
+                if self.fifo.has_full_cmd() {
                     self.gp0_exec();
                     self.fifo.clear();
                 }

@@ -1,4 +1,4 @@
-use super::{Gpu, TextureDepth, TransBlend};
+use super::{Gpu, TextureDepth};
 use super::primitive::{Color, Texel, Point, TexCoord, Vertex, TextureParams};
 use ultraviolet::vec::Vec3;
 
@@ -7,7 +7,7 @@ pub trait Shading {
     fn is_shaded() -> bool;
 }
 
-/// Not shaded i.e. each vertex doesn't have a color attribute.
+/// Not shaded ie. each vertex doesn't have a color attribute.
 pub struct UnShaded;
 
 impl Shading for UnShaded {
@@ -96,6 +96,8 @@ impl Transparency for Opaque {
     }
 }
 
+/// Calculate barycentric coordinates.
+#[inline]
 pub fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
     let v1 = Vec3::new(
         (points[2].x - points[0].x) as f32,
@@ -116,10 +118,12 @@ pub fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
 }
 
 impl Gpu {
+    /// Draw a pixel to the screen.
     fn draw_pixel(&mut self, point: Point, color: Color) {
         self.vram.store_16(point.x, point.y, color.as_u16());
     }
 
+    /// Load a texel at a given texture coordinate.
     fn load_texture_color(&self, params: &TextureParams, coord: TexCoord) -> Texel {
         match params.texture_depth {
             TextureDepth::B4 => {
@@ -127,10 +131,8 @@ impl Gpu {
                     params.texture_x + (coord.u / 4) as i32,
                     params.texture_y + coord.v as i32,
                 );
-                // println!("{:08x} {:08x}", params.texture_x + (coord.u / 4) as i32, params.texture_y + coord.v as i32);
                 let offset = (value >> ((coord.u & 0x3) * 4)) & 0xf;
                 Texel::new(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
-
             },
             TextureDepth::B8 => {
                 let value = self.vram.load_16(
@@ -150,7 +152,15 @@ impl Gpu {
         }
     }
 
-    pub fn draw_triangle<S: Shading, Tex: Textureing, Trans: Transparency>(
+    /// Rasterize a triangle to the screen. It finds the bounding box and checks for each pixel if
+    /// it's inside the triangle using barycentric coordinates. Since the Playstation renders
+    /// many different kind triangles, this function takes template arguments descriping how the
+    /// triangle should be rendered, to avoid a lot of run-time branching. Colors and texture coordinates
+    /// get interpolated using the barycentric coordinates. 
+    ///
+    /// This could be optimized in a few different ways. Most obviously using simd to rasterize
+    /// multiple pixels at once.
+    pub fn draw_triangle<Shade: Shading, Tex: Textureing, Trans: Transparency>(
         &mut self,
         shade: Color,
         params: &TextureParams,
@@ -188,7 +198,7 @@ impl Gpu {
                 }
                 // If the triangle is shaded, we interpolate between the colors of each vertex.
                 // Otherwise the shade is just the base color/shade.
-                let shade = if S::is_shaded() {
+                let shade = if Shade::is_shaded() {
                     let r = v1.color.r as f32 * res.x + v2.color.r as f32 * res.y + v3.color.r as f32 * res.z;
                     let g = v1.color.g as f32 * res.x + v2.color.g as f32 * res.y + v3.color.g as f32 * res.z;
                     let b = v1.color.b as f32 * res.x + v2.color.b as f32 * res.y + v3.color.b as f32 * res.z;
@@ -196,7 +206,6 @@ impl Gpu {
                 } else {
                     shade 
                 };
-                // This is if the triangle is textured.
                 let color = if Tex::is_textured() {
                     let uv = TexCoord {
                         u: (v1.texcoord.u as f32 * res.x + v2.texcoord.u as f32 * res.y + v3.texcoord.u as f32 * res.z) as u8 + 1,
@@ -217,12 +226,7 @@ impl Gpu {
                             self.vram.load_16(p.x, p.y)
                         );
                         // Apply the current blending.
-                        match self.status.trans_blending() {
-                            TransBlend::Avg => texture_color.avg_blend(background), 
-                            TransBlend::Add => texture_color.add_blend(background), 
-                            TransBlend::Sub => texture_color.sub_blend(background), 
-                            TransBlend::AddDiv => texture_color.add_div_blend(background), 
-                        }
+                        self.status.trans_blending().blend(texture_color, background)
                     } else {
                         texture_color
                     }
@@ -233,12 +237,7 @@ impl Gpu {
                         let background = Color::from_u16(
                             self.vram.load_16(p.x, p.y)
                         );
-                        match self.status.trans_blending() {
-                            TransBlend::Avg => shade.avg_blend(background), 
-                            TransBlend::Add => shade.add_blend(background), 
-                            TransBlend::Sub => shade.sub_blend(background), 
-                            TransBlend::AddDiv => shade.add_div_blend(background), 
-                        }
+                        self.status.trans_blending().blend(shade, background)
                     } else {
                         shade
                     }
@@ -247,81 +246,6 @@ impl Gpu {
             }
         }
     }
-
-    /*
-    pub fn draw_triangle_block(&mut self, v1: &Vertex, v2: &Vertex, v3: &Vertex) {
-        let points = [v1.point, v2.point, v3.point];
-        // Calculate bounding box.
-        let max = Point {
-            x: i32::max(points[0].x, i32::max(points[1].x, points[2].x)),
-            y: i32::max(points[1].y, i32::max(points[1].y, points[2].y)),
-        };
-        let min = Point {
-            x: i32::min(points[0].x, i32::min(points[1].x, points[2].x)),
-            y: i32::min(points[0].y, i32::min(points[1].y, points[2].y)),
-        };
-        // Clip screen bounds.
-        let max = Point {
-            x: i32::max(max.x, self.draw_area_right as i32),
-            y: i32::max(max.y, self.draw_area_top as i32),
-        };
-        let min = Point {
-            x: i32::min(min.x, self.draw_area_left as i32),
-            y: i32::min(min.y, self.draw_area_bottom as i32),
-        };
-        if max.x - min.x > 60 || max.y - min.y > 60 {
-            for y in (min.y..=max.y).step_by(8) {
-                for x in (min.x..=max.x).step_by(8) {
-                    let ps = [
-                        Point::new(x, y),
-                        Point::new(x + 8, y),
-                        Point::new(x + 8, y + 8),
-                        Point::new(x, y + 8),
-                    ];
-                    let rs = [
-                        Point::barycentric(&points, &ps[0]),
-                        Point::barycentric(&points, &ps[1]),
-                        Point::barycentric(&points, &ps[2]),
-                        Point::barycentric(&points, &ps[3]),
-                    ];
-                    if rs.iter().all(|v| v.x < 0.0 || v.y < 0.0 || v.z < 0.0) {
-                        for y in y..(y + 8) {
-                            for x in x..(x + 8) {
-                                self.draw_pixel(Point::new(x, y), Color::from_rgb(255, 255, 255));
-                            }
-                        }
-                    } else if !rs.iter().any(|v| v.x < 0.0 || v.y < 0.0 || v.z < 0.0) {
-                        continue;
-                    } else {
-                        for y in y..(y + 8) {
-                            for x in x..(x + 8) {
-                                let p = Point::new(x, y);
-                                let res = Point::barycentric(&points, &p);
-                                if res.x < 0.0 || res.y < 0.0 || res.z < 0.0 {
-                                    continue;
-                                }
-                                self.draw_pixel(p, Color::from_rgb(255, 255, 255));
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            for y in min.y..=max.y {
-                for x in min.x..=max.x {
-                    let p = Point {
-                        x, y,
-                    };
-                    let res = Point::barycentric(&points, &p);
-                    if res.x < 0.0 || res.y < 0.0 || res.z < 0.0 {
-                        continue;
-                    }
-                    self.draw_pixel(p, Color::from_rgb(255, 255, 255));
-                }
-            }
-        }
-    }
-    */
 
     pub fn draw_line(&mut self, _start: Point, _end: Point) {
 
