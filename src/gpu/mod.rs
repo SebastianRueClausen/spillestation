@@ -5,11 +5,13 @@ mod primitive;
 mod rasterize;
 pub mod vram;
 
-use crate::util::bits::BitExtract;
 use crate::front::DrawInfo;
+use crate::util::bits::BitExtract;
 use fifo::Fifo;
-use primitive::{Vertex, Point, TextureParams, Color, TexCoord};
-use rasterize::{Shading, UnShaded, Shaded, Textureing, UnTextured, Textured, Transparency, Opaque};
+use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
+use rasterize::{
+    Opaque, Shaded, Shading, Textured, Textureing, Transparency, UnShaded, UnTextured,
+};
 use std::fmt;
 pub use vram::Vram;
 
@@ -35,22 +37,26 @@ impl TransBlend {
 
     pub fn blend(self, a: Color, b: Color) -> Color {
         match self {
-            TransBlend::Avg => a.avg_blend(b), 
-            TransBlend::Add => a.add_blend(b), 
-            TransBlend::Sub => a.sub_blend(b), 
-            TransBlend::AddDiv => a.add_div_blend(b), 
+            TransBlend::Avg => a.avg_blend(b),
+            TransBlend::Add => a.add_blend(b),
+            TransBlend::Sub => a.sub_blend(b),
+            TransBlend::AddDiv => a.add_div_blend(b),
         }
     }
 }
 
 impl fmt::Display for TransBlend {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match *self {
-            TransBlend::Avg => "average", 
-            TransBlend::Add => "add", 
-            TransBlend::Sub => "subtract", 
-            TransBlend::AddDiv => "add and divide", 
-        })
+        write!(
+            f,
+            "{}",
+            match *self {
+                TransBlend::Avg => "average",
+                TransBlend::Add => "add",
+                TransBlend::Sub => "subtract",
+                TransBlend::AddDiv => "add and divide",
+            }
+        )
     }
 }
 
@@ -64,10 +70,14 @@ pub enum VideoMode {
 
 impl fmt::Display for VideoMode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match *self {
-            VideoMode::Ntsc => "NTSC(60hz)", 
-            VideoMode::Pal => "PAL(50hz)", 
-        })
+        write!(
+            f,
+            "{}",
+            match *self {
+                VideoMode::Ntsc => "NTSC(60hz)",
+                VideoMode::Pal => "PAL(50hz)",
+            }
+        )
     }
 }
 
@@ -80,12 +90,16 @@ pub enum DmaDirection {
 
 impl fmt::Display for DmaDirection {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match *self {
-            DmaDirection::Off => "off", 
-            DmaDirection::Fifo => "Fifo", 
-            DmaDirection::CpuToGp0 => "CPU to GP0", 
-            DmaDirection::VramToCpu => "VRAM to CPU", 
-        })
+        write!(
+            f,
+            "{}",
+            match *self {
+                DmaDirection::Off => "off",
+                DmaDirection::Fifo => "Fifo",
+                DmaDirection::CpuToGp0 => "CPU to GP0",
+                DmaDirection::VramToCpu => "VRAM to CPU",
+            }
+        )
     }
 }
 
@@ -97,10 +111,14 @@ pub enum InterlaceField {
 
 impl fmt::Display for InterlaceField {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match *self {
-            InterlaceField::Bottom => "top/even", 
-            InterlaceField::Top => "bottom/odd", 
-        })
+        write!(
+            f,
+            "{}",
+            match *self {
+                InterlaceField::Bottom => "top/even",
+                InterlaceField::Top => "bottom/odd",
+            }
+        )
     }
 }
 
@@ -112,10 +130,14 @@ pub enum ColorDepth {
 
 impl fmt::Display for ColorDepth {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match *self {
-            ColorDepth::B15 => "15 bit", 
-            ColorDepth::B24 => "24 bit", 
-        })
+        write!(
+            f,
+            "{}",
+            match *self {
+                ColorDepth::B15 => "15 bit",
+                ColorDepth::B24 => "24 bit",
+            }
+        )
     }
 }
 
@@ -139,11 +161,15 @@ impl TextureDepth {
 
 impl fmt::Display for TextureDepth {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match *self {
-            TextureDepth::B4 => "4 bit", 
-            TextureDepth::B8 => "8 bit", 
-            TextureDepth::B15 => "15 bit", 
-        })
+        write!(
+            f,
+            "{}",
+            match *self {
+                TextureDepth::B4 => "4 bit",
+                TextureDepth::B8 => "8 bit",
+                TextureDepth::B15 => "15 bit",
+            }
+        )
     }
 }
 
@@ -176,7 +202,7 @@ impl VramTransfer {
 
     fn next(&mut self) -> Option<()> {
         self.x += 1;
-        if self.x == self.x_end  {
+        if self.x == self.x_end {
             self.x = self.x_start;
             self.y += 1;
             if self.y == self.y_end {
@@ -265,7 +291,7 @@ impl Status {
                 2 => 512,
                 3 => 640,
                 _ => unreachable!("Invalid vres."),
-            }
+            },
         }
     }
 
@@ -286,7 +312,7 @@ impl Status {
         match self.0.extract_bit(21) {
             0 => ColorDepth::B15,
             1 => ColorDepth::B24,
-            _ => unreachable!("Invalid color depth.")
+            _ => unreachable!("Invalid color depth."),
         }
     }
 
@@ -419,7 +445,7 @@ impl Gpu {
     }
 
     pub fn dma_store(&mut self, value: u32) {
-        self.gp0_store(value);        
+        self.gp0_store(value);
     }
 
     fn load_from_transfer(&mut self) -> u16 {
@@ -458,7 +484,7 @@ impl Gpu {
                     self.gp0_exec();
                     self.fifo.clear();
                 }
-            },
+            }
             GpuState::WaitForData(ref mut transfer) => {
                 for (lo, hi) in [(0, 15), (16, 31)] {
                     let value = value.extract_bits(lo, hi) as u16;
@@ -468,7 +494,7 @@ impl Gpu {
                         break;
                     }
                 }
-            },
+            }
         }
     }
 
@@ -499,11 +525,11 @@ impl Gpu {
 
     fn gp0_exec(&mut self) {
         let command = self.fifo[0].extract_bits(24, 31);
-        match command{
+        match command {
             0x0 => {}
             0x1 => {
                 // TODO: clear cache.
-            },
+            }
             0xe1 => self.gp0_draw_mode_setting(),
             0xe2 => self.gp0_texture_window_setting(),
             0xe3 => self.gp0_draw_area_top_left(),
@@ -544,14 +570,14 @@ impl Gpu {
                     0 => {
                         params.clut_x = (value.extract_bits(16, 21) / 16) as i32;
                         params.clut_y = value.extract_bits(22, 30) as i32;
-                    },
+                    }
                     1 => {
                         params.texture_x = value.extract_bits(16, 19) as i32 * 64;
                         params.texture_y = value.extract_bit(20) as i32 * 256;
                         params.blend_mode = TransBlend::from_value(value.extract_bits(21, 22));
                         params.texture_depth = TextureDepth::from_value(value.extract_bits(23, 24));
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
                 vertex.texcoord = TexCoord {
                     u: value.extract_bits(0, 7) as u8,
@@ -584,14 +610,14 @@ impl Gpu {
                     0 => {
                         params.clut_x = value.extract_bits(16, 21) as i32 * 16;
                         params.clut_y = value.extract_bits(22, 30) as i32;
-                    },
+                    }
                     1 => {
                         params.texture_x = value.extract_bits(16, 19) as i32 * 64;
                         params.texture_y = value.extract_bit(20) as i32 * 256;
                         params.blend_mode = TransBlend::from_value(value.extract_bits(21, 22));
                         params.texture_depth = TextureDepth::from_value(value.extract_bits(23, 24));
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
                 vertex.texcoord = TexCoord {
                     u: value.extract_bits(0, 7) as u8,

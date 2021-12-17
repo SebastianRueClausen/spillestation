@@ -69,7 +69,7 @@ impl Cop0 {
     pub fn enter_exception(&mut self, last_pc: u32, in_delay: bool, ex: Exception) -> u32 {
         // Remember bits [0..5] of the status register, which keep track of interrupt and
         // kernel/user mode flags. Bits [0..1] keep track of the current flags, bits [2..3]keeps
-        // track of the last flags, and bits [4..5] the ones before that. 
+        // track of the last flags, and bits [4..5] the ones before that.
         let flags = self.registers[12].extract_bits(0, 5);
         // When entering and exception, two 0 are appended to these bits, which disables interrupts
         // and sets the CPU to kernel mode.
@@ -86,7 +86,6 @@ impl Cop0 {
         } else {
             self.registers[13] &= !(1 << 31);
             self.registers[14] = last_pc;
-
         }
         // Set PC to the to exception handler. The exception handler address depend on BEV flag in
         // COP0 status register.
@@ -106,6 +105,4 @@ impl Cop0 {
 }
 
 /// Register restart values. Just sets the register proccessor id for now.
-const REGISTER_VALUES: [u32; 16] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000002, 0,
-];
+const REGISTER_VALUES: [u32; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000002, 0];

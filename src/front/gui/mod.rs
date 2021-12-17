@@ -1,20 +1,21 @@
 //! This module implements GUI used for debugging and more. It uses the egui crate to render it to
 //! the screen.
 
-pub mod fps;
-pub mod cpu;
 pub mod app;
-pub mod mem;
-pub mod gpu;
-pub mod vram;
 pub mod app_menu;
+pub mod cpu;
+pub mod fps;
+pub mod gpu;
+pub mod mem;
+pub mod vram;
+pub mod config;
 
+use super::{RenderCtx, SurfaceSize};
+pub use app::App;
 use egui::{ClippedMesh, CtxRef};
 use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
 use egui_winit::State as WinState;
 use winit::window::Window;
-use super::{SurfaceSize, RenderCtx};
-pub use app::App;
 
 /// All the egui stuff required to draw gui to the screen.
 pub struct GuiCtx {
@@ -30,10 +31,7 @@ pub struct GuiCtx {
 }
 
 impl GuiCtx {
-    pub fn new(
-        scale_factor: f32,
-        render_ctx: &RenderCtx,
-    ) -> Self {
+    pub fn new(scale_factor: f32, render_ctx: &RenderCtx) -> Self {
         let egui_ctx = CtxRef::default();
         let win_state = WinState::from_pixels_per_point(scale_factor);
         let SurfaceSize {
@@ -45,11 +43,7 @@ impl GuiCtx {
             physical_height,
             scale_factor,
         };
-        let render_pass = RenderPass::new(
-            &render_ctx.device,
-            render_ctx.surface_format,
-            1,
-        );
+        let render_pass = RenderPass::new(&render_ctx.device, render_ctx.surface_format, 1);
         Self {
             egui_ctx,
             win_state,
@@ -75,17 +69,22 @@ impl GuiCtx {
         }
     }
 
+    pub fn show_app<T: App>(&mut self, app: &mut T) {
+        let mut open = true;
+        app.show(&self.egui_ctx, &mut open);
+    }
+
     /// Prepare egui to take commands.
     pub fn begin_frame(&mut self, window: &Window) {
-       let input = self.win_state.take_egui_input(window); 
-       self.egui_ctx.begin_frame(input);
+        let input = self.win_state.take_egui_input(window);
+        self.egui_ctx.begin_frame(input);
     }
 
     /// Prepare egui to render all the windows.
     pub fn end_frame(&mut self, window: &Window) {
-       let (output, jobs) = self.egui_ctx.end_frame();
-       self.win_state.handle_output(window, &self.egui_ctx, output);
-       self.jobs = self.egui_ctx.tessellate(jobs);
+        let (output, jobs) = self.egui_ctx.end_frame();
+        self.win_state.handle_output(window, &self.egui_ctx, output);
+        self.jobs = self.egui_ctx.tessellate(jobs);
     }
 
     /// Render the current frame to the screen.
@@ -100,23 +99,15 @@ impl GuiCtx {
             &render_ctx.queue,
             &self.egui_ctx.texture(),
         );
-        self.render_pass.update_user_textures(
-            &render_ctx.device,
-            &render_ctx.queue,
-        );
+        self.render_pass
+            .update_user_textures(&render_ctx.device, &render_ctx.queue);
         self.render_pass.update_buffers(
             &render_ctx.device,
             &render_ctx.queue,
             &self.jobs,
             &self.screen_descriptor,
         );
-        self.render_pass.execute(
-            encoder,
-            target,
-            &self.jobs,
-            &self.screen_descriptor,
-            None,
-        )
+        self.render_pass
+            .execute(encoder, target, &self.jobs, &self.screen_descriptor, None)
     }
 }
-

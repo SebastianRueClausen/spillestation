@@ -19,3 +19,6 @@ pollster = "0.2.4"
 ultraviolet = { version = "0.8.1" }
 bytemuck = { version = "1.7.2", features = [ "derive" ] }
 env_logger = "0.9"
+directories-next = "2.0.0"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.5.8"

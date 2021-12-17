@@ -1,4 +1,4 @@
-use super::{RenderCtx, Canvas};
+use super::{Canvas, RenderCtx};
 use ultraviolet::{Mat4, Vec2};
 use wgpu::util::DeviceExt;
 
@@ -28,10 +28,7 @@ pub struct DrawStage {
 }
 
 impl DrawStage {
-    pub fn new(
-        ctx: &RenderCtx, 
-        canvas: &Canvas,
-    ) -> Self {
+    pub fn new(ctx: &RenderCtx, canvas: &Canvas) -> Self {
         let texture_sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Texture Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -47,11 +44,13 @@ impl DrawStage {
             border_color: None,
         });
         let vertex_data = bytemuck::cast_slice(&VERTICES);
-        let vertex_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: vertex_data,
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let vertex_buffer = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: vertex_data,
+                usage: wgpu::BufferUsages::VERTEX,
+            });
         let vertex_buffer_layout = wgpu::VertexBufferLayout {
             array_stride: (vertex_data.len() / 3) as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -69,53 +68,55 @@ impl DrawStage {
             ],
         };
         let (transform, scissor_rect) = generate_transform_matrix(
+            Vec2::new(canvas.extent.width as f32, canvas.extent.height as f32),
             Vec2::new(
-                canvas.extent.width as f32,
-                canvas.extent.height as f32,
+                ctx.surface_size.width as f32,
+                ctx.surface_size.height as f32,
             ),
-            Vec2::new(ctx.surface_size.width as f32, ctx.surface_size.height as f32),
         );
-        let uniform_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Transform Buffer"),
-            contents: transform.as_byte_slice(),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let bind_group_layout = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Render Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float {
-                            filterable: true,
+        let uniform_buffer = ctx
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Transform Buffer"),
+                contents: transform.as_byte_slice(),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Render Bind Group Layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                multisampled: false,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                            },
+                            count: None,
                         },
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler {
-                        filtering: true,
-                        comparison: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler {
+                                filtering: true,
+                                comparison: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::VERTEX,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
         let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Render Bind Group"),
             layout: &bind_group_layout,
@@ -135,38 +136,46 @@ impl DrawStage {
             ],
         });
 
-        let vert = ctx.device.create_shader_module(&wgpu::include_spirv!("shader/vert.spv"));
-        let frag = ctx.device.create_shader_module(&wgpu::include_spirv!("shader/frag.spv"));
+        let vert = ctx
+            .device
+            .create_shader_module(&wgpu::include_spirv!("shader/vert.spv"));
+        let frag = ctx
+            .device
+            .create_shader_module(&wgpu::include_spirv!("shader/frag.spv"));
 
-        let pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-        let pipeline = ctx.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &vert,
-                entry_point: "main",
-                buffers: &[vertex_buffer_layout],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &frag,
-                entry_point: "main",
-                targets: &[wgpu::ColorTargetState {
-                    format: ctx.surface_format,
-                    blend: Some(wgpu::BlendState {
-                        color: wgpu::BlendComponent::REPLACE,
-                        alpha: wgpu::BlendComponent::REPLACE,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                }],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-        });
+        let pipeline_layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &vert,
+                    entry_point: "main",
+                    buffers: &[vertex_buffer_layout],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &frag,
+                    entry_point: "main",
+                    targets: &[wgpu::ColorTargetState {
+                        format: ctx.surface_format,
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent::REPLACE,
+                            alpha: wgpu::BlendComponent::REPLACE,
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+            });
         Self {
             scissor_rect,
             bind_group,
@@ -206,20 +215,17 @@ impl DrawStage {
         render_pass.draw(0..3, 0..1);
     }
 
-    pub fn resize(
-        &mut self,
-        ctx: &RenderCtx,
-        canvas: &Canvas,
-    ) {
+    pub fn resize(&mut self, ctx: &RenderCtx, canvas: &Canvas) {
         let (transform, scissor_rect) = generate_transform_matrix(
+            Vec2::new(canvas.extent.width as f32, canvas.extent.height as f32),
             Vec2::new(
-                canvas.extent.width as f32,
-                canvas.extent.height as f32,
+                ctx.surface_size.width as f32,
+                ctx.surface_size.height as f32,
             ),
-            Vec2::new(ctx.surface_size.width as f32, ctx.surface_size.height as f32),
         );
         self.scissor_rect = scissor_rect;
-        ctx.queue.write_buffer(&self.uniform_buffer, 0, transform.as_byte_slice());
+        ctx.queue
+            .write_buffer(&self.uniform_buffer, 0, transform.as_byte_slice());
     }
 }
 
@@ -227,7 +233,7 @@ impl DrawStage {
 /// the render pipeline. It depends on size of the surface texture and the render texture, so it
 /// must be recaluculated each time on of these change.
 fn generate_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect) {
-    // The smallest scale ratio. 
+    // The smallest scale ratio.
     let scale = (screen.x / texture.x)
         .min(screen.y / texture.y)
         .max(1.0)
@@ -249,10 +255,7 @@ fn generate_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect)
         [t.x, t.y, 0.0, 1.0],
     ]);
     // The clipping rectangle width and height.
-    let clip_wh = Vec2::new(
-        scaled.x.min(screen.x),
-        scaled.y.min(screen.y),
-    );
+    let clip_wh = Vec2::new(scaled.x.min(screen.x), scaled.y.min(screen.y));
     // The clipping rectangle upper right corner.
     let clip_xy = (screen - clip_wh) * 0.5;
     let scissor_rect = ScissorRect {

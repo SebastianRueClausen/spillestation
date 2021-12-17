@@ -1,4 +1,3 @@
-
 /// Trait to extract a value between two given bit positions.
 pub trait BitExtract {
     /// Extract a single bit.

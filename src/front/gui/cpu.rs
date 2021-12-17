@@ -1,9 +1,8 @@
+use super::App;
 /// GUI Apps to view and interact with the Playstations CPU.
-
 use crate::cpu::{Cpu, REGISTER_NAMES};
 use std::fmt::Write;
 use std::time::Duration;
-use super::App;
 
 /// ['App'] which shows the status of the CPU. It shows the value of all the registers and PC and
 /// such.
@@ -30,12 +29,14 @@ impl CpuStatus {
         write!(&mut self.fields[1], "{:08x}", cpu.lo)?;
         write!(&mut self.fields[2], "{:08x}", cpu.pc)?;
         write!(&mut self.fields[3], "{}", cpu.current_instruction())?;
-        Ok(()) 
+        Ok(())
     }
 
     pub fn update_fields(&mut self, cpu: &mut Cpu) {
         self.fields.iter_mut().for_each(|field| field.clear());
-        self.registers.iter_mut().for_each(|register| register.clear());
+        self.registers
+            .iter_mut()
+            .for_each(|register| register.clear());
         if let Err(err) = self.write_fields(cpu) {
             eprintln!("{}", err);
         }
@@ -57,8 +58,8 @@ impl App for CpuStatus {
                 .show(ui, |ui| {
                     egui::Grid::new("cpu_status_grid").show(ui, |ui| {
                         for (field, label) in self.fields.iter_mut().zip(FIELD_LABELS.iter()) {
-                            ui.label(label); 
-                            ui.label(field); 
+                            ui.label(label);
+                            ui.label(field);
                             ui.end_row();
                         }
                     });
@@ -148,8 +149,8 @@ impl Default for CpuCtrl {
 impl App for CpuCtrl {
     fn update(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.radio_value(&mut self.paused, true, "Step"); 
-            ui.radio_value(&mut self.paused, false, "Run"); 
+            ui.radio_value(&mut self.paused, true, "Step");
+            ui.radio_value(&mut self.paused, false, "Run");
         });
         ui.separator();
         if self.paused {
@@ -158,23 +159,25 @@ impl App for CpuCtrl {
             } else {
                 " cycle"
             };
-            ui.add(egui::Slider::new(&mut self.step_amount, 1..=MAX_CYCLE_HZ)
-                .suffix(suffix)
-                .logarithmic(true)
-                .clamp_to_range(true)
-                .smart_aim(true)
-                .text("Step amount")
+            ui.add(
+                egui::Slider::new(&mut self.step_amount, 1..=MAX_CYCLE_HZ)
+                    .suffix(suffix)
+                    .logarithmic(true)
+                    .clamp_to_range(true)
+                    .smart_aim(true)
+                    .text("Step amount"),
             );
             if ui.button("Step").clicked() {
                 self.stepped = true;
             }
         } else {
-            ui.add(egui::Slider::new(&mut self.cycle_hz, 1..=MAX_CYCLE_HZ)
-                .suffix("hz")
-                .logarithmic(true)
-                .clamp_to_range(true)
-                .smart_aim(true)
-                .text("CPU Speed")
+            ui.add(
+                egui::Slider::new(&mut self.cycle_hz, 1..=MAX_CYCLE_HZ)
+                    .suffix("hz")
+                    .logarithmic(true)
+                    .clamp_to_range(true)
+                    .smart_aim(true)
+                    .text("CPU Speed"),
             );
         }
     }
@@ -192,12 +195,7 @@ impl App for CpuCtrl {
     }
 }
 
-const FIELD_LABELS: [&str; 4] = [
-   "hi",
-   "lo",
-   "pc",
-   "ins",
-];
+const FIELD_LABELS: [&str; 4] = ["hi", "lo", "pc", "ins"];
 
 /// This is the native speed the Playstation.
 const MAX_CYCLE_HZ: usize = 30_000_000;

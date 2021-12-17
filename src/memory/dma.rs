@@ -37,9 +37,7 @@ struct BlockControl(u32);
 
 impl BlockControl {
     fn new(value: u32) -> Self {
-        Self {
-            0: value
-        }
+        Self { 0: value }
     }
 
     /// Block size - Bits 0..15.
@@ -118,9 +116,7 @@ struct ChannelControl(u32);
 
 impl ChannelControl {
     fn new(value: u32) -> Self {
-        Self {
-            0: value
-        }
+        Self { 0: value }
     }
 
     /// Direction - Bit 0.
@@ -160,17 +156,16 @@ impl ChannelControl {
         self.0.extract_bits(20, 22) << 1
     }
 
-   fn start(self) -> bool {
+    fn start(self) -> bool {
         self.0.extract_bit(28) == 1
     }
 
-   fn mark_as_finished(&mut self) {
-       // Clear both enabled and start flags.
+    fn mark_as_finished(&mut self) {
+        // Clear both enabled and start flags.
         self.0 &= !(1 << 24);
         self.0 &= !(1 << 28);
     }
 }
-
 
 #[derive(Clone, Copy)]
 struct Channel {
@@ -225,9 +220,7 @@ struct Control(u32);
 
 impl Control {
     fn new(value: u32) -> Self {
-        Self {
-            0: value,
-        }
+        Self { 0: value }
     }
 
     pub fn channel_priority(self, channel: ChannelPort) -> u32 {
@@ -246,9 +239,7 @@ struct Interrupt(u32);
 
 impl Interrupt {
     fn new(value: u32) -> Self {
-        Self {
-            0: value,
-        }
+        Self { 0: value }
     }
 
     pub fn force_irq(self) -> bool {
@@ -329,14 +320,12 @@ impl Dma {
         let channel = offset.extract_bits(4, 6);
         let offset = offset.extract_bits(0, 3);
         match channel {
-            0..=6 => {
-                self.channels[channel as usize].load(offset)
-            },
+            0..=6 => self.channels[channel as usize].load(offset),
             7 => match offset {
                 0 => self.control.0,
                 4 => self.interrupt.0,
                 _ => unreachable!("Load at invalid DMA register {:08x}.", offset),
-            }
+            },
             _ => unreachable!("Load at invalid DMA register {:08x}.", offset),
         }
     }
@@ -348,16 +337,14 @@ impl Dma {
         match channel {
             0..=6 => {
                 self.channels[channel as usize].store(offset, value);
-            },
-            7 => {
-                match offset {
-                    0 => self.control.0 = value,
-                    4 => {
-                        self.interrupt.0 = value;
-                        self.interrupt.update_master_irq_flag();
-                    },
-                    _ => unreachable!("Store at invalid DMA register {:08x}.", offset),
+            }
+            7 => match offset {
+                0 => self.control.0 = value,
+                4 => {
+                    self.interrupt.0 = value;
+                    self.interrupt.update_master_irq_flag();
                 }
+                _ => unreachable!("Store at invalid DMA register {:08x}.", offset),
             },
             _ => unreachable!("Store at invalid DMA register {:08x}.", offset),
         }
@@ -385,12 +372,13 @@ impl Dma {
                         increment: increment(channel.control.step()),
                         start: channel.base,
                     });
-                },
+                }
                 SyncMode::Request if channel.control.enabled() => {
                     transfers.block.push(BlockTransfer {
                         port: ChannelPort::from_value(i as u32),
                         direction: channel.control.direction(),
-                        size: channel.block_control.block_size() * channel.block_control.block_count(),
+                        size: channel.block_control.block_size()
+                            * channel.block_control.block_count(),
                         increment: increment(channel.control.step()),
                         start: channel.base,
                     });
@@ -400,7 +388,7 @@ impl Dma {
                     transfers.linked.push(LinkedTransfer {
                         start: channel.base,
                     });
-                },
+                }
                 _ => {}
             }
         }

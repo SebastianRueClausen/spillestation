@@ -3,10 +3,11 @@
 mod cop0;
 pub mod opcode;
 
-use std::fmt;
 use super::memory::{AddrUnit, Bus, Byte, HalfWord, Word};
+use super::memory::bios::Bios;
 use cop0::{Cop0, Exception};
 pub use opcode::Opcode;
+use std::fmt;
 
 /// Used to store pending loads from the Bus.
 #[derive(Copy, Clone)]
@@ -34,13 +35,9 @@ struct CacheLine {
 
 impl Default for CacheLine {
     fn default() -> Self {
-        Self {
-            tag: 0,
-            data: 0,
-        }
+        Self { tag: 0, data: 0 }
     }
 }
-
 
 pub struct Cpu {
     /// At the start of each cycle, this points to the last instruction which was executed. During
@@ -90,7 +87,7 @@ pub struct Cpu {
 const PC_START_ADDRESS: u32 = 0xbfc00000;
 
 impl Cpu {
-    pub fn new() -> Self {
+    pub fn new(bios: Bios) -> Self {
         // Reset values of the CPU.
         Cpu {
             last_pc: 0x0,
@@ -104,13 +101,12 @@ impl Cpu {
             registers: [0x0; 32],
             load_slot: DelaySlot::default(),
             icache: [CacheLine::default(); 1024],
-            bus: Bus::new(),
+            bus: Bus::new(bios),
             cop0: Cop0::new(),
             cycle_count: 0,
             // Debug.
             cache_hit: 0,
             cache_miss: 0,
-
         }
     }
 
@@ -149,10 +145,7 @@ impl Cpu {
             1
         };
         self.set_reg(self.load_slot.register * eq, self.load_slot.value * eq);
-        self.load_slot = DelaySlot {
-            register,
-            value
-        };
+        self.load_slot = DelaySlot { register, value };
     }
 
     /// Do pending load, if any.
@@ -198,7 +191,9 @@ impl Cpu {
 
     /// Start handeling an exception, and jumps to exception handling code in bios.
     fn throw_exception(&mut self, ex: Exception) {
-        self.pc = self.cop0.enter_exception(self.last_pc, self.in_branch_delay, ex);
+        self.pc = self
+            .cop0
+            .enter_exception(self.last_pc, self.in_branch_delay, ex);
         self.next_pc = self.pc.wrapping_add(4);
     }
 
@@ -230,7 +225,7 @@ impl Cpu {
             self.cycle_count += 4;
             self.load::<Word>(address)
         };
-        Opcode::new(data)    
+        Opcode::new(data)
     }
 
     /// Fetch and execute next instruction.
@@ -246,12 +241,8 @@ impl Cpu {
         self.branched = false;
         // Execute instruction.
         self.exec(op);
-        // Every cycle takes 1 cycle.
+        // Every instruction takes 1 cycle.
         self.cycle_count += 1;
-
-        if self.cycle_count == 1000000 {
-            println!("{} cache hit - {} cache miss", self.cache_hit, self.cache_miss);
-        }
     }
 
     pub fn bus(&self) -> &Bus {
@@ -278,7 +269,7 @@ impl Cpu {
                 0x7 => self.op_srav(opcode),
                 0x8 => self.op_jr(opcode),
                 0x9 => self.op_jalr(opcode),
-                0xc => self.op_syscall(), 
+                0xc => self.op_syscall(),
                 0xd => self.op_break(),
                 0x10 => self.op_mfhi(opcode),
                 0x11 => self.op_mthi(opcode),
@@ -483,11 +474,7 @@ impl Cpu {
         let rhs = self.read_reg(op.rt()) as i32;
         self.fetch_load_slot();
         if rhs == 0 {
-            let lo: u32 = if lhs < 0 {
-                1
-            } else {
-                0xffffffff
-            };
+            let lo: u32 = if lhs < 0 { 1 } else { 0xffffffff };
             self.add_pending_hi_lo(36, lhs as u32, lo);
         } else if rhs == -1 && lhs as u32 == 0x80000000 {
             self.add_pending_hi_lo(36, 0, 0x80000000);
@@ -524,9 +511,7 @@ impl Cpu {
 
     /// [ADDU] - Add unsigned.
     fn op_addu(&mut self, op: Opcode) {
-        let value = self
-            .read_reg(op.rs())
-            .wrapping_add(self.read_reg(op.rt()));
+        let value = self.read_reg(op.rs()).wrapping_add(self.read_reg(op.rt()));
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
@@ -534,8 +519,8 @@ impl Cpu {
     /// [SUB] - Signed subtraction.
     /// Throws on underflow.
     fn op_sub(&mut self, op: Opcode) {
-        let rhs = self.read_reg(op.rs()) as i32; 
-        let lhs = self.read_reg(op.rt()) as i32; 
+        let rhs = self.read_reg(op.rs()) as i32;
+        let lhs = self.read_reg(op.rt()) as i32;
         if let Some(value) = rhs.checked_sub(lhs) {
             self.set_reg(op.rd(), value as u32);
         } else {
@@ -545,9 +530,7 @@ impl Cpu {
 
     /// [SUBU] - Subtract unsigned.
     fn op_subu(&mut self, op: Opcode) {
-        let value = self
-            .read_reg(op.rs())
-            .wrapping_sub(self.read_reg(op.rt()));
+        let value = self.read_reg(op.rs()).wrapping_sub(self.read_reg(op.rt()));
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
@@ -740,17 +723,17 @@ impl Cpu {
                 } else {
                     self.add_load_slot(op.rt(), self.cop0.read_reg(register));
                 }
-            },
+            }
             // [MTC0] - Move to Co-Processor0.
             0x4 => {
                 self.fetch_load_slot();
                 self.cop0.set_reg(op.rd(), self.read_reg(op.rt()));
-            },
+            }
             // [RFE] - Restore from exception.
             0b10000 => {
                 self.fetch_load_slot();
                 self.cop0.exit_exception();
-            },
+            }
             _ => self.throw_exception(Exception::ReservedInstruction),
         }
     }
@@ -758,12 +741,12 @@ impl Cpu {
     /// [COP1] - Coprocessor1 instruction.
     fn op_cop1(&mut self) {
         // COP1 does not exist on the Playstation 1.
-        self.throw_exception(Exception::CopUnusable);  
+        self.throw_exception(Exception::CopUnusable);
     }
 
     /// [COP2] - GME instruction.
     fn op_cop2(&mut self, _: Opcode) {
-        todo!(); 
+        todo!();
     }
 
     /// [COP3] - Coprocessor3 instruction.
@@ -793,7 +776,7 @@ impl Cpu {
         }
     }
 
-    /// [LWL] - Load word left. 
+    /// [LWL] - Load word left.
     /// This is used to load words which aren't 32-bit aligned.
     fn op_lwl(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
@@ -801,7 +784,7 @@ impl Cpu {
         let value = if self.load_slot.register == op.rt() {
             self.load_slot.value
         } else {
-            self.read_reg(op.rt())   
+            self.read_reg(op.rt())
         };
         // Get word containing address.
         let word = self.load::<Word>(address & !0x3);
@@ -855,7 +838,7 @@ impl Cpu {
         let value = if self.load_slot.register == op.rt() {
             self.load_slot.value
         } else {
-            self.read_reg(op.rt())   
+            self.read_reg(op.rt())
         };
         // Get word containing address.
         let word = self.load::<Word>(address & !0x3);
@@ -949,12 +932,12 @@ impl Cpu {
     /// [LWC0] - Load word from Coprocessor0.
     fn op_lwc0(&mut self) {
         // This doesn't work on the COP0.
-        self.throw_exception(Exception::CopUnusable); 
+        self.throw_exception(Exception::CopUnusable);
     }
 
     /// [LWC1] - Load word from Coprocessor1.
     fn op_lwc1(&mut self) {
-        self.throw_exception(Exception::CopUnusable); 
+        self.throw_exception(Exception::CopUnusable);
     }
 
     /// [LWC2] - Load word from Coprocessor2.
@@ -1000,36 +983,7 @@ impl fmt::Display for Cpu {
 }
 
 pub const REGISTER_NAMES: [&str; 32] = [
-    "zero",
-    "at",
-    "v0",
-    "v1",
-    "a0",
-    "a1",
-    "a2",
-    "a3",
-    "t0",
-    "t1",
-    "t2",
-    "t3",
-    "t4",
-    "t5",
-    "t6",
-    "t7",
-    "s0",
-    "s1",
-    "s2",
-    "s3",
-    "s4",
-    "s5",
-    "s6",
-    "s7",
-    "t8",
-    "t9",
-    "k0",
-    "k1",
-    "gp",
-    "sp",
-    "fp",
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
+    "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
     "ra",
 ];

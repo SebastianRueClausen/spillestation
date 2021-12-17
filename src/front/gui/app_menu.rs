@@ -1,16 +1,16 @@
-//! The main controller and menu of all the GUI apps. 
+//! The main controller and menu of all the GUI apps.
 
-use super::{
-    fps::FrameCounter,
-    cpu::{CpuCtrl, CpuStatus},
-    mem::MemView,
-    gpu::GpuStatus,
-    vram::VramView,
-};
 use super::App;
 use super::GuiCtx;
-use std::time::Duration;
+use super::{
+    cpu::{CpuCtrl, CpuStatus},
+    fps::FrameCounter,
+    gpu::GpuStatus,
+    mem::MemView,
+    vram::VramView,
+};
 use crate::cpu::Cpu;
+use std::time::Duration;
 
 /// Used to store an application and keep track of the it's open/closed status.
 #[derive(Default)]
@@ -54,7 +54,7 @@ impl AppMenu {
     /// Update all the apps that require it. Called each update cycle.
     pub fn update_tick(&mut self, dt: Duration, cpu: &mut Cpu) {
         // The CPU controller always get's to run.
-        self.cpu_ctrl.app.run_cpu(dt, cpu); 
+        self.cpu_ctrl.app.run_cpu(dt, cpu);
         if self.cpu_status.open {
             self.cpu_status.app.update_fields(cpu);
         }
@@ -106,14 +106,14 @@ impl AppMenu {
                     egui::ScrollArea::vertical()
                         .max_height(400.0)
                         .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.checkbox(&mut self.cpu_ctrl.open, "CPU Control");
-                                ui.checkbox(&mut self.cpu_status.open, "CPU Status");
-                                ui.checkbox(&mut self.mem_view.open, "Memory View");
-                                ui.checkbox(&mut self.frame_counter.open, "Frame Counter");
-                                ui.checkbox(&mut self.gpu_status.open, "GPU Status");
-                                ui.checkbox(&mut self.vram_view.open, "VRAM View");
-                            });
+                        .show(ui, |ui| {
+                            ui.checkbox(&mut self.cpu_ctrl.open, "CPU Control");
+                            ui.checkbox(&mut self.cpu_status.open, "CPU Status");
+                            ui.checkbox(&mut self.mem_view.open, "Memory View");
+                            ui.checkbox(&mut self.frame_counter.open, "Frame Counter");
+                            ui.checkbox(&mut self.gpu_status.open, "GPU Status");
+                            ui.checkbox(&mut self.vram_view.open, "VRAM View");
+                        });
                 });
         }
     }

@@ -3,8 +3,8 @@
 //! However generating the texture on the CPU would take a lot of time, and the generated texture,
 //! which would be almost as big or bigger, still has to transfered to the GPU.
 
-use crate::gpu::vram::{Vram, VRAM_SIZE};
 use super::{Canvas, CANVAS_FORMAT};
+use crate::gpu::vram::{Vram, VRAM_SIZE};
 
 /// Info used to compute ['Canvas'] from VRAM.
 #[repr(C)]
@@ -44,7 +44,9 @@ impl ComputeStage {
             // There could be some performance gained by using the flag MAP_WRITE,
             // which maps the buffer directly to the CPU if the GPU
             // and CPU has shared memory. It's not supported on all systems however.
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_WRITE,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::MAP_WRITE,
             mapped_at_creation: false,
             size: (VRAM_SIZE + std::mem::size_of::<DrawInfo>()) as u64,
         });
@@ -67,7 +69,7 @@ impl ComputeStage {
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
                         format: CANVAS_FORMAT,
-                       view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
                 },
@@ -121,7 +123,11 @@ impl ComputeStage {
         // bottleneck. Perhaps it's faster on some systems, in which case it probably should be
         // used, but since it made the code more complicated, i opted not to use i it for now.
         queue.write_buffer(&self.input_buffer, 0, bytemuck::bytes_of(draw_info));
-        queue.write_buffer(&self.input_buffer, std::mem::size_of::<DrawInfo>() as u64, vram.raw_data());
+        queue.write_buffer(
+            &self.input_buffer,
+            std::mem::size_of::<DrawInfo>() as u64,
+            vram.raw_data(),
+        );
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Compute Pass"),
         });

@@ -42,9 +42,17 @@ impl GpuStatus {
         write!(self.fields[19], "{}", gpu.status.vertical_res())?;
         write!(self.fields[20], "{}", gpu.status.video_mode())?;
         write!(self.fields[21], "{}", gpu.status.color_depth())?;
-        write!(self.fields[22], "{}", gpu.status.vertical_interlace_enabled())?;
+        write!(
+            self.fields[22],
+            "{}",
+            gpu.status.vertical_interlace_enabled()
+        )?;
         write!(self.fields[23], "{}", gpu.status.display_enabled())?;
-        write!(self.fields[24], "{}", gpu.status.interrupt_request_enabled())?;
+        write!(
+            self.fields[24],
+            "{}",
+            gpu.status.interrupt_request_enabled()
+        )?;
         write!(self.fields[25], "{}", gpu.status.cmd_ready())?;
         write!(self.fields[26], "{}", gpu.status.vram_to_cpu_ready())?;
         write!(self.fields[27], "{}", gpu.status.dma_block_ready())?;
@@ -97,14 +105,14 @@ impl App for GpuStatus {
 /// The labels for all the fields. This must lign up with the order of which the fields in
 /// ['GpuStatus'] is written to.
 const FIELD_LABELS: [&str; FIELD_COUNT] = [
-    "draw x offset", 
-    "draw y offset", 
-    "display vram x start", 
-    "display vram y start", 
-    "display column start", 
-    "display column end", 
-    "display line start", 
-    "display line end", 
+    "draw x offset",
+    "draw y offset",
+    "display vram x start",
+    "display vram y start",
+    "display column start",
+    "display column end",
+    "display line start",
+    "display line end",
     "texture page x base",
     "texture page y base",
     "transparency blending",

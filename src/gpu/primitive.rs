@@ -1,5 +1,5 @@
+use super::{TextureDepth, TransBlend};
 use crate::util::bits::BitExtract;
-use super::{TransBlend, TextureDepth};
 
 /// A point on the screen or in VRAM.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -10,9 +10,7 @@ pub struct Point {
 
 impl Point {
     pub fn new(x: i32, y: i32) -> Self {
-        Self {
-            x, y,
-        }
+        Self { x, y }
     }
 
     /// Mainly for getting the point from a GP0 attribute.
@@ -33,9 +31,7 @@ pub struct TexCoord {
 
 impl TexCoord {
     fn new(u: u8, v: u8) -> Self {
-        Self {
-            u, v,
-        }
+        Self { u, v }
     }
 }
 
@@ -67,9 +63,7 @@ pub struct Color {
 
 impl Color {
     pub fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        Self {
-            r, g, b,
-        }
+        Self { r, g, b }
     }
 
     pub fn from_u16(value: u16) -> Self {
@@ -190,4 +184,3 @@ impl Default for Vertex {
         }
     }
 }
-

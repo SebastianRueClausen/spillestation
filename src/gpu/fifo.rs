@@ -1,7 +1,7 @@
 //! This module emulates the Playstations GPU command buffer.
 
-use std::ops::Index;
 use crate::util::bits::BitExtract;
+use std::ops::Index;
 
 /// Power of 2 for fast modulo.
 const FIFO_SIZE: usize = 32;
@@ -14,7 +14,7 @@ const FIFO_SIZE: usize = 32;
 ///
 /// Since we know the max size a command can have, this is implemented as a circular buffer.
 pub struct Fifo {
-    data: [u32; FIFO_SIZE], 
+    data: [u32; FIFO_SIZE],
     head: u32,
     tail: u32,
 }
@@ -30,7 +30,7 @@ impl Fifo {
 
     pub fn len(&self) -> usize {
         // Just to make sure we handle overflow, as there could be alot of writes to the fifo.
-        self.head.wrapping_sub(self.tail) as usize 
+        self.head.wrapping_sub(self.tail) as usize
     }
 
     pub fn clear(&mut self) {

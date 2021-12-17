@@ -14,7 +14,7 @@ impl Vram {
 
     pub fn load_16(&self, x: i32, y: i32) -> u16 {
         let offset = offset_16(x, y);
-        let (hi, lo) = (self.data[offset] as u16, self.data[offset + 1] as u16); 
+        let (hi, lo) = (self.data[offset] as u16, self.data[offset + 1] as u16);
         (hi << 8) | lo
     }
 
@@ -43,7 +43,6 @@ impl Vram {
 fn offset_16(x: i32, y: i32) -> usize {
     (x * 2 + y * 2048) as usize & (VRAM_SIZE - 1)
 }
-
 
 fn offset_24(x: i32, y: i32) -> usize {
     (x * 3 + y * 2048) as usize & (VRAM_SIZE - 1)

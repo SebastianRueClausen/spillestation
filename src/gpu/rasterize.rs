@@ -1,5 +1,5 @@
+use super::primitive::{Color, Point, TexCoord, Texel, TextureParams, Vertex};
 use super::{Gpu, TextureDepth};
-use super::primitive::{Color, Texel, Point, TexCoord, Vertex, TextureParams};
 use ultraviolet::vec::Vec3;
 
 /// The shading mode of a draw call.
@@ -39,7 +39,7 @@ impl Textureing for UnTextured {
     fn is_textured() -> bool {
         false
     }
-    
+
     fn is_raw() -> bool {
         false
     }
@@ -132,23 +132,29 @@ impl Gpu {
                     params.texture_y + coord.v as i32,
                 );
                 let offset = (value >> ((coord.u & 0x3) * 4)) & 0xf;
-                Texel::new(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
-            },
+                Texel::new(
+                    self.vram
+                        .load_16(params.clut_x + offset as i32, params.clut_y),
+                )
+            }
             TextureDepth::B8 => {
                 let value = self.vram.load_16(
                     params.texture_x + (coord.u / 2) as i32,
                     params.texture_y + coord.v as i32,
                 );
                 let offset = (value >> ((coord.u & 0x1) * 8)) & 0xff;
-                Texel::new(self.vram.load_16(params.clut_x + offset as i32, params.clut_y))
-            },
+                Texel::new(
+                    self.vram
+                        .load_16(params.clut_x + offset as i32, params.clut_y),
+                )
+            }
             TextureDepth::B15 => {
                 let value = self.vram.load_16(
                     params.texture_x + coord.u as i32,
                     params.texture_y + coord.v as i32,
                 );
                 Texel::new(value)
-            },
+            }
         }
     }
 
@@ -156,7 +162,7 @@ impl Gpu {
     /// it's inside the triangle using barycentric coordinates. Since the Playstation renders
     /// many different kind triangles, this function takes template arguments descriping how the
     /// triangle should be rendered, to avoid a lot of run-time branching. Colors and texture coordinates
-    /// get interpolated using the barycentric coordinates. 
+    /// get interpolated using the barycentric coordinates.
     ///
     /// This could be optimized in a few different ways. Most obviously using simd to rasterize
     /// multiple pixels at once.
@@ -199,17 +205,28 @@ impl Gpu {
                 // If the triangle is shaded, we interpolate between the colors of each vertex.
                 // Otherwise the shade is just the base color/shade.
                 let shade = if Shade::is_shaded() {
-                    let r = v1.color.r as f32 * res.x + v2.color.r as f32 * res.y + v3.color.r as f32 * res.z;
-                    let g = v1.color.g as f32 * res.x + v2.color.g as f32 * res.y + v3.color.g as f32 * res.z;
-                    let b = v1.color.b as f32 * res.x + v2.color.b as f32 * res.y + v3.color.b as f32 * res.z;
+                    let r = v1.color.r as f32 * res.x
+                        + v2.color.r as f32 * res.y
+                        + v3.color.r as f32 * res.z;
+                    let g = v1.color.g as f32 * res.x
+                        + v2.color.g as f32 * res.y
+                        + v3.color.g as f32 * res.z;
+                    let b = v1.color.b as f32 * res.x
+                        + v2.color.b as f32 * res.y
+                        + v3.color.b as f32 * res.z;
                     Color::from_rgb(r as u8, g as u8, b as u8)
                 } else {
-                    shade 
+                    shade
                 };
                 let color = if Tex::is_textured() {
                     let uv = TexCoord {
-                        u: (v1.texcoord.u as f32 * res.x + v2.texcoord.u as f32 * res.y + v3.texcoord.u as f32 * res.z) as u8 + 1,
-                        v: (v1.texcoord.v as f32 * res.x + v2.texcoord.v as f32 * res.y + v3.texcoord.v as f32 * res.z) as u8,
+                        u: (v1.texcoord.u as f32 * res.x
+                            + v2.texcoord.u as f32 * res.y
+                            + v3.texcoord.u as f32 * res.z) as u8
+                            + 1,
+                        v: (v1.texcoord.v as f32 * res.x
+                            + v2.texcoord.v as f32 * res.y
+                            + v3.texcoord.v as f32 * res.z) as u8,
                     };
                     let texel = self.load_texture_color(params, uv);
                     // If the triangle is not textured raw, the texture color get's blended with the
@@ -222,11 +239,11 @@ impl Gpu {
                     // If both the triangle is (semi)transparent and the texel, the texture color
                     // get's blended with the background.
                     if Trans::is_transparent() && texel.is_transparent() {
-                        let background = Color::from_u16(
-                            self.vram.load_16(p.x, p.y)
-                        );
+                        let background = Color::from_u16(self.vram.load_16(p.x, p.y));
                         // Apply the current blending.
-                        self.status.trans_blending().blend(texture_color, background)
+                        self.status
+                            .trans_blending()
+                            .blend(texture_color, background)
                     } else {
                         texture_color
                     }
@@ -234,9 +251,7 @@ impl Gpu {
                     // If the triangle isn't textured, but transparent, the shade get's blended with
                     // the background color.
                     if Trans::is_transparent() {
-                        let background = Color::from_u16(
-                            self.vram.load_16(p.x, p.y)
-                        );
+                        let background = Color::from_u16(self.vram.load_16(p.x, p.y));
                         self.status.trans_blending().blend(shade, background)
                     } else {
                         shade
@@ -247,7 +262,5 @@ impl Gpu {
         }
     }
 
-    pub fn draw_line(&mut self, _start: Point, _end: Point) {
-
-    }
+    pub fn draw_line(&mut self, _start: Point, _end: Point) {}
 }
