@@ -1,6 +1,6 @@
 use super::AddrUnit;
 use std::fs::File;
-use std::io::{Read, Error as IoError};
+use std::io::{self, Read};
 use std::fmt;
 use std::path::Path;
 
@@ -8,12 +8,12 @@ use std::path::Path;
 pub const BIOS_SIZE: usize = 1024 * 512;
 
 pub enum BiosError {
-    IoError(IoError),
+    IoError(io::Error),
     InvalidSize(usize),
 }
 
-impl From<IoError> for BiosError {
-    fn from(err: IoError) -> Self {
+impl From<io::Error> for BiosError {
+    fn from(err: io::Error) -> Self {
         BiosError::IoError(err)
     }
 }
@@ -47,8 +47,8 @@ impl Bios {
         }
     }
 
-    pub fn new(bytes: Box<[u8]>) -> Self {
-        Self { data: bytes }
+    pub fn new(data: Box<[u8]>) -> Self {
+        Self { data }
     }
 
     pub fn load<T: AddrUnit>(&self, offset: u32) -> u32 {

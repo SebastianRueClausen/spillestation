@@ -23,6 +23,7 @@ enum State {
     Startup,
     Config {
         configurator: Configurator,
+        bios: Option<Bios>,
     },
     Running {
         cpu: Cpu,
@@ -142,14 +143,34 @@ pub fn run() {
                         }
                     });
                 }
-                State::Config { ref mut configurator } => {
+                State::Config { ref mut configurator, ref mut bios } => {
+                    let mut try_close = false;
                     render_ctx.render(|encoder, view, renderer| {
                         draw.render(encoder, view);
                         gui.begin_frame(&window);
-                        gui.show_app(configurator);
+                        try_close = !gui.show_app(configurator);
                         gui.end_frame(&window);
                         gui.render(renderer, encoder, view).expect("Failed to render GUI");
                     });
+                    if try_close {
+                        match bios.take() {
+                            Some(bios) => {
+                                if let Err(err) = configurator.config.store() {
+                                    eprintln!("{}", err)
+                                }
+                                state = State::Running {
+                                    cpu: Cpu::new(bios),
+                                    app_menu: AppMenu::new(),
+                                    last_update: Instant::now(),
+                                };
+                            },
+                            None => {
+                                configurator.bios_message = Some(
+                                    String::from("A BIOS file must be loaded")
+                                );
+                            },
+                        }
+                    }
                 }
                 State::Startup => {}
             },
@@ -162,26 +183,33 @@ pub fn run() {
                     app_menu.update_tick(last_update.elapsed(), cpu);
                     *last_update = Instant::now();
                 },
-                State::Config { ref mut configurator } if configurator.try_load_bios => {
+                State::Config {
+                    ref mut configurator,
+                    ref mut bios,
+                } if configurator.try_load_bios => {
                     match Bios::from_file(&Path::new(&configurator.config.bios)) {
                         Err(ref err) => {
                             configurator.try_load_bios = false;
-                            configurator.bios_error = Some(format!("{}", err));    
+                            configurator.bios_message = Some(format!("{}", err));    
                         },
-                        Ok(bios) => {
-                            state = State::Running {
-                                cpu: Cpu::new(bios),
-                                app_menu: AppMenu::new(),
-                                last_update: Instant::now(),
-                            }
+                        Ok(loaded_bios) => {
+                            *bios = Some(loaded_bios);
+                            configurator.bios_message = Some(
+                                String::from("BIOS loaded successfully")
+                            );
+                            configurator.try_load_bios = false;
                         },
                     };
-                },
+                }
                 State::Startup => {
                     state = match Config::load() {
-                        Some(config) => match Bios::from_file(&Path::new(&config.bios)) {
-                            Err(..) => State::Config {
-                                configurator: Configurator::new(),
+                        Ok(config) => match Bios::from_file(&Path::new(&config.bios)) {
+                            Err(ref err) => State::Config {
+                                configurator: Configurator::new(
+                                    None,
+                                    Some(format!("{}", err)),
+                                ),
+                                bios: None,
                             },
                             Ok(bios) => State::Running {
                                 cpu: Cpu::new(bios),
@@ -189,8 +217,12 @@ pub fn run() {
                                 last_update: Instant::now(),
                             },
                         },
-                        None => State::Config {
-                            configurator: Configurator::new(),
+                        Err(ref err) => State::Config {
+                            configurator: Configurator::new(
+                                Some(format!("{}", err)),
+                                None,
+                            ),
+                            bios: None,
                         },
                     };
                 }

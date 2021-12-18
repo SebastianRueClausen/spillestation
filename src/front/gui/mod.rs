@@ -69,9 +69,10 @@ impl GuiCtx {
         }
     }
 
-    pub fn show_app<T: App>(&mut self, app: &mut T) {
+    pub fn show_app<T: App>(&mut self, app: &mut T) -> bool {
         let mut open = true;
         app.show(&self.egui_ctx, &mut open);
+        open
     }
 
     /// Prepare egui to take commands.
