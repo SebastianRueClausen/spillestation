@@ -257,7 +257,11 @@ impl Gpu {
                         shade
                     }
                 };
-                self.draw_pixel(p, color);
+                self.draw_pixel(p, if self.status.dithering_enabled() {
+                    color.dither(p)
+                } else {
+                    color
+                });
             }
         }
     }

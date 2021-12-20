@@ -53,6 +53,8 @@ impl Texel {
     }
 }
 
+const DITHER_LUT: [[i32; 4]; 4] = [[-4, 0, -3, 1], [2, -2, 3, -1], [-3, 1, -4, 0], [3, -1, 2, -2]];
+
 /// Depth of the color can be either 16 or 24 bits.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct Color {
@@ -135,6 +137,16 @@ impl Color {
             r: (other.r as i32 + ((self.r / 4) as i32)).clamp(0, 255) as u8,
             g: (other.g as i32 + ((self.g / 4) as i32)).clamp(0, 255) as u8,
             b: (other.b as i32 + ((self.b / 4) as i32)).clamp(0, 255) as u8,
+        }
+    }
+
+    pub fn dither(self, point: Point) -> Self {
+        let (x, y) = (point.x.extract_bits(0, 1), point.y.extract_bits(0, 1));
+        let dither = DITHER_LUT[y as usize][x as usize];
+        Self {
+            r: ((self.r as i32) + dither).clamp(0, 255) as u8,
+            g: ((self.g as i32) + dither).clamp(0, 255) as u8,
+            b: ((self.b as i32) + dither).clamp(0, 255) as u8,
         }
     }
 }
