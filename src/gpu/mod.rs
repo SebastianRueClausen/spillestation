@@ -173,10 +173,9 @@ impl fmt::Display for TextureDepth {
     }
 }
 
-/// An ongoing CPU to Vram transfer. Data is recieved via DMA transfers, and the GPU is paused
-/// waiting for the data.
+/// An ongoing memory transfer between Bus and VRAM. Data is loaded/stored via DMA transfers.
 #[derive(Clone, Copy)]
-struct VramTransfer {
+struct MemTransfer {
     /// The current x coordinate.
     pub x: i32,
     /// The current y coordinate.
@@ -189,7 +188,7 @@ struct VramTransfer {
     y_end: i32,
 }
 
-impl VramTransfer {
+impl MemTransfer {
     fn new(x_start: i32, y_start: i32, width: i32, height: i32) -> Self {
         Self {
             x: x_start,
@@ -211,13 +210,6 @@ impl VramTransfer {
         }
         Some(())
     }
-}
-
-/// Current state of the GPU.
-#[derive(Clone, Copy)]
-enum GpuState {
-    WaitForData(VramTransfer),
-    WaitForCmd,
 }
 
 /// Status register of the GPU.
@@ -359,14 +351,14 @@ impl Status {
 }
 
 pub struct Gpu {
-    /// The current state of the GPU.
-    state: GpuState,
     /// Fifo command buffer.
     fifo: Fifo,
     /// Video RAM.
     vram: Vram,
-    /// To CPU Transfer.
-    to_cpu_transfer: Option<VramTransfer>,
+    /// To CPU transfer.
+    to_cpu_transfer: Option<MemTransfer>,
+    /// To VRAM transfer.
+    to_vram_transfer: Option<MemTransfer>,
     /// The status register.
     pub status: Status,
     /// Mirros textured rectangles on the x axis if true,
@@ -402,10 +394,10 @@ impl Gpu {
     pub fn new() -> Self {
         // Sets the reset values.
         Self {
-            state: GpuState::WaitForCmd,
             fifo: Fifo::new(),
             vram: Vram::new(),
             to_cpu_transfer: None,
+            to_vram_transfer: None,
             status: Status(0x14802000),
             rect_tex_x_flip: false,
             rect_tex_y_flip: false,
@@ -432,7 +424,7 @@ impl Gpu {
         match offset {
             0 => self.gp0_store(value),
             4 => self.gp1_store(value),
-            _ => unimplemented!("Invalid GPU store at offset {:08x}.", offset),
+            _ => unreachable!("Invalid GPU store at offset {:08x}.", offset),
         }
     }
 
@@ -477,24 +469,24 @@ impl Gpu {
 
     /// Store command in GP0 register. This is called from DMA linked transfer directly.
     pub fn gp0_store(&mut self, value: u32) {
-        match self.state {
-            GpuState::WaitForCmd => {
+        match self.to_vram_transfer {
+            Some(ref mut transfer) => {
+                for (lo, hi) in [(0, 15), (16, 31)] {
+                    let value = value.extract_bits(lo, hi) as u16;
+                    self.vram.store_16(transfer.x, transfer.y, value);
+                    if transfer.next() == None {
+                        self.to_vram_transfer = None;
+                        break;
+                    }
+                }
+            },
+            None => {
                 self.fifo.push(value);
                 if self.fifo.has_full_cmd() {
                     self.gp0_exec();
                     self.fifo.clear();
                 }
-            }
-            GpuState::WaitForData(ref mut transfer) => {
-                for (lo, hi) in [(0, 15), (16, 31)] {
-                    let value = value.extract_bits(lo, hi) as u16;
-                    self.vram.store_16(transfer.x, transfer.y, value);
-                    if transfer.next() == None {
-                        self.state = GpuState::WaitForCmd;
-                        break;
-                    }
-                }
-            }
+            },
         }
     }
 
@@ -513,6 +505,8 @@ impl Gpu {
         let command = value.extract_bits(24, 31);
         match command {
             0x0 => self.gp1_reset(),
+            0x1 => self.gp1_reset_cmd_buffer(),
+            0x2 => self.gp1_acknowledge_gpu_interrupt(),
             0x3 => self.gp1_display_enable(value),
             0x4 => self.gp1_dma_direction(value),
             0x5 => self.gp1_start_display_area(value),
@@ -647,12 +641,12 @@ impl Gpu {
         println!("Drawing line");
     }
 
-    /// [GP0 - Draw Mode Setting] - Set various flags in the GPU.
-    ///  - [0..10] - Same as status register.
-    ///  - [11] - Texture disabled.
-    ///  - [12] - Texture rectangle x-flip.
-    ///  - [13] - Texture rectangle y-flip.
-    ///  - [14..23] - Not used.
+    /// GP0(e1) - Draw Mode Setting.
+    /// - 0..10 - Same as status register.
+    /// - 11 - Texture disabled.
+    /// - 12 - Texture rectangle x-flip.
+    /// - 13 - Texture rectangle y-flip.
+    /// - 14..23 - Not used.
     fn gp0_draw_mode_setting(&mut self) {
         let value = self.fifo.pop();
         self.status.0 |= value.extract_bits(0, 10);
@@ -661,12 +655,12 @@ impl Gpu {
         self.rect_tex_x_flip = value.extract_bit(13) == 1;
     }
 
-    //p [GP0 - Texture window setting].
-    ///  - [0..4] - Texture window mask x.
-    ///  - [5..9] - Texture window mask y.
-    ///  - [10..14] - Texture window offset x.
-    ///  - [15..19] - Texture window offset y.
-    ///  - [20..23] - Not used.
+    /// GP0(e2) - Texture window setting.
+    /// - 0..4 - Texture window mask x.
+    /// - 5..9 - Texture window mask y.
+    /// - 10..14 - Texture window offset x.
+    /// - 15..19 - Texture window offset y.
+    /// - 20..23 - Not used.
     fn gp0_texture_window_setting(&mut self) {
         let value = self.fifo.pop();
         self.tex_window_x_mask = value.extract_bits(0, 4) as u8;
@@ -675,20 +669,19 @@ impl Gpu {
         self.tex_window_y_offset = value.extract_bits(15, 19) as u8;
     }
 
-    /// [GP0 - Mask bit setting] - Do/don't set the mask bit while drawing and do/don't check
-    /// before drawing.
-    ///  - [0] - Set mask while drawing.
-    ///  - [1] - Check mask before drawing.
-    ///  - [2..23] - Not used.
+    /// GP0(e6) - Mask bit setting.
+    /// - 0 - Set mask while drawing.
+    /// - 1 - Check mask before drawing.
+    /// - 2..23 - Not used.
     fn gp0_mask_bit_setting(&mut self) {
         let value = self.fifo.pop();
         self.status.0 |= value.extract_bit(0) << 11;
         self.status.0 |= value.extract_bit(1) << 12;
     }
 
-    /// [GP0 - Set draw area top left].
-    /// - [0..9] - Draw area left.
-    /// - [10..18] - Draw area top.
+    /// GP0(e3) - Set draw area top left.
+    /// - 0..9 - Draw area left.
+    /// - 10..18 - Draw area top.
     /// TODO this differs between GPU versions.
     fn gp0_draw_area_top_left(&mut self) {
         let value = self.fifo.pop();
@@ -696,20 +689,19 @@ impl Gpu {
         self.draw_area_top = value.extract_bits(10, 18) as u16;
     }
 
-    /// [GP0 - Set draw area bottom right].
-    /// - [0..9] - Draw area right.
-    /// - [10..18] - Draw area bottom.
-    /// TODO this differs between GPU versions.
+    /// GP0(e4) - Set draw area bottom right.
+    /// - 0..9 - Draw area right.
+    /// - 10..18 - Draw area bottom.
     fn gp0_draw_area_bottom_right(&mut self) {
         let value = self.fifo.pop();
         self.draw_area_right = value.extract_bits(0, 9) as u16;
         self.draw_area_bottom = value.extract_bits(10, 18) as u16;
     }
 
-    /// [GP0 - Set drawing offset].
-    ///  - [0..10] - x-offset.
-    ///  - [11..21] - y-offset.
-    ///  - [24..23] - Not used.
+    /// GP0(e6) - Set drawing offset.
+    /// - 0..10 - x-offset.
+    /// - 11..21 - y-offset.
+    /// - 24..23 - Not used.
     fn gp0_draw_offset(&mut self) {
         let value = self.fifo.pop();
         let x_offset = value.extract_bits(0, 10) as u16;
@@ -720,6 +712,7 @@ impl Gpu {
         self.draw_y_offset = ((y_offset << 5) as i16) >> 5;
     }
 
+    /// GP0(a0) - Copy rectangle from CPU to VRAM.
     fn gp0_copy_rect_cpu_to_vram(&mut self) {
         self.fifo.pop();
         let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
@@ -727,9 +720,10 @@ impl Gpu {
         let y = pos.extract_bits(16, 31) as i32;
         let w = dim.extract_bits(00, 15) as i32;
         let h = dim.extract_bits(16, 31) as i32;
-        self.state = GpuState::WaitForData(VramTransfer::new(x, y, w, h));
+        self.to_vram_transfer = Some(MemTransfer::new(x, y, w, h));
     }
 
+    /// GP0(80) - Copy rectanlge from VRAM to CPU.
     fn gp0_copy_rect_vram_to_cpu(&mut self) {
         self.fifo.pop();
         let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
@@ -737,61 +731,71 @@ impl Gpu {
         let y = pos.extract_bits(16, 31) as i32;
         let w = dim.extract_bits(00, 15) as i32;
         let h = dim.extract_bits(16, 31) as i32;
-        self.to_cpu_transfer = Some(VramTransfer::new(x, y, w, h));
+        self.to_cpu_transfer = Some(MemTransfer::new(x, y, w, h));
     }
 
-    /// [GP1 - Reset] - Resets the state of the GPU.
+    /// GP1(0) - Resets the state of the GPU.
     fn gp1_reset(&mut self) {
         *self = Self::new();
     }
 
-    /// [GP1 - DMA Direction] - Sets the DMA direction.
-    ///  - [0..1] - DMA direction.
-    ///  - [2..23] - Not used.
+    /// GP1(1) - Reset command buffer.
+    fn gp1_reset_cmd_buffer(&mut self) {
+        self.fifo.clear();
+    }
+
+    /// GP1(2) - Acknowledge GPU Interrupt.
+    fn gp1_acknowledge_gpu_interrupt(&mut self) {
+        self.status.0 &= !(1 << 24); 
+    }
+
+    /// GP1(4) - Set DMA Direction.
+    /// - 0..1 - DMA direction.
+    /// - 2..23 - Not used.
     fn gp1_dma_direction(&mut self, value: u32) {
         self.status.0 |= value.extract_bits(0, 1) << 29;
     }
 
-    /// [GP1 - Display Enable] - Toggles display enable bit.
-    ///  - [0] - Display On/Off.
+    /// GP1(3) - Display Enable.
+    /// - 0 - Display On/Off.
     fn gp1_display_enable(&mut self, value: u32) {
         self.status.0 |= value.extract_bit(0) << 23;
     }
 
-    /// [GP1 - Start display area in VRAM] - What area of the VRAM to display.
-    ///  - [0..9] - x (address in VRAM).
-    ///  - [10..18] - y (address in VRAM).
-    ///  - [19..23] - Not used.
+    /// GP1(5) - Start display area in VRAM.
+    /// - 0..9 - x (address in VRAM).
+    /// - 10..18 - y (address in VRAM).
+    /// - 19..23 - Not used.
     fn gp1_start_display_area(&mut self, value: u32) {
         self.display_vram_x_start = value.extract_bits(0, 9) as u16;
         self.display_vram_y_start = value.extract_bits(10, 18) as u16;
     }
 
-    /// [GP1 - Horizontal display range] - Sets the vertical range of the display area in screen.
-    ///  - [0..11] - column start.
-    ///  - [12..23] - column end.
+    /// GP1(6) - Horizontal display range.
+    /// - 0..11 - column start.
+    /// - 12..23 - column end.
     fn gp1_horizontal_display_range(&mut self, value: u32) {
         self.display_column_start = value.extract_bits(0, 11) as u16;
         self.display_column_end = value.extract_bits(12, 23) as u16;
     }
 
-    /// [GP1 - Vertical display range] - Sets the horizontal range of the display area in screen.
-    ///  - [0..11] - line start.
-    ///  - [12..23] - line end.
+    /// GP1(7) - Vertical display range.
+    /// - 0..11 - line start.
+    /// - 12..23 - line end.
     fn gp1_vertical_display_range(&mut self, value: u32) {
         self.display_line_start = value.extract_bits(0, 11) as u16;
         self.display_line_end = value.extract_bits(12, 23) as u16;
     }
 
-    /// [GP1 - Display Mode] - Sets display mode, video mode, resolution and interlacing.
-    ///  - [0..1] - Horizontal resolution 1.
-    ///  - [2] - Vertical resolution.
-    ///  - [3] - Display mode.
-    ///  - [4] - Display area color depth.
-    ///  - [5] - Horizontal interlace.
-    ///  - [6] - Horizontal resolution 2.
-    ///  - [7] - Reverseflag.
-    ///  - [8..23] - Not used.
+    /// GP1(8) - Set display mode.
+    /// - 0..1 - Horizontal resolution 1.
+    /// - 2 - Vertical resolution.
+    /// - 3 - Display mode.
+    /// - 4 - Display area color depth.
+    /// - 5 - Horizontal interlace.
+    /// - 6 - Horizontal resolution 2.
+    /// - 7 - Reverseflag.
+    /// - 8..23 - Not used.
     fn gp1_display_mode(&mut self, value: u32) {
         self.status.0 |= value.extract_bits(0, 5) << 17;
         self.status.0 |= value.extract_bit(6) << 16;

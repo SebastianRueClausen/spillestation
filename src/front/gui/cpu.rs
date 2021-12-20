@@ -95,8 +95,8 @@ impl App for CpuStatus {
 }
 
 /// ['App'] for controlling the CPU. It has two modes:
-///  - Run. Automatically runs the CPU at a given speed.
-///  - Step. Manually step through each cycle.
+///  - Run - Automatically runs the CPU at a given speed.
+///  - Step - Manually step through each cycle.
 pub struct CpuCtrl {
     /// Cycles per second in run mode.
     cycle_hz: usize,
@@ -109,6 +109,8 @@ pub struct CpuCtrl {
     /// This is used to run at a more precise HZ. It's also required to run the CPU at a lower HZ
     /// than the update rate, since there may be multiple updates between each CPU cycle.
     remainder: Duration,
+    /// How many cycles since the cdrom ran.
+    cdrom_last_run: usize,
 }
 
 impl CpuCtrl {
@@ -119,9 +121,20 @@ impl CpuCtrl {
             paused: false,
             stepped: false,
             remainder: Duration::ZERO,
+            cdrom_last_run: 0,
         }
     }
 
+    fn maybe_run_cdrom(&mut self, cpu: &mut Cpu) {
+        if self.cdrom_last_run == 3_000_000 {
+            cpu.bus_mut().run_cdrom();
+            self.cdrom_last_run = 0;
+        } else {
+            self.cdrom_last_run += 1;
+        }
+    }
+
+    // This should probably be a struct on it's own or something.
     pub fn run_cpu(&mut self, mut dt: Duration, cpu: &mut Cpu) {
         if !self.paused {
             dt += self.remainder;
@@ -129,11 +142,13 @@ impl CpuCtrl {
             while let Some(new) = dt.checked_sub(cycle_time) {
                 dt = new;
                 cpu.fetch_and_exec();
+                self.maybe_run_cdrom(cpu);
             }
             self.remainder = dt;
         } else if self.stepped {
             for _ in 0..self.step_amount {
                 cpu.fetch_and_exec();
+                self.maybe_run_cdrom(cpu);
             }
             self.stepped = false;
         }

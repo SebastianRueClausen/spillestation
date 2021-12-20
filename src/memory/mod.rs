@@ -6,6 +6,7 @@ pub mod ram;
 
 use crate::gpu::{Gpu, Vram};
 use crate::util::bits::BitExtract;
+use crate::cdrom::CdRom;
 use bios::Bios;
 use dma::{BlockTransfer, ChannelPort, Direction, Dma, LinkedTransfer, Transfers};
 use ram::Ram;
@@ -108,6 +109,10 @@ mod map {
     pub const DMA_START: u32 = 0x1f801080;
     pub const DMA_END: u32 = DMA_START + 128 - 1;
 
+    /// CDROM - 4 bytes.
+    pub const CDROM_START: u32 = 0x1f801800;
+    pub const CDROM_END: u32 = CDROM_START + 4 - 1;
+
     /// GPU Control - 8 bytes.
     pub const GPU_START: u32 = 0x1f801810;
     pub const GPU_END: u32 = GPU_START + 8 - 1;
@@ -119,6 +124,7 @@ pub struct Bus {
     dma: Dma,
     transfers: Transfers,
     gpu: Gpu,
+    cdrom: CdRom,
 }
 
 use map::*;
@@ -126,12 +132,12 @@ use map::*;
 impl Bus {
     pub fn new(bios: Bios) -> Self {
         Self {
-            // bios: Bios::new(include_bytes!("../SCPH1001.BIN")),
             bios,
             ram: Ram::new(),
             dma: Dma::new(),
             transfers: Transfers::new(),
             gpu: Gpu::new(),
+            cdrom: CdRom::new(),
         }
     }
 
@@ -141,13 +147,13 @@ impl Bus {
         match address {
             RAM_START..=RAM_END => Some(self.ram.load::<T>(address)),
             BIOS_START..=BIOS_END => Some(self.bios.load::<T>(address - BIOS_START)),
-            // Some of these io devices might need to be read from, so we just crash to find out.
             MEMCTRL_START..=MEMCTRL_END => None,
             RAM_SIZE_START..=RAM_SIZE_END => None,
             CACHE_CONTROL_START..=CACHE_CONTROL_END => None,
             EXP1_START..=EXP1_END => Some(0xff),
             IRQ_CONTROL_START..=IRQ_CONTROL_END => Some(0x0),
             DMA_START..=DMA_END => Some(self.dma.load(address - DMA_START)),
+            CDROM_START..=CDROM_END => Some(self.cdrom.load(address - CDROM_START)),
             SPU_START..=SPU_END => Some(0x0),
             TIMER_CONTROL_START..=TIMER_CONTROL_END => Some(0x0),
             GPU_START..=GPU_END => Some(self.gpu.load(address - GPU_START)),
@@ -186,7 +192,7 @@ impl Bus {
                 // TODO.
             }
             EXP2_START..=EXP2_END => {
-                // Ignore.
+                // TODO.
             }
             IRQ_CONTROL_START..=IRQ_CONTROL_END => {
                 // TODO.
@@ -198,6 +204,9 @@ impl Bus {
                 self.dma
                     .store(&mut self.transfers, address - DMA_START, value);
                 self.exec_transfers();
+            }
+            CDROM_START..=CDROM_END => {
+                self.cdrom.store(address - CDROM_START, value);
             }
             GPU_START..=GPU_END => {
                 self.gpu.store(address - GPU_START, value);
@@ -214,6 +223,10 @@ impl Bus {
 
     pub fn gpu(&self) -> &Gpu {
         &self.gpu
+    }
+
+    pub fn run_cdrom(&mut self) {
+        self.cdrom.exec_cmd();
     }
 
     fn exec_transfers(&mut self) {
@@ -235,13 +248,8 @@ impl Bus {
         for _ in 0..transfer.size {
             let value = self.ram.load::<Word>(address & 0x1ffffc);
             match transfer.port {
-                ChannelPort::Gpu => {
-                    self.gpu.dma_store(value);
-                }
-                _ => {
-                    todo!();
-                    // Write to port/device.
-                }
+                ChannelPort::Gpu => self.gpu.dma_store(value),
+                _ => todo!(),
             }
             address = address.wrapping_add(transfer.increment);
         }
@@ -256,10 +264,7 @@ impl Bus {
                     _ => address.wrapping_sub(4) & 0x1fffff,
                 },
                 ChannelPort::Gpu => self.gpu.dma_load(),
-                _ => {
-                    todo!();
-                    // 0 as u32
-                }
+                _ => todo!(),
             };
             self.ram.store::<Word>(address & 0x1ffffc, value);
             address = address.wrapping_add(transfer.increment);
