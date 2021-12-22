@@ -5,19 +5,17 @@ mod config;
 pub mod gui;
 mod render;
 
-use crate::cpu::Cpu;
-use crate::memory::bios::Bios;
+use crate::{cpu::Cpu, memory::bios::Bios};
 use config::Config;
 use gui::{app_menu::AppMenu, GuiCtx, config::Configurator};
-pub use render::compute::DrawInfo;
 use render::{Canvas, ComputeStage, DrawStage, RenderCtx, SurfaceSize};
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::{path::Path, time::{Duration, Instant}};
 use winit::{
     event::{ElementState, Event, VirtualKeyCode, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
+pub use render::compute::DrawInfo;
 
 enum State {
     Startup,
@@ -26,8 +24,8 @@ enum State {
         bios: Option<Bios>,
     },
     Running {
-        cpu: Cpu,
-        app_menu: AppMenu,
+        cpu: Box<Cpu>,
+        app_menu: Box<AppMenu>,
         last_update: Instant,
     },
 }
@@ -97,10 +95,8 @@ pub fn run() {
                     }
                     // Handle keyboard input.
                     WindowEvent::KeyboardInput { input, .. } => {
-                        match state {
-                            State::Running {
-                                ref mut app_menu, ..
-                            } => match (input.virtual_keycode, input.state) {
+                        if let State::Running { ref mut app_menu, .. } = state {
+                            match (input.virtual_keycode, input.state) {
                                 (Some(VirtualKeyCode::M), ElementState::Pressed) => {
                                     app_menu.open = !app_menu.open;
                                 }
@@ -108,8 +104,7 @@ pub fn run() {
                                     *control_flow = ControlFlow::Exit;
                                 }
                                 _ => {}
-                            },
-                            _ => {}
+                            }
                         }
                         gui.handle_window_event(event);
                     }
@@ -160,7 +155,7 @@ pub fn run() {
                                 }
                                 state = State::Running {
                                     cpu: Cpu::new(bios),
-                                    app_menu: AppMenu::new(),
+                                    app_menu: Box::new(AppMenu::new()),
                                     last_update: Instant::now(),
                                 };
                             },
@@ -187,7 +182,7 @@ pub fn run() {
                     ref mut configurator,
                     ref mut bios,
                 } if configurator.try_load_bios => {
-                    match Bios::from_file(&Path::new(&configurator.config.bios)) {
+                    match Bios::from_file(Path::new(&configurator.config.bios)) {
                         Err(ref err) => {
                             configurator.try_load_bios = false;
                             configurator.bios_message = Some(format!("{}", err));    
@@ -203,7 +198,7 @@ pub fn run() {
                 }
                 State::Startup => {
                     state = match Config::load() {
-                        Ok(config) => match Bios::from_file(&Path::new(&config.bios)) {
+                        Ok(config) => match Bios::from_file(Path::new(&config.bios)) {
                             Err(ref err) => State::Config {
                                 configurator: Configurator::new(
                                     None,
@@ -213,7 +208,7 @@ pub fn run() {
                             },
                             Ok(bios) => State::Running {
                                 cpu: Cpu::new(bios),
-                                app_menu: AppMenu::new(),
+                                app_menu: Box::new(AppMenu::new()),
                                 last_update: Instant::now(),
                             },
                         },

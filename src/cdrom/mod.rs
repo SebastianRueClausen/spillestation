@@ -3,6 +3,7 @@ mod fifo;
 
 use fifo::Fifo;
 use crate::util::bits::BitExtract;
+use crate::cpu::{IrqState, Irq};
 
 pub struct CdRom {
     index: u8,
@@ -32,13 +33,20 @@ impl CdRom {
             0 => self.index = value.extract_bits(0, 1) as u8,
             1 => match self.index {
                 0 => self.command = Some(value as u8),
-                _ => {},
+                _ => todo!(),
             }
             2 => match self.index {
                 0 => self.arg_fifo.push(value as u8),
-                _ => {},
+                1 => self.irq_mask = value as u8,
+                2 => todo!(),
+                _ => unreachable!(),
             }
-            3 => {}
+            3 => match self.index {
+                0 => todo!(),
+                1 => self.irq_flags &= !(value as u8),
+                2 => todo!(),
+                _ => unreachable!(),
+            }
             _ => unreachable!(),
         }
     }
@@ -59,28 +67,30 @@ impl CdRom {
             3 => match self.index {
                 0 => self.irq_mask as u32 | 0xe0,
                 1 => self.irq_flags as u32 | 0xe0,
-                _ => todo!(),
+                2 => todo!(),
+                _ => unreachable!(),
             }
             _ => unreachable!(),
         }
     }
 
-    pub fn exec_cmd(&mut self) {
+    pub fn exec_cmd(&mut self, irq: &mut IrqState) {
         if let Some(cmd) = self.command.take() {
-            println!("Ran Cmd {:08x}", cmd);
             match cmd {
-                0x19 => self.cmd_test(),
+                0x19 => self.cmd_test(irq),
                 _ => todo!(),
             }
         }
     }
 
-    fn cmd_test(&mut self) {
+    fn cmd_test(&mut self, irq: &mut IrqState) {
         match self.arg_fifo.pop() {
             // Get version data. This is ofcourse different from console to console.
             0x20 => {
                 // These represent year, month, day and version respectively.
                 self.response_fifo.push_slice(&[0x99, 0x2, 0x01, 0xc3]);
+                self.irq_flags = 3;
+                irq.trigger(Irq::CdRom);
             }
             _ => todo!(),
         }

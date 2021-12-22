@@ -1,42 +1,26 @@
-//! Emulation of the MIPS R3000 used by the original sony playstation.
+//! Emulation of the MIPS R3000 used by the original Sony Playstation.
 
 mod cop0;
+pub mod irq;
 pub mod opcode;
 
-use super::memory::{AddrUnit, Bus, Byte, HalfWord, Word};
-use super::memory::bios::Bios;
+use super::memory::{AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
 use cop0::{Cop0, Exception};
+
 pub use opcode::Opcode;
-use std::fmt;
+pub use irq::{IrqState, Irq};
 
 /// Used to store pending loads from the Bus.
-#[derive(Copy, Clone)]
+#[derive(Default, Copy, Clone)]
 struct DelaySlot {
     pub register: u32,
     pub value: u32,
 }
 
-/// Here we take advantage of the fact that the zero register always is zero. So loading this does
-/// nothing.
-impl Default for DelaySlot {
-    fn default() -> Self {
-        Self {
-            register: 0,
-            value: 0,
-        }
-    }
-}
-
-#[derive(Copy, Clone)]
+#[derive(Default, Copy, Clone)]
 struct CacheLine {
     pub tag: u32,
     pub data: u32,
-}
-
-impl Default for CacheLine {
-    fn default() -> Self {
-        Self { tag: 0, data: 0 }
-    }
 }
 
 pub struct Cpu {
@@ -57,39 +41,36 @@ pub struct Cpu {
     pub lo: u32,
     /// The cycle number MUL/DIV result is ready.
     hi_lo_ready: u64,
-    /// General purpose registers - http://problemkaputt.de/psx-spx.htm#cpuspecifications.
-    /// - [0] - Always 0.
-    /// - [1] - Assembler temporary.
-    /// - [2..3] - Subroutine return values.
-    /// - [4..7] - Subroutine arguments.
-    /// - [8..15] - Temporaries.
-    /// - [16..23] - Static variables.
-    /// - [24..25] - Temporaries.
-    /// - [26..27] - Reserved for kernel.
-    /// - [28] - Global pointer.
-    /// - [29] - Stack pointer.
-    /// - [30] - Frame pointer, or static variable.
-    /// - [31] - Return address.
+    /// General purpose registers - [info]: http://problemkaputt.de/psx-spx.htm#cpuspecifications
+    /// - 0 - Always 0.
+    /// - 1 - Assembler temporary.
+    /// - 2..3 - Subroutine return values.
+    /// - 4..7 - Subroutine arguments.
+    /// - 8..15 - Temporaries.
+    /// - 16..23 - Static variables.
+    /// - 24..25 - Temporaries.
+    /// - 26..27 - Reserved for kernel.
+    /// - 28 - Global pointer.
+    /// - 29 - Stack pointer.
+    /// - 30 - Frame pointer, or static variable.
+    /// - 31 - Return address.
     pub registers: [u32; 32],
     /// This takes advantage of the fact that the zero register always is zero. This means no
     /// branching is required to check of there is something in the load slot.
     load_slot: DelaySlot,
     /// Instruction cache.
-    icache: [CacheLine; 1024],
+    icache: Box<[CacheLine; 1024]>,
     bus: Bus,
     cop0: Cop0,
     cycle_count: u64,
-    /// Debug.
-    cache_hit: u64,
-    cache_miss: u64,
 }
 
 const PC_START_ADDRESS: u32 = 0xbfc00000;
 
 impl Cpu {
-    pub fn new(bios: Bios) -> Self {
+    pub fn new(bios: Bios) -> Box<Self> {
         // Reset values of the CPU.
-        Cpu {
+        Box::new(Cpu {
             last_pc: 0x0,
             pc: PC_START_ADDRESS,
             next_pc: PC_START_ADDRESS + 4,
@@ -100,14 +81,11 @@ impl Cpu {
             hi_lo_ready: 0x0,
             registers: [0x0; 32],
             load_slot: DelaySlot::default(),
-            icache: [CacheLine::default(); 1024],
+            icache: Box::new([CacheLine::default(); 1024]),
             bus: Bus::new(bios),
             cop0: Cop0::new(),
             cycle_count: 0,
-            // Debug.
-            cache_hit: 0,
-            cache_miss: 0,
-        }
+        })
     }
 
     /// Get value of register at index.
@@ -127,11 +105,10 @@ impl Cpu {
 
     /// Store address to bus.
     fn store<T: AddrUnit>(&mut self, address: u32, value: u32) {
-        // Check the cache isn't isolated.
-        if !self.cop0.check_isc() {
+        if !self.cop0.cache_isolated() {
             self.bus.store::<T>(address, value);
         } else {
-            // TODO: Write to cache.
+            // TODO: Write to cache/scratchpad.
         }
     }
 
@@ -197,8 +174,19 @@ impl Cpu {
         self.next_pc = self.pc.wrapping_add(4);
     }
 
+    fn irq_pending(&self) -> bool {
+        let cause = self.cop0.read_reg(13)
+            | ((self.bus.irq_state.active() as u32) << 10);
+        let active = self.cop0.read_reg(12) & cause & 0xffff00;
+        self.cop0.irq_enabled() && active != 0
+    }
+
     /// Fetch an instruction from either memory or the icache. Also update the icache if required.
     fn fetch_instruction(&mut self, address: u32) -> Opcode {
+        if self.irq_pending() {
+            self.fetch_load_slot();
+            self.throw_exception(Exception::Interrupt); 
+        }
         // TODO: Instruction cache could be disabled.
         // Only KUSEG and KSEG0 are cached.
         let data = if address < 0xa0000000 {
@@ -210,17 +198,14 @@ impl Cpu {
             // If the cacheline is valid, we just read from it, otherwise we fetch the instruction
             // from memory and store it in the cache.
             if cache.tag == tag {
-                self.cache_hit += 1;
                 cache.data
             } else {
-                self.cache_miss += 1;
                 let data = self.load::<Word>(address);
                 // Update cacheline.
                 self.icache[index] = CacheLine { tag, data };
                 data
             }
         } else {
-            self.cache_miss += 1;
             // Cache misses take about 4 cycles.
             self.cycle_count += 4;
             self.load::<Word>(address)
@@ -333,33 +318,29 @@ impl Cpu {
             _ => self.op_illegal(),
         }
     }
-}
 
-/// Instructions
-impl Cpu {
-    /// [SLL] - Shift left logical.
+    /// SLL - Shift left logical.
     fn op_sll(&mut self, op: Opcode) {
         let value = self.read_reg(op.rt()) << op.shift();
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
 
-    /// [SRL] - Shift right logical.
-    /// Same as SRA, but unsigned.
+    /// SRL - Shift right logical. Same as SRA, but unsigned.
     fn op_srl(&mut self, op: Opcode) {
         let value = self.read_reg(op.rt()) >> op.shift();
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
 
-    /// [SRA] - Shift right arithmetic.
+    /// SRA - Shift right arithmetic.
     fn op_sra(&mut self, op: Opcode) {
         let value = (self.read_reg(op.rt()) as i32) >> op.shift();
         self.fetch_load_slot();
         self.set_reg(op.rd(), value as u32);
     }
 
-    /// [SLLV] - Shift left logical variable.
+    /// SLLV - Shift left logical variable.
     fn op_sllv(&mut self, op: Opcode) {
         // The 0x1f mask is to ensure you shift 32 bits.
         let value = self.read_reg(op.rt()) << (self.read_reg(op.rs() & 0x1f));
@@ -367,27 +348,27 @@ impl Cpu {
         self.set_reg(op.rd(), value);
     }
 
-    /// [SRLV] - Shift right logical variable.
+    /// SRLV - Shift right logical variable.
     fn op_srlv(&mut self, op: Opcode) {
         let value = self.read_reg(op.rt()) >> (self.read_reg(op.rs()) & 0x1f);
         self.fetch_load_slot();
         self.set_reg(op.rd(), value as u32);
     }
 
-    /// [SRAV] - Shift right arithmetic variable.
+    /// SRAV - Shift right arithmetic variable.
     fn op_srav(&mut self, op: Opcode) {
         let value = (self.read_reg(op.rt()) as i32) >> (self.read_reg(op.rs()) & 0x1f);
         self.fetch_load_slot();
         self.set_reg(op.rd(), value as u32);
     }
 
-    /// [JR] - Jump register.
+    /// JR - Jump register.
     fn op_jr(&mut self, op: Opcode) {
         self.jump(self.read_reg(op.rs()));
         self.fetch_load_slot();
     }
 
-    /// [JALR] - Jump and link register.
+    /// JALR - Jump and link register.
     fn op_jalr(&mut self, op: Opcode) {
         let pc = self.next_pc;
         self.jump(self.read_reg(op.rs()));
@@ -395,19 +376,19 @@ impl Cpu {
         self.set_reg(op.rd(), pc);
     }
 
-    /// [SYSCALL] - Throws an syscall exception.
+    /// SYSCALL - Throws an syscall exception.
     fn op_syscall(&mut self) {
         self.fetch_load_slot();
         self.throw_exception(Exception::Syscall);
     }
 
-    /// [BREAK] - Throws an break exception.
+    /// BREAK - Throws an break exception.
     fn op_break(&mut self) {
         self.fetch_load_slot();
         self.throw_exception(Exception::Breakpoint);
     }
 
-    /// [MFHI] - Move from high.
+    /// MFHI - Move from high.
     fn op_mfhi(&mut self, op: Opcode) {
         self.fetch_pending_hi_lo();
         self.fetch_load_slot();
@@ -415,13 +396,13 @@ impl Cpu {
         self.set_reg(op.rd(), value);
     }
 
-    /// [MTHI] - Move to high.
+    /// MTHI - Move to high.
     fn op_mthi(&mut self, op: Opcode) {
         self.hi = self.read_reg(op.rs());
         self.fetch_load_slot();
     }
 
-    /// [MFLO] - Move from low.
+    /// MFLO - Move from low.
     fn op_mflo(&mut self, op: Opcode) {
         self.fetch_pending_hi_lo();
         self.fetch_load_slot();
@@ -429,13 +410,13 @@ impl Cpu {
         self.set_reg(op.rd(), value);
     }
 
-    /// [MTLO] - Move to low.
+    /// MTLO - Move to low.
     fn op_mtlo(&mut self, op: Opcode) {
         self.lo = self.read_reg(op.rs());
         self.fetch_load_slot();
     }
 
-    /// [MUL] - Signed multiplication.
+    /// MUL - Signed multiplication.
     /// Multiplication takes different amount of cycles to complete dependent on the size of the
     /// inputs.
     fn op_mul(&mut self, op: Opcode) {
@@ -451,7 +432,7 @@ impl Cpu {
         self.add_pending_hi_lo(cycles, (value >> 32) as u32, value as u32);
     }
 
-    /// [MULU] - Unsigned multiplication.
+    /// MULU - Unsigned multiplication.
     fn op_mulu(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs());
         let rhs = self.read_reg(op.rt());
@@ -465,7 +446,7 @@ impl Cpu {
         self.add_pending_hi_lo(cycles, (value >> 32) as u32, value as u32);
     }
 
-    /// [DIV] - Signed division.
+    /// DIV - Signed division.
     /// Stores result in hi/low registers. Division doesn't throw when dviding by 0 or overflow,
     /// instead it gives garbage values. This takes 36 cycles to complete, but continues executing.
     /// It only halts if hi/low registers are fetched.
@@ -483,7 +464,7 @@ impl Cpu {
         }
     }
 
-    /// [DIVU] - Unsigned division.
+    /// DIVU - Unsigned division.
     /// Almost same as DIV, but only one error case.
     fn op_divu(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs());
@@ -496,7 +477,7 @@ impl Cpu {
         }
     }
 
-    /// [ADD] - Add signed.
+    /// ADD - Add signed.
     /// Throws on overflow.
     fn op_add(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs()) as i32;
@@ -509,15 +490,14 @@ impl Cpu {
         }
     }
 
-    /// [ADDU] - Add unsigned.
+    /// ADDU - Add unsigned.
     fn op_addu(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()).wrapping_add(self.read_reg(op.rt()));
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
 
-    /// [SUB] - Signed subtraction.
-    /// Throws on underflow.
+    /// SUB - Signed subtraction. Throws on underflow.
     fn op_sub(&mut self, op: Opcode) {
         let rhs = self.read_reg(op.rs()) as i32;
         let lhs = self.read_reg(op.rt()) as i32;
@@ -528,63 +508,63 @@ impl Cpu {
         }
     }
 
-    /// [SUBU] - Subtract unsigned.
+    /// SUBU - Subtract unsigned.
     fn op_subu(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()).wrapping_sub(self.read_reg(op.rt()));
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
 
-    /// [AND] - Bitwise and.
+    /// AND - Bitwise and.
     fn op_and(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) & self.read_reg(op.rt());
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
 
-    /// [OR] - Bitwise or.
+    /// OR - Bitwise or.
     fn op_or(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) | self.read_reg(op.rt());
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
 
-    /// [XOR] - Bitwise exclusive or.
+    /// XOR - Bitwise exclusive or.
     fn op_xor(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) ^ self.read_reg(op.rt());
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
 
-    /// [NOR] - Bitwise not or.
+    /// NOR - Bitwise not or.
     fn op_nor(&mut self, op: Opcode) {
         let value = !(self.read_reg(op.rs()) | self.read_reg(op.rt()));
         self.fetch_load_slot();
         self.set_reg(op.rd(), value);
     }
 
-    /// [SLT] - Set if less than.
+    /// SLT - Set if less than.
     fn op_slt(&mut self, op: Opcode) {
         let value = (self.read_reg(op.rs()) as i32) < (self.read_reg(op.rt()) as i32);
         self.fetch_load_slot();
         self.set_reg(op.rd(), value as u32);
     }
 
-    /// [SLTU] - Set if less than unsigned.
+    /// SLTU - Set if less than unsigned.
     fn op_sltu(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) < self.read_reg(op.rt());
         self.fetch_load_slot();
         self.set_reg(op.rd(), value as u32);
     }
 
-    /// [BCONDZ] - Multiply branch instructions.
-    /// [BLTZ] - Branch if less than zero.
+    /// BCONDZ - Multiply branch instructions.
+    /// BLTZ - Branch if less than zero.
     ///     - If bit 16 of the opcode is not set, and bit 17..20 doesn't equal 0x80.
-    /// [BLTZAL] - Branch if less than zero and set return register.
+    /// BLTZAL - Branch if less than zero and set return register.
     ///     - If bit 16 of the opcode is not set, but bit 17..20 equals 0x80.
-    /// [BGEZ] - Branch if greater than or equal to zero.
+    /// BGEZ - Branch if greater than or equal to zero.
     ///     - If bit 16 of the opcode is set, but bit 17..20 doesn't equal 0x80.
-    /// [BGEZAL] - Branch if greater than or equal to zero and set return register.
+    /// BGEZAL - Branch if greater than or equal to zero and set return register.
     ///     - If bit 16 of the opcode is set, and bit 17..20 equals 0x80.
     fn op_bcondz(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) as i32;
@@ -602,13 +582,13 @@ impl Cpu {
         }
     }
 
-    /// [J] - Jump.
+    /// J - Jump.
     fn op_j(&mut self, op: Opcode) {
         self.jump((self.pc & 0xf0000000) | (op.target() << 2));
         self.fetch_load_slot();
     }
 
-    /// [JAL] - Jump and link.
+    /// JAL - Jump and link.
     fn op_jal(&mut self, op: Opcode) {
         let pc = self.next_pc;
         self.op_j(op);
@@ -616,7 +596,7 @@ impl Cpu {
         self.set_reg(31, pc);
     }
 
-    /// [BEQ] - Branch if equal.
+    /// BEQ - Branch if equal.
     fn op_beq(&mut self, op: Opcode) {
         if self.read_reg(op.rs()) == self.read_reg(op.rt()) {
             self.branch(op.signed_imm());
@@ -624,7 +604,7 @@ impl Cpu {
         self.fetch_load_slot();
     }
 
-    /// [BNE] - Branch if not equal.
+    /// BNE - Branch if not equal.
     fn op_bne(&mut self, op: Opcode) {
         if self.read_reg(op.rs()) != self.read_reg(op.rt()) {
             self.branch(op.signed_imm());
@@ -632,7 +612,7 @@ impl Cpu {
         self.fetch_load_slot();
     }
 
-    /// [BLEZ] - Branch if less than or equal to zero.
+    /// BLEZ - Branch if less than or equal to zero.
     fn op_blez(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) as i32;
         if value <= 0 {
@@ -641,7 +621,7 @@ impl Cpu {
         self.fetch_load_slot();
     }
 
-    /// [BGTZ] - Branch if greater than zero.
+    /// BGTZ - Branch if greater than zero.
     fn op_bgtz(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) as i32;
         if value > 0 {
@@ -650,7 +630,7 @@ impl Cpu {
         self.fetch_load_slot();
     }
 
-    /// [ADDI] - Add immediate signed.
+    /// ADDI - Add immediate signed.
     /// Same as ADDUI but throw exception on overflow.
     fn op_addi(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) as i32;
@@ -662,7 +642,7 @@ impl Cpu {
         }
     }
 
-    /// [ADDUI] - Add immediate unsigned.
+    /// ADDUI - Add immediate unsigned.
     /// Actually adding a signed int to target register, not unsigned.
     /// Unsigned in this case just means wrapping on overflow.
     fn op_addiu(&mut self, op: Opcode) {
@@ -671,51 +651,51 @@ impl Cpu {
         self.set_reg(op.rt(), value);
     }
 
-    /// [SLTI] - Set if less than immediate signed.
+    /// SLTI - Set if less than immediate signed.
     fn op_slti(&mut self, op: Opcode) {
         let value = (self.read_reg(op.rs()) as i32) < (op.signed_imm() as i32);
         self.fetch_load_slot();
         self.set_reg(op.rt(), value as u32);
     }
 
-    /// [SLTI] - Set if less than immediate unsigned.
+    /// SLTI - Set if less than immediate unsigned.
     fn op_sltui(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) < op.signed_imm();
         self.fetch_load_slot();
         self.set_reg(op.rt(), value as u32);
     }
 
-    /// [ANDI] - Bitwise and immediate.
+    /// ANDI - Bitwise and immediate.
     fn op_andi(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) & op.imm();
         self.fetch_load_slot();
         self.set_reg(op.rt(), value);
     }
 
-    /// [ORI] - Bitwise or immediate.
+    /// ORI - Bitwise or immediate.
     fn op_ori(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) | op.imm();
         self.fetch_load_slot();
         self.set_reg(op.rt(), value);
     }
 
-    /// [XORI] - Bitwise exclusive Or immediate.
+    /// XORI - Bitwise exclusive Or immediate.
     fn op_xori(&mut self, op: Opcode) {
         let value = self.read_reg(op.rs()) ^ op.imm();
         self.fetch_load_slot();
         self.set_reg(op.rt(), value);
     }
 
-    /// [LUI] - Load upper immediate.
+    /// LUI - Load upper immediate.
     fn op_lui(&mut self, op: Opcode) {
         self.set_reg(op.rt(), op.imm() << 16);
         self.fetch_load_slot();
     }
 
-    /// [COP0] - Coprocessor0 instruction.
+    /// COP0 - Coprocessor0 instruction.
     fn op_cop0(&mut self, op: Opcode) {
         match op.cop0_op() {
-            // [MFC0] - Move from Co-Processor0.
+            // MFC0 - Move from Co-Processor0.
             0x0 => {
                 let register = op.rd();
                 if register > 15 {
@@ -724,12 +704,12 @@ impl Cpu {
                     self.add_load_slot(op.rt(), self.cop0.read_reg(register));
                 }
             }
-            // [MTC0] - Move to Co-Processor0.
+            // MTC0 - Move to Co-Processor0.
             0x4 => {
                 self.fetch_load_slot();
                 self.cop0.set_reg(op.rd(), self.read_reg(op.rt()));
             }
-            // [RFE] - Restore from exception.
+            // RFE - Restore from exception.
             0b10000 => {
                 self.fetch_load_slot();
                 self.cop0.exit_exception();
@@ -738,24 +718,24 @@ impl Cpu {
         }
     }
 
-    /// [COP1] - Coprocessor1 instruction.
+    /// COP1 - Coprocessor1 instruction.
     fn op_cop1(&mut self) {
         // COP1 does not exist on the Playstation 1.
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [COP2] - GME instruction.
+    /// COP2 - GME instruction.
     fn op_cop2(&mut self, _: Opcode) {
         todo!();
     }
 
-    /// [COP3] - Coprocessor3 instruction.
+    /// COP3 - Coprocessor3 instruction.
     fn op_cop3(&mut self) {
         // COP3 does not exist on the Playstation 1.
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [LB] - Load byte.
+    /// LB - Load byte.
     fn op_lb(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         // Note: Byte is always aligned.
@@ -763,7 +743,7 @@ impl Cpu {
         self.add_load_slot(op.rt(), value as u32);
     }
 
-    /// [LH] - Load half word.
+    /// LH - Load half word.
     fn op_lh(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         if HalfWord::is_aligned(address) {
@@ -776,7 +756,7 @@ impl Cpu {
         }
     }
 
-    /// [LWL] - Load word left.
+    /// LWL - Load word left.
     /// This is used to load words which aren't 32-bit aligned.
     fn op_lwl(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
@@ -799,7 +779,7 @@ impl Cpu {
         self.add_load_slot(op.rt(), value);
     }
 
-    /// [LW] - Load word.
+    /// LW - Load word.
     fn op_lw(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         if Word::is_aligned(address) {
@@ -811,7 +791,7 @@ impl Cpu {
         }
     }
 
-    /// [LBU] - Load byte unsigned.
+    /// LBU - Load byte unsigned.
     fn op_lbu(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         // Note: Byte is always aligned.
@@ -819,7 +799,7 @@ impl Cpu {
         self.add_load_slot(op.rt(), value);
     }
 
-    /// [LHU] - Load half word unsigned.
+    /// LHU - Load half word unsigned.
     fn op_lhu(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         if HalfWord::is_aligned(address) {
@@ -831,7 +811,7 @@ impl Cpu {
         }
     }
 
-    /// [LWR] - Load word right.
+    /// LWR - Load word right.
     fn op_lwr(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         // This instruction somehow doesn't wait on load delay.
@@ -853,7 +833,7 @@ impl Cpu {
         self.add_load_slot(op.rt(), value);
     }
 
-    /// [SB] - Store byte.
+    /// SB - Store byte.
     /// Store byte from target register at address from source register + immediate value.
     fn op_sb(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
@@ -862,7 +842,7 @@ impl Cpu {
         self.store::<Byte>(address, value);
     }
 
-    /// [SH] - Store half word.
+    /// SH - Store half word.
     /// Store half word from target register at address from source register + immediate value.
     fn op_sh(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
@@ -876,7 +856,7 @@ impl Cpu {
         }
     }
 
-    /// [SWL] - Store world left.
+    /// SWL - Store world left.
     /// This is used to store words to addresses which aren't 32-aligned.
     fn op_swl(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
@@ -896,7 +876,7 @@ impl Cpu {
         self.store::<Word>(aligned, value);
     }
 
-    /// [SW] - Store word.
+    /// SW - Store word.
     /// Store word from target register at address from source register + signed immediate value.
     fn op_sw(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
@@ -910,7 +890,7 @@ impl Cpu {
         }
     }
 
-    /// [SWR] - Store world right.
+    /// SWR - Store world right.
     fn op_swr(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         let value = self.read_reg(op.rt());
@@ -929,56 +909,50 @@ impl Cpu {
         self.store::<Word>(aligned, value);
     }
 
-    /// [LWC0] - Load word from Coprocessor0.
+    /// LWC0 - Load word from Coprocessor0.
     fn op_lwc0(&mut self) {
         // This doesn't work on the COP0.
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [LWC1] - Load word from Coprocessor1.
+    /// LWC1 - Load word from Coprocessor1.
     fn op_lwc1(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [LWC2] - Load word from Coprocessor2.
+    /// LWC2 - Load word from Coprocessor2.
     fn op_lwc2(&mut self) {
         todo!();
     }
 
-    /// [LWC3] - Load word from Coprocessor3.
+    /// LWC3 - Load word from Coprocessor3.
     fn op_lwc3(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [SWC0] - Store world in Coprocessor0.
+    /// SWC0 - Store world in Coprocessor0.
     fn op_swc0(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [SWC1] - Store world in Coprocessor0.
+    /// SWC1 - Store world in Coprocessor0.
     fn op_swc1(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [SWC2] - Store world in Coprocessor0.
+    /// SWC2 - Store world in Coprocessor0.
     fn op_swc2(&mut self) {
         todo!();
     }
 
-    /// [SWC3] - Store world in Coprocessor0.
+    /// SWC3 - Store world in Coprocessor0.
     fn op_swc3(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// [ILLEGAL] - Illegal/Undefined opcode.
+    /// ILLEGAL - Illegal/Undefined opcode.
     fn op_illegal(&mut self) {
         self.throw_exception(Exception::ReservedInstruction);
-    }
-}
-
-impl fmt::Display for Cpu {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "pc: {}, registers: {:?}", self.pc, self.registers)
     }
 }
 

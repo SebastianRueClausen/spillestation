@@ -4,8 +4,9 @@
 #![allow(dead_code)]
 
 use crate::util::bits::BitExtract;
+use crate::cpu::{IrqState, Irq};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelPort {
     MdecIn = 0,
     MdecOut = 1,
@@ -46,7 +47,7 @@ impl BlockControl {
         self.0.extract_bits(0, 15)
     }
 
-    /// Block count - Bites 16..31.
+    /// Block count - Bits 16..31.
     /// In request mode, this is used to determine the amount the amount of blocks. In Manual mode
     /// this is number of words to transfer. Not used for linked list mode.
     fn block_count(self) -> u32 {
@@ -111,6 +112,15 @@ impl Step {
 }
 
 /// Keeps track of size information for channels.
+/// - 0 - Transfer direction - to/from RAM.
+/// - 1 - Address increment/decrement.
+/// - 2 - Chopping mode. Allowing the CPU the run at times.
+/// - 9..10 - Sync mode - Manual/Request/Linked List.
+/// - 16..18 - Chopping DMA window. How long the CPU are allowed to run when chopping.
+/// - 20..22 - Chopping CPU window. How often the CPU is allowed to run.
+/// - 24 - Enable flag.
+/// - 28 - Manual trigger.
+/// - 29..30 - Uknown. Maybe for pausing tranfers.
 #[derive(Clone, Copy)]
 struct ChannelControl(u32);
 
@@ -119,13 +129,11 @@ impl ChannelControl {
         Self { 0: value }
     }
 
-    /// Direction - Bit 0.
     /// Check if Channel is either from or to CPU.
     fn direction(self) -> Direction {
         Direction::from_value(self.0.extract_bit(0))
     }
 
-    /// Step - Bit 1.
     fn step(self) -> Step {
         Step::from_value(self.0.extract_bit(1))
     }
@@ -134,24 +142,20 @@ impl ChannelControl {
         self.0.extract_bit(8) == 1
     }
 
-    /// Sync Mode - Bits 9..10.
     fn sync_mode(self) -> SyncMode {
         SyncMode::from_value(self.0.extract_bits(9, 10))
     }
 
-    /// Enabled - bit 24.
     fn enabled(self) -> bool {
         self.0.extract_bit(24) == 1
     }
 
-    /// DMA Chopping Window - Bits 16..18.
-    /// How long the CPU is allowed to run when chopping.
+    /// DMA Chopping Window. How long the CPU is allowed to run when chopping.
     fn dma_chopping_window(self) -> u32 {
         self.0.extract_bits(16, 18) << 1
     }
 
-    /// CPU Chopping Window - Bits 20..22.
-    /// How often the CPU is allowed to run.
+    /// CPU Chopping Window. How often the CPU is allowed to run.
     fn cpu_chopping_window(self) -> u32 {
         self.0.extract_bits(20, 22) << 1
     }
@@ -172,16 +176,6 @@ struct Channel {
     /// The base address. Address of the first words the be read/written.
     base: u32,
     block_control: BlockControl,
-    /// Channel control:
-    ///  - [0] - Transfer direction - to/from RAM.
-    ///  - [1] - Address increment/decrement.
-    ///  - [2] - Chopping mode. Allowing the CPU the run at times.
-    ///  - [9..10] - Sync mode - Manual/Request/Linked List.
-    ///  - [16 - 18] - Chopping DMA window. How long the CPU are allowed to run when chopping.
-    ///  - [20..22] - Chopping CPU window. How often the CPU is allowed to run.
-    ///  - [24] - Enable flag.
-    ///  - [28] - Manual trigger.
-    ///  - [29..30] - Uknown. Maybe for pausing tranfers. TODO: Experiment.
     control: ChannelControl,
 }
 
@@ -234,55 +228,79 @@ impl Control {
     }
 }
 
+/// DMA Interrupt register.
 #[derive(Copy, Clone)]
-struct Interrupt(u32);
+pub struct Interrupt(u32);
 
 impl Interrupt {
     fn new(value: u32) -> Self {
         Self { 0: value }
     }
 
-    pub fn force_irq(self) -> bool {
+    /// If this is set, a interrupt will always be triggered when a channel is done or this
+    /// register is written to.
+    fn force_irq(self) -> bool {
         self.0.extract_bit(15) == 1
     }
 
-    pub fn channel_irq_enabled(self, channel: ChannelPort) -> bool {
+    /// If interrupts are enabled for each channel.
+    fn channel_irq_enabled(self, channel: ChannelPort) -> bool {
         self.0.extract_bit((channel as u32) + 16) == 1
     }
 
-    pub fn master_irq_enabled(self) -> bool {
+    /// Master flag to enabled or disabled interrupts. ['force_irq'] has higher precedence.
+    fn master_irq_enabled(self) -> bool {
         self.0.extract_bit(23) == 1
     }
 
-    pub fn channel_irq_flag(self, channel: ChannelPort) -> bool {
+    /// This is set when a channel is done with a transfer, if interrupts are enabled for the
+    /// channel.
+    fn channel_irq_flag(self, channel: ChannelPort) -> bool {
         self.0.extract_bit((channel as u32) + 24) == 1
     }
 
-    pub fn master_irq_flag(self) -> bool {
+    fn set_channel_irq_flag(&mut self, channel: ChannelPort) {
+        self.0 |= 1 << 24 + channel as u32;
+    }
+
+    /// This is a readonly and is updated whenever ['Interrupt'] is changed in any way.
+    fn master_irq_flag(self) -> bool {
         self.0.extract_bit(31) == 1
     }
 
-    pub fn update_master_irq_flag(&mut self) {
+    /// If this ever get's set, an interrupt is triggered.
+    fn update_master_irq_flag(&mut self, irq: &mut IrqState) {
         let enabled = self.0.extract_bits(16, 22);
         let flags = self.0.extract_bits(24, 30);
         let result = self.force_irq() || (self.master_irq_enabled() && (enabled & flags) > 0);
         self.0 |= (result as u32) << 31;
+        if result {
+            irq.trigger(Irq::Dma); 
+        }
     }
 }
 
+/// Block transfers are large blocks of memory transferred between RAM and BUS mapped devices.
+/// These tranfers could technically be done via CPU load operations, but these transfers are much
+/// faster, and therefore widely used, especially when large blocks of data has to be
+/// transferred to or from something like VRAM or CDROM.
 #[derive(Copy, Clone)]
 pub struct BlockTransfer {
     pub port: ChannelPort,
     pub direction: Direction,
+    /// The starting address of the transfer.
     pub start: u32,
+    /// The size of the transfer.
     pub size: u32,
+    /// The increment each step. This is required since the start address may be both the highest
+    /// or lowest address.
     pub increment: u32,
 }
 
+/// Linked list transfers are only used for GPU commands. It basically continues to transfer data
+/// until the end of a linked list is reached.
 #[derive(Copy, Clone)]
 pub struct LinkedTransfer {
-    // Linked Transfer only really works to the GPU.
-    // pub port: ChannelPort,
     pub start: u32,
 }
 
@@ -300,9 +318,14 @@ impl Transfers {
     }
 }
 
+/// The DMA is a chip used by the Playstation to transfer data between BUS mapped devices. It can
+/// be a lot faster than CPU loads, even though the CPU is stopped during transfers. It also allows
+/// for breaking up large transfers, to give the CPU time during transfers.
 pub struct Dma {
+    /// Control register. 
     control: Control,
-    interrupt: Interrupt,
+    /// Interrupt register.
+    pub interrupt: Interrupt,
     channels: [Channel; 7],
 }
 
@@ -324,14 +347,20 @@ impl Dma {
             7 => match offset {
                 0 => self.control.0,
                 4 => self.interrupt.0,
-                _ => unreachable!("Load at invalid DMA register {:08x}.", offset),
+                _ => unreachable!(),
             },
-            _ => unreachable!("Load at invalid DMA register {:08x}.", offset),
+            _ => unreachable!(),
         }
     }
 
     /// Store value in DMA register.
-    pub fn store(&mut self, transfers: &mut Transfers, offset: u32, value: u32) {
+    pub fn store(
+        &mut self,
+        transfers: &mut Transfers,
+        irq: &mut IrqState,
+        offset: u32,
+        value: u32,
+    ) {
         let channel = offset.extract_bits(4, 6);
         let offset = offset.extract_bits(0, 3);
         match channel {
@@ -342,17 +371,28 @@ impl Dma {
                 0 => self.control.0 = value,
                 4 => {
                     self.interrupt.0 = value;
-                    self.interrupt.update_master_irq_flag();
+                    self.interrupt.update_master_irq_flag(irq);
                 }
-                _ => unreachable!("Store at invalid DMA register {:08x}.", offset),
+                _ => unreachable!(),
             },
-            _ => unreachable!("Store at invalid DMA register {:08x}.", offset),
+            _ => unreachable!(),
         }
         self.build_transfers(transfers);
     }
 
-    pub fn mark_channel_as_finished(&mut self, port: ChannelPort) {
+    pub fn channel_done(
+        &mut self,
+        port: ChannelPort,
+        irq: &mut IrqState,
+    ) {
         self.channels[port as usize].control.mark_as_finished();
+        if self.interrupt.channel_irq_enabled(port) {
+            self.interrupt.set_channel_irq_flag(port);
+            self.interrupt.update_master_irq_flag(irq);
+            if self.interrupt.master_irq_flag() {
+                irq.trigger(Irq::Dma);
+            }
+        }
     }
 
     fn build_transfers(&mut self, transfers: &mut Transfers) {

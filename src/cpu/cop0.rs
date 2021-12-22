@@ -19,20 +19,20 @@ pub enum Exception {
 
 pub struct Cop0 {
     /// COP0 registers - http://problemkaputt.de/psx-spx.htm#cop0exceptionhandling
-    /// - [0..2] - NA.
-    /// - [3] - BPC- Breakpoint on execution.
-    /// - [4] - NA.
-    /// - [5] - BDA - Breakpoint on data access.
-    /// - [6] - JUMPDEST - Memorized jump address.
-    /// - [7] - DCIC - Breakpoint control.
-    /// - [8] - BadVaddr - Bad virtual address.
-    /// - [9] - BDAM - Data access breakpoint mask.
-    /// - [10] - NA.
-    /// - [11] - BPCM- Execute breakpoint mask.
-    /// - [12] - SR - Status register.
-    /// - [13] - Cause - Exception type.
-    /// - [14] - EPC - Return address tom trap.
-    /// - [15] - PRID - Processor ID.
+    /// - 0..2 - NA.
+    /// - 3 - BPC- Breakpoint on execution.
+    /// - 4 - NA.
+    /// - 5 - BDA - Breakpoint on data access.
+    /// - 6 - JUMPDEST - Memorized jump address.
+    /// - 7 - DCIC - Breakpoint control.
+    /// - 8 - BadVaddr - Bad virtual address.
+    /// - 9 - BDAM - Data access breakpoint mask.
+    /// - 10 - NA.
+    /// - 11 - BPCM- Execute breakpoint mask.
+    /// - 12 - SR - Status register.
+    /// - 13 - Cause - Exception type.
+    /// - 14 - EPC - Return address tom trap.
+    /// - 15 - PRID - Processor ID.
     registers: [u32; 16],
 }
 
@@ -43,16 +43,21 @@ impl Cop0 {
         }
     }
 
-    /// [ISC] - Cache isolated.
-    pub fn check_isc(&self) -> bool {
-        self.registers[12].extract_bit(16) != 0
+    /// ISC - Cache isolated.
+    pub fn cache_isolated(&self) -> bool {
+        self.registers[12].extract_bit(16) == 1
     }
 
-    /// [BEV] - Boot exception vectors in RAM/ROM.
+    /// BEV - Boot exception vectors in RAM/ROM.
     /// - true: KSEG1.
     /// - false: KSEG0.
-    pub fn check_bev(&self) -> bool {
-        self.registers[12].extract_bit(22) != 0
+    fn bev_in_ram(&self) -> bool {
+        self.registers[12].extract_bit(22) == 1
+    }
+
+    /// IRQ - Interrupt enabled.
+    pub fn irq_enabled(&self) -> bool {
+        self.registers[12].extract_bit(0) == 1
     }
 
     /// Set the value of a COP0 register.
@@ -89,7 +94,7 @@ impl Cop0 {
         }
         // Set PC to the to exception handler. The exception handler address depend on BEV flag in
         // COP0 status register.
-        if self.check_bev() {
+        if self.bev_in_ram() {
             0xbfc00180
         } else {
             0x80000080

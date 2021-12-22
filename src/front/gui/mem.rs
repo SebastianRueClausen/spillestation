@@ -121,7 +121,7 @@ impl App for MemView {
         ui.separator();
         match self.mode {
             Mode::Instruction { ref instructions } => {
-                egui::Grid::new("instruction_grid").show(ui, |ui| {
+                egui::Grid::new("instruction_grid").striped(true).show(ui, |ui| {
                     for (ins, addr) in instructions.iter().zip(self.addresses.iter()) {
                         ui.label(addr);
                         ui.label(ins);
@@ -130,14 +130,17 @@ impl App for MemView {
                 });
             }
             Mode::Value { ref matrix } => {
-                egui::Grid::new("mem_value_grid").show(ui, |ui| {
-                    for (row, addr) in matrix.iter().zip(self.addresses.iter()) {
-                        ui.label(addr);
-                        for col in row {
-                            ui.label(unsafe { str::from_utf8_unchecked(col) });
+                egui::Grid::new("mem_value_grid")
+                    .striped(true)
+                    .spacing([0.0, 0.0])
+                    .show(ui, |ui| {
+                        for (row, addr) in matrix.iter().zip(self.addresses.iter()) {
+                            ui.label(addr);
+                            for col in row {
+                                ui.label(unsafe { str::from_utf8_unchecked(col) });
+                            }
+                            ui.end_row();
                         }
-                        ui.end_row();
-                    }
                 });
             }
         }

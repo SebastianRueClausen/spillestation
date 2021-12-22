@@ -4,9 +4,11 @@ pub mod bios;
 pub mod dma;
 pub mod ram;
 
-use crate::gpu::{Gpu, Vram};
-use crate::util::bits::BitExtract;
-use crate::cdrom::CdRom;
+use crate::{
+    gpu::{Gpu, Vram},
+    util::bits::BitExtract, cdrom::CdRom,
+    cpu::IrqState,
+};
 use bios::Bios;
 use dma::{BlockTransfer, ChannelPort, Direction, Dma, LinkedTransfer, Transfers};
 use ram::Ram;
@@ -120,6 +122,7 @@ mod map {
 
 pub struct Bus {
     bios: Bios,
+    pub irq_state: IrqState,
     ram: Ram,
     dma: Dma,
     transfers: Transfers,
@@ -133,6 +136,7 @@ impl Bus {
     pub fn new(bios: Bios) -> Self {
         Self {
             bios,
+            irq_state: IrqState::new(),
             ram: Ram::new(),
             dma: Dma::new(),
             transfers: Transfers::new(),
@@ -145,18 +149,36 @@ impl Bus {
         debug_assert!(T::is_aligned(address));
         let address = to_region(address);
         match address {
-            RAM_START..=RAM_END => Some(self.ram.load::<T>(address)),
-            BIOS_START..=BIOS_END => Some(self.bios.load::<T>(address - BIOS_START)),
+            RAM_START..=RAM_END => {
+                Some(self.ram.load::<T>(address))
+            }
+            BIOS_START..=BIOS_END => {
+                Some(self.bios.load::<T>(address - BIOS_START))
+            }
             MEMCTRL_START..=MEMCTRL_END => None,
             RAM_SIZE_START..=RAM_SIZE_END => None,
             CACHE_CONTROL_START..=CACHE_CONTROL_END => None,
-            EXP1_START..=EXP1_END => Some(0xff),
-            IRQ_CONTROL_START..=IRQ_CONTROL_END => Some(0x0),
-            DMA_START..=DMA_END => Some(self.dma.load(address - DMA_START)),
-            CDROM_START..=CDROM_END => Some(self.cdrom.load(address - CDROM_START)),
-            SPU_START..=SPU_END => Some(0x0),
-            TIMER_CONTROL_START..=TIMER_CONTROL_END => Some(0x0),
-            GPU_START..=GPU_END => Some(self.gpu.load(address - GPU_START)),
+            EXP1_START..=EXP1_END => {
+                Some(0xff)
+            },
+            IRQ_CONTROL_START..=IRQ_CONTROL_END => {
+                Some(self.irq_state.load(address - IRQ_CONTROL_START))
+            }
+            DMA_START..=DMA_END => {
+                Some(self.dma.load(address - DMA_START))
+            }
+            CDROM_START..=CDROM_END => {
+                Some(self.cdrom.load(address - CDROM_START))
+            }
+            SPU_START..=SPU_END => {
+                Some(0x0)
+            }
+            TIMER_CONTROL_START..=TIMER_CONTROL_END => {
+                Some(0x0)
+            }
+            GPU_START..=GPU_END => {
+                Some(self.gpu.load(address - GPU_START))
+            }
             _ => None,
         }
     }
@@ -175,7 +197,6 @@ impl Bus {
             RAM_START..=RAM_END => {
                 self.ram.store::<T>(address, value);
             }
-            // Ignore stores to memory controller and ram size controller.
             MEMCTRL_START..=MEMCTRL_END => {
                 // TODO: Memory Control.
             }
@@ -195,14 +216,18 @@ impl Bus {
                 // TODO.
             }
             IRQ_CONTROL_START..=IRQ_CONTROL_END => {
-                // TODO.
+                self.irq_state.store(address - IRQ_CONTROL_START, value);
             }
             TIMER_CONTROL_START..=TIMER_CONTROL_END => {
                 // TODO.
             }
             DMA_START..=DMA_END => {
-                self.dma
-                    .store(&mut self.transfers, address - DMA_START, value);
+                self.dma.store(
+                    &mut self.transfers,
+                    &mut self.irq_state,
+                    address - DMA_START,
+                    value,
+                );
                 self.exec_transfers();
             }
             CDROM_START..=CDROM_END => {
@@ -226,24 +251,24 @@ impl Bus {
     }
 
     pub fn run_cdrom(&mut self) {
-        self.cdrom.exec_cmd();
+        self.cdrom.exec_cmd(&mut self.irq_state);
     }
 
     fn exec_transfers(&mut self) {
         while let Some(transfer) = self.transfers.block.pop() {
             match transfer.direction {
-                Direction::ToPort => self.exec_to_port_block_transfer(&transfer),
-                Direction::ToRam => self.exec_to_ram_block_transfer(&transfer),
+                Direction::ToPort => self.trans_block_to_port(&transfer),
+                Direction::ToRam => self.trans_block_to_ram(&transfer),
             }
-            self.dma.mark_channel_as_finished(transfer.port);
+            self.dma.channel_done(transfer.port, &mut self.irq_state);
         }
         while let Some(transfer) = self.transfers.linked.pop() {
-            self.exec_to_port_linked_transfer(&transfer);
-            self.dma.mark_channel_as_finished(dma::ChannelPort::Gpu);
+            self.trans_linked_to_port(&transfer);
+            self.dma.channel_done(dma::ChannelPort::Gpu, &mut self.irq_state);
         }
     }
 
-    fn exec_to_port_block_transfer(&mut self, transfer: &BlockTransfer) {
+    fn trans_block_to_port(&mut self, transfer: &BlockTransfer) {
         let mut address = transfer.start;
         for _ in 0..transfer.size {
             let value = self.ram.load::<Word>(address & 0x1ffffc);
@@ -255,7 +280,7 @@ impl Bus {
         }
     }
 
-    fn exec_to_ram_block_transfer(&mut self, transfer: &BlockTransfer) {
+    fn trans_block_to_ram(&mut self, transfer: &BlockTransfer) {
         let mut address = transfer.start;
         for remain in (0..transfer.size).rev() {
             let value = match transfer.port {
@@ -271,8 +296,7 @@ impl Bus {
         }
     }
 
-    /// Linked list DMA transfer.
-    fn exec_to_port_linked_transfer(&mut self, transfer: &LinkedTransfer) {
+    fn trans_linked_to_port(&mut self, transfer: &LinkedTransfer) {
         let mut address = transfer.start & 0x1ffffc;
         loop {
             let header = self.ram.load::<Word>(address);
