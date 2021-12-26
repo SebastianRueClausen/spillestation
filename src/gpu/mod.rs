@@ -47,16 +47,12 @@ impl TransBlend {
 
 impl fmt::Display for TransBlend {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match *self {
-                TransBlend::Avg => "average",
-                TransBlend::Add => "add",
-                TransBlend::Sub => "subtract",
-                TransBlend::AddDiv => "add and divide",
-            }
-        )
+        write!(f, "{}", match *self {
+            TransBlend::Avg => "average",
+            TransBlend::Add => "add",
+            TransBlend::Sub => "subtract",
+            TransBlend::AddDiv => "add and divide",
+        })
     }
 }
 
@@ -70,14 +66,10 @@ pub enum VideoMode {
 
 impl fmt::Display for VideoMode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match *self {
-                VideoMode::Ntsc => "NTSC(60hz)",
-                VideoMode::Pal => "PAL(50hz)",
-            }
-        )
+        write!(f, "{}", match *self {
+            VideoMode::Ntsc => "NTSC(60hz)",
+            VideoMode::Pal => "PAL(50hz)",
+        })
     }
 }
 
@@ -90,16 +82,12 @@ pub enum DmaDirection {
 
 impl fmt::Display for DmaDirection {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match *self {
-                DmaDirection::Off => "off",
-                DmaDirection::Fifo => "Fifo",
-                DmaDirection::CpuToGp0 => "CPU to GP0",
-                DmaDirection::VramToCpu => "VRAM to CPU",
-            }
-        )
+        write!(f, "{}",match *self {
+            DmaDirection::Off => "off",
+            DmaDirection::Fifo => "FIFO",
+            DmaDirection::CpuToGp0 => "CPU to GP0",
+            DmaDirection::VramToCpu => "VRAM to CPU",
+        })
     }
 }
 

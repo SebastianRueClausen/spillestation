@@ -8,6 +8,7 @@ use super::{
     gpu::GpuStatus,
     mem::MemView,
     vram::VramView,
+    timer::TimerView,
 };
 use crate::cpu::Cpu;
 use std::time::Duration;
@@ -36,6 +37,7 @@ pub struct AppMenu {
     mem_view: AppItem<MemView>,
     gpu_status: AppItem<GpuStatus>,
     vram_view: AppItem<VramView>,
+    timer_view: AppItem<TimerView>,
 }
 
 impl AppMenu {
@@ -48,6 +50,7 @@ impl AppMenu {
             mem_view: Default::default(),
             gpu_status: Default::default(),
             vram_view: Default::default(),
+            timer_view: Default::default(),
         }
     }
 
@@ -67,6 +70,9 @@ impl AppMenu {
         if self.vram_view.open {
             self.vram_view.app.update_matrix(cpu.bus().gpu());
         }
+        if self.timer_view.open {
+            self.timer_view.app.update_fields(cpu);
+        }
     }
 
     /// Called each frame.
@@ -82,6 +88,7 @@ impl AppMenu {
         self.frame_counter.show(&ctx.egui_ctx);
         self.gpu_status.show(&ctx.egui_ctx);
         self.vram_view.show(&ctx.egui_ctx);
+        self.timer_view.show(&ctx.egui_ctx);
     }
 
     /// Closed all apps. Called if rendering of the GUI has failed.
@@ -92,6 +99,7 @@ impl AppMenu {
         self.frame_counter.open = false;
         self.gpu_status.open = false;
         self.vram_view.open = false;
+        self.timer_view.open = false;
         self.open = false;
     }
 
@@ -113,6 +121,7 @@ impl AppMenu {
                             ui.checkbox(&mut self.frame_counter.open, "Frame Counter");
                             ui.checkbox(&mut self.gpu_status.open, "GPU Status");
                             ui.checkbox(&mut self.vram_view.open, "VRAM View");
+                            ui.checkbox(&mut self.timer_view.open, "Timer View");
                         });
                 });
         }

@@ -8,6 +8,7 @@ use crate::{
     gpu::{Gpu, Vram},
     util::bits::BitExtract, cdrom::CdRom,
     cpu::IrqState,
+    timer::Timers,
 };
 use bios::Bios;
 use dma::{BlockTransfer, ChannelPort, Direction, Dma, LinkedTransfer, Transfers};
@@ -121,6 +122,7 @@ mod map {
 }
 
 pub struct Bus {
+    pub cycle_count: u64,
     bios: Bios,
     pub irq_state: IrqState,
     ram: Ram,
@@ -128,6 +130,7 @@ pub struct Bus {
     transfers: Transfers,
     gpu: Gpu,
     cdrom: CdRom,
+    timers: Timers,
 }
 
 use map::*;
@@ -135,6 +138,7 @@ use map::*;
 impl Bus {
     pub fn new(bios: Bios) -> Self {
         Self {
+            cycle_count: 0,
             bios,
             irq_state: IrqState::new(),
             ram: Ram::new(),
@@ -142,6 +146,7 @@ impl Bus {
             transfers: Transfers::new(),
             gpu: Gpu::new(),
             cdrom: CdRom::new(),
+            timers: Timers::new(),
         }
     }
 
@@ -174,7 +179,11 @@ impl Bus {
                 Some(0x0)
             }
             TIMER_CONTROL_START..=TIMER_CONTROL_END => {
-                Some(0x0)
+                Some(self.timers.load(
+                    &mut self.irq_state,
+                    self.cycle_count,
+                    address - TIMER_CONTROL_START,
+                ))
             }
             GPU_START..=GPU_END => {
                 Some(self.gpu.load(address - GPU_START))
@@ -219,7 +228,12 @@ impl Bus {
                 self.irq_state.store(address - IRQ_CONTROL_START, value);
             }
             TIMER_CONTROL_START..=TIMER_CONTROL_END => {
-                // TODO.
+                self.timers.store(
+                    &mut self.irq_state,
+                    self.cycle_count,
+                    address - TIMER_CONTROL_START,
+                    value
+                ); 
             }
             DMA_START..=DMA_END => {
                 self.dma.store(
@@ -250,8 +264,16 @@ impl Bus {
         &self.gpu
     }
 
+    pub fn timers(&self) -> &Timers {
+        &self.timers
+    }
+
     pub fn run_cdrom(&mut self) {
         self.cdrom.exec_cmd(&mut self.irq_state);
+    }
+
+    pub fn run_timers(&mut self) {
+        self.timers.run(&mut self.irq_state, self.cycle_count);
     }
 
     fn exec_transfers(&mut self) {

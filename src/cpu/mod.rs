@@ -62,7 +62,6 @@ pub struct Cpu {
     icache: Box<[CacheLine; 1024]>,
     bus: Bus,
     cop0: Cop0,
-    cycle_count: u64,
 }
 
 const PC_START_ADDRESS: u32 = 0xbfc00000;
@@ -84,7 +83,6 @@ impl Cpu {
             icache: Box::new([CacheLine::default(); 1024]),
             bus: Bus::new(bios),
             cop0: Cop0::new(),
-            cycle_count: 0,
         })
     }
 
@@ -134,14 +132,14 @@ impl Cpu {
     /// MUL/DIV takes more than one cycle, but other instructions can run while the result is
     /// pending. This is an attempt to simulate that.
     fn add_pending_hi_lo(&mut self, cycles: u32, hi: u32, lo: u32) {
-        self.hi_lo_ready = self.cycle_count + cycles as u64;
+        self.hi_lo_ready = self.bus.cycle_count + cycles as u64;
         self.hi = hi;
         self.lo = lo;
     }
 
     /// If there is a DIV/MUL result pending, wait the required until it's ready.
     fn fetch_pending_hi_lo(&mut self) {
-        self.cycle_count = u64::max(self.cycle_count, self.hi_lo_ready);
+        self.bus.cycle_count = u64::max(self.bus.cycle_count, self.hi_lo_ready);
     }
 
     /// Branch to relative offset.
@@ -207,7 +205,7 @@ impl Cpu {
             }
         } else {
             // Cache misses take about 4 cycles.
-            self.cycle_count += 4;
+            self.bus.cycle_count += 4;
             self.load::<Word>(address)
         };
         Opcode::new(data)
@@ -227,7 +225,7 @@ impl Cpu {
         // Execute instruction.
         self.exec(op);
         // Every instruction takes 1 cycle.
-        self.cycle_count += 1;
+        self.bus.cycle_count += 1;
     }
 
     pub fn bus(&self) -> &Bus {

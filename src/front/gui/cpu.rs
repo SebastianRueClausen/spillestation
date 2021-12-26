@@ -110,7 +110,8 @@ pub struct CpuCtrl {
     /// than the update rate, since there may be multiple updates between each CPU cycle.
     remainder: Duration,
     /// How many cycles since the cdrom ran.
-    cdrom_last_run: usize,
+    cdrom_last_run: u64,
+    timer_last_run: u64,
 }
 
 impl CpuCtrl {
@@ -122,6 +123,7 @@ impl CpuCtrl {
             stepped: false,
             remainder: Duration::ZERO,
             cdrom_last_run: 0,
+            timer_last_run: 0,
         }
     }
 
@@ -134,21 +136,32 @@ impl CpuCtrl {
         }
     }
 
+    fn maybe_run_timers(&mut self, cpu: &mut Cpu) {
+        if self.timer_last_run == 20_000 {
+            cpu.bus_mut().run_timers();
+            self.timer_last_run = 0; 
+        } else {
+            self.timer_last_run += 1;
+        }
+    }
+
     // This should probably be a struct on it's own or something.
-    pub fn run_cpu(&mut self, mut dt: Duration, cpu: &mut Cpu) {
+    pub fn run_cpu(&mut self, dt: Duration, cpu: &mut Cpu) {
         if !self.paused {
-            dt += self.remainder;
+            let mut time = dt + self.remainder;
             let cycle_time = Duration::from_secs(1) / self.cycle_hz as u32;
-            while let Some(new) = dt.checked_sub(cycle_time) {
-                dt = new;
+            while let Some(new) = time.checked_sub(cycle_time) {
+                time = new;
                 cpu.fetch_and_exec();
                 self.maybe_run_cdrom(cpu);
+                self.maybe_run_timers(cpu);
             }
             self.remainder = dt;
         } else if self.stepped {
             for _ in 0..self.step_amount {
                 cpu.fetch_and_exec();
                 self.maybe_run_cdrom(cpu);
+                self.maybe_run_timers(cpu);
             }
             self.stepped = false;
         }

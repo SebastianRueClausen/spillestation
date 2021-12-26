@@ -8,6 +8,7 @@ pub mod fps;
 pub mod gpu;
 pub mod mem;
 pub mod vram;
+pub mod timer;
 pub mod config;
 
 use super::{RenderCtx, SurfaceSize};

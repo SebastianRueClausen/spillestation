@@ -41,13 +41,11 @@ impl BlockControl {
         Self { 0: value }
     }
 
-    /// Block size - Bits 0..15.
     /// This is only used in request mode.
     fn block_size(self) -> u32 {
         self.0.extract_bits(0, 15)
     }
 
-    /// Block count - Bits 16..31.
     /// In request mode, this is used to determine the amount the amount of blocks. In Manual mode
     /// this is number of words to transfer. Not used for linked list mode.
     fn block_count(self) -> u32 {
@@ -272,7 +270,12 @@ impl Interrupt {
     fn update_master_irq_flag(&mut self, irq: &mut IrqState) {
         let enabled = self.0.extract_bits(16, 22);
         let flags = self.0.extract_bits(24, 30);
-        let result = self.force_irq() || (self.master_irq_enabled() && (enabled & flags) > 0);
+        // If this is true, then the DMA should trigger an interrupt. If the force_irq flag is set,
+        // then it will always trigger an interrupt. Otherwise it will trigger if any of the
+        // channels with enabled interrupts has an interrupt.
+        let result = self.force_irq()
+            || (self.master_irq_enabled()
+            && (enabled & flags) > 0);
         self.0 |= (result as u32) << 31;
         if result {
             irq.trigger(Irq::Dma); 
