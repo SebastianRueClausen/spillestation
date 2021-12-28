@@ -121,7 +121,10 @@ mod map {
     pub const GPU_END: u32 = GPU_START + 8 - 1;
 }
 
+/// The BUS of the Playstation 1. This is what (mostly) all devices are connected with, and how to
+/// the CPU interacts with the rest of the machine.
 pub struct Bus {
+    /// The amount of CPU cycles since boot.
     pub cycle_count: u64,
     bios: Bios,
     pub irq_state: IrqState,
@@ -276,7 +279,9 @@ impl Bus {
         self.timers.run(&mut self.irq_state, self.cycle_count);
     }
 
+    /// This executes waiting DAM transfers.
     fn exec_transfers(&mut self) {
+        // Execute block transfers.
         while let Some(transfer) = self.transfers.block.pop() {
             match transfer.direction {
                 Direction::ToPort => self.trans_block_to_port(&transfer),
@@ -284,16 +289,19 @@ impl Bus {
             }
             self.dma.channel_done(transfer.port, &mut self.irq_state);
         }
+        // Execute linked list transfers.
         while let Some(transfer) = self.transfers.linked.pop() {
             self.trans_linked_to_port(&transfer);
             self.dma.channel_done(dma::ChannelPort::Gpu, &mut self.irq_state);
         }
     }
 
+    /// Execute transfers to a port.
     fn trans_block_to_port(&mut self, transfer: &BlockTransfer) {
         let mut address = transfer.start;
         for _ in 0..transfer.size {
             let value = self.ram.load::<Word>(address & 0x1ffffc);
+            // Hopefully the compiler can optimize this to be outside the loop.
             match transfer.port {
                 ChannelPort::Gpu => self.gpu.dma_store(value),
                 _ => todo!(),
@@ -301,14 +309,15 @@ impl Bus {
             address = address.wrapping_add(transfer.increment);
         }
     }
-
+   
+    /// Execute transfers to RAM from a port.
     fn trans_block_to_ram(&mut self, transfer: &BlockTransfer) {
         let mut address = transfer.start;
         for remain in (0..transfer.size).rev() {
             let value = match transfer.port {
                 ChannelPort::Otc => match remain {
-                    1 => 0xffffff,
-                    _ => address.wrapping_sub(4) & 0x1fffff,
+                    0 => 0xffffff,
+                    _ => address.wrapping_sub(4).extract_bits(0, 21),
                 },
                 ChannelPort::Gpu => self.gpu.dma_load(),
                 _ => todo!(),
@@ -326,6 +335,7 @@ impl Bus {
                 address = address.wrapping_add(4) & 0x1ffffc;
                 self.gpu.gp0_store(self.ram.load::<Word>(address));
             }
+            // It's done when the 23th bit is set in the header.
             if header.extract_bit(23) == 1 {
                 break;
             }

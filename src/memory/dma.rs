@@ -65,7 +65,7 @@ impl Direction {
         match value {
             0 => Direction::ToRam,
             1 => Direction::ToPort,
-            _ => unreachable!("Invalid direction."),
+            _ => unreachable!("Invalid direction"),
         }
     }
 }
@@ -87,7 +87,7 @@ impl SyncMode {
             0 => SyncMode::Manual,
             1 => SyncMode::Request,
             2 => SyncMode::LinkedList,
-            _ => unreachable!("Invalid sync mode."),
+            _ => unreachable!("Invalid sync mode"),
         }
     }
 }
@@ -104,7 +104,7 @@ impl Step {
         match value {
             0 => Step::Increment,
             1 => Step::Decrement,
-            _ => unreachable!("Invalid step."),
+            _ => unreachable!("Invalid step"),
         }
     }
 }
@@ -383,6 +383,7 @@ impl Dma {
         self.build_transfers(transfers);
     }
 
+    /// Mark channel as done.
     pub fn channel_done(
         &mut self,
         port: ChannelPort,
@@ -398,6 +399,7 @@ impl Dma {
         }
     }
 
+    /// Build transfer command for the BUS to execute.
     fn build_transfers(&mut self, transfers: &mut Transfers) {
         fn increment(step: Step) -> u32 {
             match step {

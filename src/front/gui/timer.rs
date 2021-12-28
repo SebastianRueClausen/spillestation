@@ -48,7 +48,7 @@ impl Default for TimerView {
 }
 
 impl App for TimerView {
-    fn update(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for ((header, grid), timer) in UI_IDS.iter().zip(self.fields.iter()) {
                 egui::CollapsingHeader::new(header).show(ui, |ui| {
@@ -64,14 +64,14 @@ impl App for TimerView {
         });
     }
 
-    fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
         egui::Window::new("Timer View")
             .open(open)
             .resizable(true)
             .default_width(240.0)
             .default_height(480.0)
             .show(ctx, |ui| {
-                self.update(ui);
+                self.show(ui);
             });
     }
 }

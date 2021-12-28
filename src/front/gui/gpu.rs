@@ -42,17 +42,9 @@ impl GpuStatus {
         write!(self.fields[19], "{}", gpu.status.vertical_res())?;
         write!(self.fields[20], "{}", gpu.status.video_mode())?;
         write!(self.fields[21], "{}", gpu.status.color_depth())?;
-        write!(
-            self.fields[22],
-            "{}",
-            gpu.status.vertical_interlace_enabled()
-        )?;
+        write!(self.fields[22], "{}", gpu.status.vertical_interlace_enabled())?;
         write!(self.fields[23], "{}", gpu.status.display_enabled())?;
-        write!(
-            self.fields[24],
-            "{}",
-            gpu.status.interrupt_request_enabled()
-        )?;
+        write!(self.fields[24], "{}", gpu.status.irq_enabled())?;
         write!(self.fields[25], "{}", gpu.status.cmd_ready())?;
         write!(self.fields[26], "{}", gpu.status.vram_to_cpu_ready())?;
         write!(self.fields[27], "{}", gpu.status.dma_block_ready())?;
@@ -76,7 +68,7 @@ impl Default for GpuStatus {
 }
 
 impl App for GpuStatus {
-    fn update(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .show(ui, |ui| {
@@ -90,14 +82,14 @@ impl App for GpuStatus {
             });
     }
 
-    fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
         egui::Window::new("GPU Status")
             .open(open)
             .resizable(true)
             .default_width(240.0)
             .default_height(480.0)
             .show(ctx, |ui| {
-                self.update(ui);
+                self.show(ui);
             });
     }
 }

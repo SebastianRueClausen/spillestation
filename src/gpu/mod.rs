@@ -5,8 +5,7 @@ mod primitive;
 mod rasterize;
 pub mod vram;
 
-use crate::front::DrawInfo;
-use crate::util::bits::BitExtract;
+use crate::{front::DrawInfo, util::bits::BitExtract, cpu::{IrqState, Irq}, timing};
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
 use rasterize::{
@@ -99,14 +98,10 @@ pub enum InterlaceField {
 
 impl fmt::Display for InterlaceField {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match *self {
-                InterlaceField::Bottom => "top/even",
-                InterlaceField::Top => "bottom/odd",
-            }
-        )
+        write!(f, "{}", match *self {
+            InterlaceField::Bottom => "top/even",
+            InterlaceField::Top => "bottom/odd",
+        })
     }
 }
 
@@ -118,14 +113,10 @@ pub enum ColorDepth {
 
 impl fmt::Display for ColorDepth {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match *self {
-                ColorDepth::B15 => "15 bit",
-                ColorDepth::B24 => "24 bit",
-            }
-        )
+        write!(f, "{}", match *self {
+            ColorDepth::B15 => "15 bit",
+            ColorDepth::B24 => "24 bit",
+        })
     }
 }
 
@@ -149,15 +140,11 @@ impl TextureDepth {
 
 impl fmt::Display for TextureDepth {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match *self {
-                TextureDepth::B4 => "4 bit",
-                TextureDepth::B8 => "8 bit",
-                TextureDepth::B15 => "15 bit",
-            }
-        )
+        write!(f, "{}", match *self {
+            TextureDepth::B4 => "4 bit",
+            TextureDepth::B8 => "8 bit",
+            TextureDepth::B15 => "15 bit",
+        })
     }
 }
 
@@ -305,7 +292,7 @@ impl Status {
         self.0.extract_bit(23) == 1
     }
 
-    pub fn interrupt_request_enabled(self) -> bool {
+    pub fn irq_enabled(self) -> bool {
         self.0.extract_bit(24) == 1
     }
 
@@ -489,9 +476,16 @@ impl Gpu {
         }
     }
 
+    pub fn run(&mut self, irq: &mut IrqState, cycles: u64) {
+        if self.status.irq_enabled() {
+            irq.trigger(Irq::Gpu);
+        }
+        // let cycles = timing::cpu_to_gpu_cycles(cycles);
+    }
+
     fn gp1_store(&mut self, value: u32) {
-        let command = value.extract_bits(24, 31);
-        match command {
+        let cmd = value.extract_bits(24, 31);
+        match cmd {
             0x0 => self.gp1_reset(),
             0x1 => self.gp1_reset_cmd_buffer(),
             0x2 => self.gp1_acknowledge_gpu_interrupt(),
@@ -501,13 +495,13 @@ impl Gpu {
             0x6 => self.gp1_horizontal_display_range(value),
             0x7 => self.gp1_vertical_display_range(value),
             0x8 => self.gp1_display_mode(value),
-            _ => unimplemented!("Invalid GP1 command {:08x}.", command),
+            _ => unimplemented!("Invalid GP1 command {:08x}.", cmd),
         }
     }
 
     fn gp0_exec(&mut self) {
-        let command = self.fifo[0].extract_bits(24, 31);
-        match command {
+        let cmd = self.fifo[0].extract_bits(24, 31);
+        match cmd {
             0x0 => {}
             0x1 => {
                 // TODO: clear cache.
@@ -528,7 +522,7 @@ impl Gpu {
             // Copy react command.
             0xa0 => self.gp0_copy_rect_cpu_to_vram(),
             0xc0 => self.gp0_copy_rect_vram_to_cpu(),
-            _ => unimplemented!("Invalid GP0 command {:08x}.", command),
+            _ => unimplemented!("Invalid GP0 command {:08x}.", cmd),
         }
     }
 
@@ -626,7 +620,6 @@ impl Gpu {
         end.x += self.draw_x_offset as i32;
         end.y += self.draw_y_offset as i32;
         self.draw_line(start, end);
-        println!("Drawing line");
     }
 
     /// GP0(e1) - Draw Mode Setting.

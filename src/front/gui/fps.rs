@@ -42,16 +42,16 @@ impl Default for FrameCounter {
 }
 
 impl App for FrameCounter {
-    fn update(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x /= 2.0;
             ui.label(&self.show);
         });
     }
 
-    fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
         egui::Window::new("Frame Rate")
             .open(open)
-            .show(ctx, |ui| self.update(ui));
+            .show(ctx, |ui| self.show(ui));
     }
 }

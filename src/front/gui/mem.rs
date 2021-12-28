@@ -95,7 +95,7 @@ impl Default for MemView {
 }
 
 impl App for MemView {
-    fn update(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.start_addr).speed(1.0));
             let mut ins_mode = match self.mode {
@@ -146,13 +146,13 @@ impl App for MemView {
         }
     }
 
-    fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
         egui::Window::new("Memory View")
             .open(open)
             .resizable(true)
             .min_width(120.0)
             .show(ctx, |ui| {
-                self.update(ui);
+                self.show(ui);
             });
     }
 }

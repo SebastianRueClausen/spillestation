@@ -1,5 +1,4 @@
-use crate::util::bits::BitExtract;
-use crate::cpu::{IrqState, Irq};
+use crate::{util::bits::BitExtract, cpu::{IrqState, Irq}, timing};
 use std::fmt;
 
 /// The Playstation has three different timers, which all have different uses.
@@ -247,7 +246,6 @@ impl Timer {
         if self.mode.reset_on_target() {
             self.counter = 0;
         }
-        println!("Triggered on target");
         if self.mode.irq_on_target() {
             irq.trigger(self.id.irq_kind());
         }
@@ -283,7 +281,7 @@ impl Timer {
             ClockSource::SystemClock => cpu_cycles,
             ClockSource::SystemClockDiv8 => cpu_cycles / 8,
             ClockSource::Hblank => 1,
-            ClockSource::DotClock => cpu_cycles + (cpu_cycles as f64 * 0.8) as u64,
+            ClockSource::DotClock => timing::cpu_to_gpu_cycles(cpu_cycles),
         };
         // If ticks is more than 0xffff, it has to be added in several steps.
         while let (value, false) = ticks.overflowing_sub(0xffff) {
@@ -328,5 +326,3 @@ impl Timers {
         self.last_run = cycle;
     }
 }
-
-

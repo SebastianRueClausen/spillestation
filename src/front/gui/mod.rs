@@ -9,6 +9,7 @@ pub mod gpu;
 pub mod mem;
 pub mod vram;
 pub mod timer;
+pub mod irq;
 pub mod config;
 
 use super::{RenderCtx, SurfaceSize};
@@ -70,9 +71,10 @@ impl GuiCtx {
         }
     }
 
+    /// Show ['App'] as window.
     pub fn show_app<T: App>(&mut self, app: &mut T) -> bool {
         let mut open = true;
-        app.show(&self.egui_ctx, &mut open);
+        app.show_window(&self.egui_ctx, &mut open);
         open
     }
 

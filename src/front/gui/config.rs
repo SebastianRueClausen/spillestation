@@ -26,7 +26,7 @@ impl Configurator {
 }
 
 impl App for Configurator {
-    fn update(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui) {
         // Show if something failed when loading config file.
         if let Some(ref err) = self.config_error {
             ui.label(err);
@@ -54,10 +54,10 @@ impl App for Configurator {
         }
     }
 
-    fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
         egui::Window::new("Config")
             .open(open)
-            .show(ctx, |ui| self.update(ui));
+            .show(ctx, |ui| self.show(ui));
     }
     
 }

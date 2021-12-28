@@ -50,7 +50,7 @@ impl Default for CpuStatus {
 }
 
 impl App for CpuStatus {
-    fn update(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui) {
         ui.collapsing("Status", |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
@@ -81,7 +81,7 @@ impl App for CpuStatus {
         });
     }
 
-    fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
         egui::Window::new("CPU Status")
             .open(open)
             .resizable(true)
@@ -89,7 +89,7 @@ impl App for CpuStatus {
             .default_width(240.0)
             .default_height(240.0)
             .show(ctx, |ui| {
-                self.update(ui);
+                self.show(ui);
             });
     }
 }
@@ -175,7 +175,7 @@ impl Default for CpuCtrl {
 }
 
 impl App for CpuCtrl {
-    fn update(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.radio_value(&mut self.paused, true, "Step");
             ui.radio_value(&mut self.paused, false, "Run");
@@ -201,7 +201,7 @@ impl App for CpuCtrl {
         } else {
             ui.add(
                 egui::Slider::new(&mut self.cycle_hz, 1..=MAX_CYCLE_HZ)
-                    .suffix("hz")
+                    .suffix("Hz")
                     .logarithmic(true)
                     .clamp_to_range(true)
                     .smart_aim(true)
@@ -210,7 +210,7 @@ impl App for CpuCtrl {
         }
     }
 
-    fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
         egui::Window::new("CPU Control")
             .open(open)
             .resizable(true)
@@ -218,7 +218,7 @@ impl App for CpuCtrl {
             .default_width(100.0)
             .default_height(100.0)
             .show(ctx, |ui| {
-                self.update(ui);
+                self.show(ui);
             });
     }
 }

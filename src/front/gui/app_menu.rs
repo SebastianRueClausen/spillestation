@@ -9,6 +9,7 @@ use super::{
     mem::MemView,
     vram::VramView,
     timer::TimerView,
+    irq::IrqView,
 };
 use crate::cpu::Cpu;
 use std::time::Duration;
@@ -21,8 +22,8 @@ struct AppItem<T: App + Default> {
 }
 
 impl<T: App + Default> AppItem<T> {
-    fn show(&mut self, ctx: &egui::CtxRef) {
-        self.app.show(ctx, &mut self.open);
+    fn show_window(&mut self, ctx: &egui::CtxRef) {
+        self.app.show_window(ctx, &mut self.open);
     }
 }
 
@@ -38,6 +39,7 @@ pub struct AppMenu {
     gpu_status: AppItem<GpuStatus>,
     vram_view: AppItem<VramView>,
     timer_view: AppItem<TimerView>,
+    irq_view: AppItem<IrqView>,
 }
 
 impl AppMenu {
@@ -51,6 +53,7 @@ impl AppMenu {
             gpu_status: Default::default(),
             vram_view: Default::default(),
             timer_view: Default::default(),
+            irq_view: Default::default(),
         }
     }
 
@@ -73,6 +76,9 @@ impl AppMenu {
         if self.timer_view.open {
             self.timer_view.app.update_fields(cpu);
         }
+        if self.irq_view.open {
+            self.irq_view.app.update_fields(cpu);
+        }
     }
 
     /// Called each frame.
@@ -82,13 +88,14 @@ impl AppMenu {
 
     /// Show all open apps.
     pub fn show_apps(&mut self, ctx: &mut GuiCtx) {
-        self.cpu_ctrl.show(&ctx.egui_ctx);
-        self.cpu_status.show(&ctx.egui_ctx);
-        self.mem_view.show(&ctx.egui_ctx);
-        self.frame_counter.show(&ctx.egui_ctx);
-        self.gpu_status.show(&ctx.egui_ctx);
-        self.vram_view.show(&ctx.egui_ctx);
-        self.timer_view.show(&ctx.egui_ctx);
+        self.cpu_ctrl.show_window(&ctx.egui_ctx);
+        self.cpu_status.show_window(&ctx.egui_ctx);
+        self.mem_view.show_window(&ctx.egui_ctx);
+        self.frame_counter.show_window(&ctx.egui_ctx);
+        self.gpu_status.show_window(&ctx.egui_ctx);
+        self.vram_view.show_window(&ctx.egui_ctx);
+        self.timer_view.show_window(&ctx.egui_ctx);
+        self.irq_view.show_window(&ctx.egui_ctx);
     }
 
     /// Closed all apps. Called if rendering of the GUI has failed.
@@ -100,6 +107,7 @@ impl AppMenu {
         self.gpu_status.open = false;
         self.vram_view.open = false;
         self.timer_view.open = false;
+        self.irq_view.open = false;
         self.open = false;
     }
 
@@ -109,7 +117,7 @@ impl AppMenu {
                 .min_width(4.0)
                 .default_width(150.0)
                 .show(ctx, |ui| {
-                    self.frame_counter.app.update(ui);
+                    self.frame_counter.app.show(ui);
                     ui.separator();
                     egui::ScrollArea::vertical()
                         .max_height(400.0)
@@ -122,6 +130,7 @@ impl AppMenu {
                             ui.checkbox(&mut self.gpu_status.open, "GPU Status");
                             ui.checkbox(&mut self.vram_view.open, "VRAM View");
                             ui.checkbox(&mut self.timer_view.open, "Timer View");
+                            ui.checkbox(&mut self.irq_view.open, "IRQ View");
                         });
                 });
         }

@@ -45,7 +45,7 @@ impl Default for VramView {
 }
 
 impl App for VramView {
-    fn update(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.x).speed(1.0));
             ui.add(egui::DragValue::new(&mut self.y).speed(1.0));
@@ -67,14 +67,14 @@ impl App for VramView {
         });
     }
 
-    fn show(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
         egui::Window::new("VRAM View")
             .open(open)
             .resizable(true)
             .default_width(240.0)
             .default_height(480.0)
             .show(ctx, |ui| {
-                self.update(ui);
+                self.show(ui);
             });
     }
 }
