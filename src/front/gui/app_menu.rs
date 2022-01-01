@@ -1,7 +1,6 @@
 //! The main controller and menu of all the GUI apps.
 
 use super::{
-    GuiCtx,
     App,
     cpu::{CpuCtrl, CpuStatus},
     fps::FrameCounter,
@@ -68,11 +67,11 @@ impl AppMenu {
         }
     }
 
-    pub fn show(&mut self, ctx: &mut GuiCtx, mode: &mut RunMode) {
+    pub fn show(&mut self, ctx: &egui::CtxRef, mode: &mut RunMode) {
         if *mode == RunMode::Debug {
             for (app, open) in &mut self.apps {
                 if *open {
-                    app.show_window(&ctx.egui_ctx, open);
+                    app.show_window(ctx, open);
                 }
             }
         }
@@ -80,7 +79,7 @@ impl AppMenu {
             egui::SidePanel::right("App Menu")
                 .min_width(4.0)
                 .default_width(150.0)
-                .show(&ctx.egui_ctx, |ui| {
+                .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.selectable_value(mode, RunMode::Debug, "Debug");
                         ui.selectable_value(mode, RunMode::Emulation, "Emulation");

@@ -7,7 +7,7 @@ mod render;
 
 use crate::{system::System, memory::bios::Bios, timing};
 use config::Config;
-use gui::{app_menu::AppMenu, GuiCtx, config::Configurator};
+use gui::{App, app_menu::AppMenu, GuiCtx, config::Configurator};
 use render::{Canvas, ComputeStage, DrawStage, RenderCtx, SurfaceSize};
 use std::{path::Path, time::{Duration, Instant}};
 use winit::{
@@ -47,13 +47,7 @@ pub fn run() {
         .expect("Failed to create window");
     let mut render_ctx = RenderCtx::new(&window);
     let mut gui = GuiCtx::new(window.scale_factor() as f32, &render_ctx);
-    let canvas = Canvas::new(
-        &render_ctx.device,
-        SurfaceSize {
-            width: 640,
-            height: 480,
-        },
-    );
+    let canvas = Canvas::new(&render_ctx.device, SurfaceSize::new(640, 480));
     let mut compute = ComputeStage::new(&render_ctx.device, &canvas);
     let mut draw = DrawStage::new(&render_ctx, &canvas);
     let mut last_draw = Instant::now();
@@ -141,25 +135,27 @@ pub fn run() {
                             &canvas,
                         );
                         draw.render(encoder, view);
-                        gui.begin_frame(&window);
-                        app_menu.show(&mut gui, mode);
-                        gui.end_frame(&window);
-                        if let Err(ref err) = gui.render(renderer, encoder, view) {
+                        let res = gui.render(renderer, encoder, view, &window, |gui| {
+                            app_menu.show(gui, mode);
+                        });
+                        if let Err(ref err) = res {
                             app_menu.close_apps();
                             eprintln!("{}", err);
                         }
                     });
                 }
                 State::Config { ref mut configurator, ref mut bios } => {
-                    let mut try_close = false;
+                    let mut config_open = false;
                     render_ctx.render(|encoder, view, renderer| {
                         draw.render(encoder, view);
-                        gui.begin_frame(&window);
-                        try_close = !gui.show_app(configurator);
-                        gui.end_frame(&window);
-                        gui.render(renderer, encoder, view).expect("Failed to render GUI");
+                        let res = gui.render(renderer, encoder, view, &window, |gui| {
+                            configurator.show_window(gui, &mut config_open);
+                        });
+                        if let Err(ref err) = res {
+                            eprintln!("{}", err);
+                        }
                     });
-                    if try_close {
+                    if !config_open {
                         match bios.take() {
                             Some(bios) => {
                                 if let Err(err) = configurator.config.store() {
@@ -193,9 +189,7 @@ pub fn run() {
                         RunMode::Debug => {
                             app_menu.update_tick(last_update.elapsed(), system);
                         }
-                        RunMode::Emulation => {
-                            system.run(last_update.elapsed());
-                        }
+                        RunMode::Emulation => system.run(last_update.elapsed()),
                     }
                     *last_update = Instant::now();
                 },

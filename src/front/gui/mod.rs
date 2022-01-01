@@ -45,7 +45,11 @@ impl GuiCtx {
             physical_height,
             scale_factor,
         };
-        let render_pass = RenderPass::new(&render_ctx.device, render_ctx.surface_format, 1);
+        let render_pass = RenderPass::new(
+            &render_ctx.device,
+            render_ctx.surface_format,
+            1
+        );
         Self {
             egui_ctx,
             win_state,
@@ -71,47 +75,46 @@ impl GuiCtx {
         }
     }
 
-    /// Show ['App'] as window.
-    pub fn show_app<T: App>(&mut self, app: &mut T) -> bool {
-        let mut open = true;
-        app.show_window(&self.egui_ctx, &mut open);
-        open
-    }
-
-    /// Prepare egui to take commands.
-    pub fn begin_frame(&mut self, window: &Window) {
-        let input = self.win_state.take_egui_input(window);
-        self.egui_ctx.begin_frame(input);
-    }
-
-    /// Prepare egui to render all the windows.
-    pub fn end_frame(&mut self, window: &Window) {
-        let (output, jobs) = self.egui_ctx.end_frame();
-        self.win_state.handle_output(window, &self.egui_ctx, output);
-        self.jobs = self.egui_ctx.tessellate(jobs);
-    }
-
     /// Render the current frame to the screen.
-    pub fn render(
+    pub fn render<F>(
         &mut self,
         render_ctx: &RenderCtx,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-    ) -> Result<(), BackendError> {
+        window: &Window,
+        func: F,
+    ) -> Result<(), BackendError>
+    where
+        F: FnOnce(&egui::CtxRef),
+    {
+        let input = self.win_state.take_egui_input(window);
+        let (output, shapes) = self.egui_ctx.run(input, |ctx| {
+            func(&ctx);
+        });
         self.render_pass.update_texture(
             &render_ctx.device,
             &render_ctx.queue,
             &self.egui_ctx.font_image(),
         );
-        self.render_pass
-            .update_user_textures(&render_ctx.device, &render_ctx.queue);
+        self.render_pass.update_user_textures(
+            &render_ctx.device,
+            &render_ctx.queue
+        );
         self.render_pass.update_buffers(
             &render_ctx.device,
             &render_ctx.queue,
             &self.jobs,
             &self.screen_descriptor,
         );
-        self.render_pass
-            .execute(encoder, target, &self.jobs, &self.screen_descriptor, None)
+        self.render_pass.execute(
+            encoder,
+            target,
+            &self.jobs,
+            &self.screen_descriptor,
+            None,
+        )?;
+        self.win_state.handle_output(window, &self.egui_ctx, output);
+        self.jobs = self.egui_ctx.tessellate(shapes);
+        Ok(())    
     }
 }
