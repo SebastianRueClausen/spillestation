@@ -99,10 +99,7 @@ impl DrawStage {
                         wgpu::BindGroupLayoutEntry {
                             binding: 1,
                             visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler {
-                                filtering: true,
-                                comparison: false,
-                            },
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                             count: None,
                         },
                         wgpu::BindGroupLayoutEntry {
@@ -174,6 +171,7 @@ impl DrawStage {
                 }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
+                multiview: None,
                 multisample: wgpu::MultisampleState::default(),
             });
         Self {

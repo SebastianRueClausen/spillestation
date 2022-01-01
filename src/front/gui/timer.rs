@@ -43,12 +43,12 @@ impl App for TimerView {
 
     fn show(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for ((header, grid), timer) in UI_IDS.iter().zip(self.fields.iter()) {
+            for (timer, (header, grid)) in self.fields.iter().zip(UI_IDS) {
                 egui::CollapsingHeader::new(header).show(ui, |ui| {
                     egui::Grid::new(grid).show(ui, |ui| {
-                        for (field, label) in timer.iter().zip(FIELD_LABELS.iter()) {
+                        for (field, label) in timer.iter().zip(FIELD_LABELS) {
                             ui.label(label);
-                            ui.label(&field);
+                            ui.label(field);
                             ui.end_row();
                         }
                     });

@@ -101,7 +101,7 @@ impl GuiCtx {
         self.render_pass.update_texture(
             &render_ctx.device,
             &render_ctx.queue,
-            &self.egui_ctx.texture(),
+            &self.egui_ctx.font_image(),
         );
         self.render_pass
             .update_user_textures(&render_ctx.device, &render_ctx.queue);

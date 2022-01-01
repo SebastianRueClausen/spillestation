@@ -65,9 +65,9 @@ impl App for GpuStatus {
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 egui::Grid::new("gpu_status_grid").show(ui, |ui| {
-                    for (field, label) in self.fields.iter().zip(FIELD_LABELS.iter()) {
+                    for (field, label) in self.fields.iter().zip(FIELD_LABELS) {
                         ui.label(label);
-                        ui.label(&field);
+                        ui.label(field);
                         ui.end_row();
                     }
                 });

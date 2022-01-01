@@ -50,7 +50,7 @@ impl App for CpuStatus {
                 .max_height(200.0)
                 .show(ui, |ui| {
                     egui::Grid::new("cpu_status_grid").show(ui, |ui| {
-                        for (field, label) in self.fields.iter_mut().zip(FIELD_LABELS.iter()) {
+                        for (field, label) in self.fields.iter().zip(FIELD_LABELS) {
                             ui.label(label);
                             ui.label(field);
                             ui.end_row();
@@ -64,7 +64,7 @@ impl App for CpuStatus {
                 .max_height(480.0)
                 .show(ui, |ui| {
                     egui::Grid::new("cpu_register_grid").show(ui, |ui| {
-                        for (value, name) in self.registers.iter().zip(REGISTER_NAMES.iter()) {
+                        for (value, name) in self.registers.iter().zip(REGISTER_NAMES) {
                             ui.label(name);
                             ui.label(value);
                             ui.end_row();

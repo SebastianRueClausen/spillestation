@@ -14,8 +14,8 @@ impl App for IrqView {
 
     fn update_tick(&mut self, _: Duration, system: &mut System) {
         let state = &system.cpu.bus().irq_state;
-        self.flags.iter_mut().zip(IRQS.iter()).for_each(|(flag, irq)| {
-            *flag = (state.is_triggered(*irq), state.is_masked(*irq));
+        self.flags.iter_mut().zip(IRQS).for_each(|(flag, irq)| {
+            *flag = (state.is_triggered(irq), state.is_masked(irq));
         });
     }
 
@@ -26,8 +26,8 @@ impl App for IrqView {
                 ui.strong("active");
                 ui.strong("masked");
                 ui.end_row();
-                for (flag, label) in self.flags.iter().zip(IRQ_LABELS.iter()) {
-                    ui.label(*label);
+                for (flag, label) in self.flags.iter().zip(IRQ_LABELS) {
+                    ui.label(label);
                     ui.label(if flag.0 { "true" } else { "false" });
                     ui.label(if flag.1 { "true" } else { "false" });
                     ui.end_row();

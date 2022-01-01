@@ -10,11 +10,11 @@ opt-level = 3
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-egui = "0.15"
-egui_wgpu_backend = "0.14"
-egui-winit = { version = "0.15", default-features = false, features = ["links"] }
-winit = "0.25.0"
-wgpu = { version = "0.11", features = [ "spirv" ] }
+egui = "0.16"
+egui_wgpu_backend = "0.16"
+egui-winit = { version = "0.16", default-features = false, features = ["links"] }
+winit = "0.26.0"
+wgpu = { version = "0.12", features = [ "spirv" ] }
 pollster = "0.2.4"
 ultraviolet = { version = "0.8.1" }
 bytemuck = { version = "1.7.2", features = [ "derive" ] }
