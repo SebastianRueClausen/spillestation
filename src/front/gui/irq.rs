@@ -5,6 +5,7 @@ use std::time::Duration;
 #[derive(Default)]
 pub struct IrqView {
     flags: [(bool, bool); 10],
+    trigger: u32,
 }
 
 impl App for IrqView {
@@ -13,26 +14,34 @@ impl App for IrqView {
     }
 
     fn update_tick(&mut self, _: Duration, system: &mut System) {
-        let state = &system.cpu.bus().irq_state;
+        let state = &mut system.cpu.bus_mut().irq_state;
         self.flags.iter_mut().zip(IRQS).for_each(|(flag, irq)| {
             *flag = (state.is_triggered(irq), state.is_masked(irq));
         });
+        state.status |= self.trigger;
+        self.trigger = 0;
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("irq_grid").show(ui, |ui| {
+            egui::Grid::new("irq_grid").striped(true).show(ui, |ui| {
                 ui.strong("interrupt");
                 ui.strong("active");
                 ui.strong("masked");
                 ui.end_row();
-                for (flag, label) in self.flags.iter().zip(IRQ_LABELS) {
-                    ui.label(label);
-                    ui.label(if flag.0 { "true" } else { "false" });
-                    ui.label(if flag.1 { "true" } else { "false" });
-                    ui.end_row();
-                }
-            })
+                self.flags.iter()
+                    .zip(IRQ_LABELS)
+                    .enumerate()
+                    .for_each(|(i, (flag, label))| {
+                        ui.label(label);
+                        ui.label(if flag.0 { "true" } else { "false" });
+                        ui.label(if flag.1 { "true" } else { "false" });
+                        if ui.button("trigger").clicked() {
+                            self.trigger |= 1 << i;
+                        }
+                        ui.end_row();
+                    });
+            });
         });
     }
 

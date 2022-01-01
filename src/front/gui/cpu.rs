@@ -1,5 +1,5 @@
 use super::App;
-use crate::{cpu::{Cpu, REGISTER_NAMES}, system::System};
+use crate::{cpu::{Cpu, REGISTER_NAMES}, system::System, timing};
 use std::fmt::Write;
 use std::time::Duration;
 
@@ -44,11 +44,10 @@ impl App for CpuStatus {
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
-        ui.collapsing("Status", |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, true])
-                .max_height(200.0)
-                .show(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.collapsing("Status", |ui| {
                     egui::Grid::new("cpu_status_grid").show(ui, |ui| {
                         for (field, label) in self.fields.iter().zip(FIELD_LABELS) {
                             ui.label(label);
@@ -57,12 +56,7 @@ impl App for CpuStatus {
                         }
                     });
                 });
-        });
-        ui.collapsing("Registers", |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, true])
-                .max_height(480.0)
-                .show(ui, |ui| {
+                ui.collapsing("Registers", |ui| {
                     egui::Grid::new("cpu_register_grid").show(ui, |ui| {
                         for (value, name) in self.registers.iter().zip(REGISTER_NAMES) {
                             ui.label(name);
@@ -71,7 +65,7 @@ impl App for CpuStatus {
                         }
                     });
                 });
-        });
+            });
     }
 
     fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
@@ -114,7 +108,7 @@ pub struct CpuCtrl {
 impl Default for CpuCtrl {
     fn default() -> Self {
         Self {
-            cycle_hz: MAX_CYCLE_HZ,
+            cycle_hz: timing::CPU_HZ,
             step_amount: 1,
             mode: RunMode::Run,
             stepped: false,
@@ -162,7 +156,7 @@ impl App for CpuCtrl {
                     " cycle"
                 };
                 ui.add(
-                    egui::Slider::new(&mut self.step_amount, 1..=MAX_CYCLE_HZ)
+                    egui::Slider::new(&mut self.step_amount, 1..=timing::CPU_HZ)
                         .suffix(suffix)
                         .logarithmic(true)
                         .clamp_to_range(true)
@@ -173,7 +167,7 @@ impl App for CpuCtrl {
             }
             RunMode::Run => {
                 ui.add(
-                    egui::Slider::new(&mut self.cycle_hz, 1..=MAX_CYCLE_HZ)
+                    egui::Slider::new(&mut self.cycle_hz, 1..=timing::CPU_HZ)
                         .suffix("Hz")
                         .logarithmic(true)
                         .clamp_to_range(true)
@@ -198,6 +192,3 @@ impl App for CpuCtrl {
 }
 
 const FIELD_LABELS: [&str; 4] = ["hi", "lo", "pc", "ins"];
-
-/// This is the native speed the Playstation.
-const MAX_CYCLE_HZ: u64 = 30_000_000;

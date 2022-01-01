@@ -21,13 +21,9 @@ use winit::window::Window;
 
 /// All the egui stuff required to draw gui to the screen.
 pub struct GuiCtx {
-    /// The main egui context.
     pub egui_ctx: CtxRef,
-    /// The ['egui_winit'] context.
     win_state: WinState,
-    /// Screen descriptor used by ['egui_wgpu_backend'].
     screen_descriptor: ScreenDescriptor,
-    /// Render pass used by ['egui_wgpu_backend'].
     render_pass: RenderPass,
     jobs: Vec<ClippedMesh>,
 }
