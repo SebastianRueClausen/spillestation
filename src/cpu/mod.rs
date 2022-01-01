@@ -212,6 +212,7 @@ impl Cpu {
     }
 
     /// Fetch and execute next instruction.
+    #[inline]
     pub fn fetch_and_exec(&mut self) {
         let op = self.fetch_instruction(self.pc);
         // Save the current pc.

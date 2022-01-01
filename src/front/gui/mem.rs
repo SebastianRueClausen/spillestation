@@ -2,10 +2,8 @@
 //! given address on the Playstations BUS.
 
 use super::App;
-use crate::cpu::Opcode;
-use crate::memory::{Bus, Byte, Word};
-use std::fmt::Write;
-use std::str;
+use crate::{memory::{Byte, Word}, cpu::Opcode, system::System};
+use std::{fmt::Write, str, time::Duration};
 
 /// One cell in the current value matrix. This is two hex characters which represent one byte.
 type Cell = [u8; 2];
@@ -29,8 +27,8 @@ pub struct MemView {
     mode: Mode,
 }
 
-impl MemView {
-    pub fn new() -> Self {
+impl Default for MemView {
+    fn default() -> Self {
         Self {
             start_addr: 0x0,
             addresses: Default::default(),
@@ -40,8 +38,14 @@ impl MemView {
             },
         }
     }
+}
 
-    pub fn update_info(&mut self, bus: &mut Bus) {
+impl App for MemView {
+    fn name(&self) -> &'static str {
+        "Memory View"
+    }
+
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
         // The address get's aligned if it's in instruction mode, since instructions must start on
         // 4-byte aligned address.
         let (start_addr, delta) = match self.mode {
@@ -58,7 +62,10 @@ impl MemView {
             } => {
                 for (i, ins) in instructions.iter_mut().enumerate() {
                     ins.clear();
-                    match bus.try_load::<Word>(start_addr + (i * 4) as u32) {
+                    match system.cpu
+                        .bus_mut()
+                        .try_load::<Word>(start_addr + (i * 4) as u32)
+                    {
                         Some(value) => {
                             write!(ins, "{}", Opcode::new(value)).unwrap();
                         }
@@ -71,7 +78,10 @@ impl MemView {
             Mode::Value { ref mut matrix } => {
                 for (i, row) in matrix.iter_mut().enumerate() {
                     for (j, col) in row.iter_mut().enumerate() {
-                        match bus.try_load::<Byte>((i * COLUMNS + j) as u32 + start_addr) {
+                        match system.cpu
+                            .bus_mut()
+                            .try_load::<Byte>((i * COLUMNS + j) as u32 + start_addr)
+                        {
                             Some(value) => {
                                 col[0] = HEX_ASCII[((value >> 4) & 0xf) as usize];
                                 col[1] = HEX_ASCII[(value & 0xf) as usize];
@@ -86,15 +96,7 @@ impl MemView {
             }
         }
     }
-}
-
-impl Default for MemView {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl App for MemView {
+    
     fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.start_addr).speed(1.0));

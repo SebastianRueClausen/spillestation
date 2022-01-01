@@ -14,34 +14,32 @@ pub struct FrameCounter {
     show: String,
 }
 
-impl FrameCounter {
-    pub fn new() -> Self {
+impl Default for FrameCounter {
+    fn default() -> Self {
         Self {
             frames: 0,
             last_update: Duration::ZERO,
             show: String::from(""),
         }
     }
+}
 
-    pub fn tick(&mut self, dt: Duration) {
+impl App for FrameCounter {
+    fn name(&self) -> &'static str {
+        "Frame Counter"
+    }
+
+    fn frame_tick(&mut self, dt: Duration) {
         self.frames += 1;
         self.last_update += dt;
         if self.last_update > Duration::from_secs(1) {
-            self.show.clear();
             self.last_update = Duration::ZERO;
+            self.show.clear();
             write!(&mut self.show, "{} fps", self.frames).unwrap();
             self.frames = 0;
         }
     }
-}
-
-impl Default for FrameCounter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl App for FrameCounter {
+    
     fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x /= 2.0;

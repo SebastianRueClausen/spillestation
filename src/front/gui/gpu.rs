@@ -1,10 +1,11 @@
 //! GUI app that displays information about the GPU.
 
 use super::App;
-use crate::gpu::Gpu;
-use std::fmt::Write;
+use crate::{gpu::Gpu, system::System};
+use std::{fmt::Write, time::Duration};
 
 /// ['App'] which shows the current status of the ['Gpu'].
+#[derive(Default)]
 pub struct GpuStatus {
     /// All the fields. They get updated each frame, so saving them just avoids allocating a lot
     /// of strings each frame.
@@ -12,12 +13,6 @@ pub struct GpuStatus {
 }
 
 impl GpuStatus {
-    pub fn new() -> Self {
-        Self {
-            fields: Default::default(),
-        }
-    }
-
     /// Write information to all the fields.
     fn write_fields(&mut self, gpu: &Gpu) -> Result<(), std::fmt::Error> {
         write!(self.fields[0], "{:08x}", gpu.draw_x_offset)?;
@@ -51,23 +46,20 @@ impl GpuStatus {
         write!(self.fields[28], "{}", gpu.status.dma_direction())?;
         Ok(())
     }
-
-    /// Update all the fields.
-    pub fn update_fields(&mut self, gpu: &Gpu) {
-        self.fields.iter_mut().for_each(|field| field.clear());
-        if let Err(err) = self.write_fields(gpu) {
-            eprintln!("{}", err);
-        }
-    }
-}
-
-impl Default for GpuStatus {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl App for GpuStatus {
+    fn name(&self) -> &'static str {
+        "GPU Status"
+    }
+
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
+        self.fields.iter_mut().for_each(|field| field.clear());
+        if let Err(err) = self.write_fields(system.cpu.bus().gpu()) {
+            eprintln!("{}", err);
+        }
+    }
+
     fn show(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, true])

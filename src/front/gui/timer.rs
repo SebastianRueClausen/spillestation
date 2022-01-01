@@ -1,18 +1,13 @@
 use super::App;
-use crate::{cpu::Cpu, timer::Timers};
-use std::fmt::Write;
+use crate::{timer::Timers, system::System};
+use std::{fmt::Write, time::Duration};
 
+#[derive(Default)]
 pub struct TimerView {
     fields: [[String; 13]; 3],  
 }
 
 impl TimerView {
-    pub fn new() -> Self {
-        Self {
-            fields: Default::default(),
-        }
-    }
-
     pub fn write_fields(&mut self, timers: &Timers) -> Result<(), std::fmt::Error> {
         Ok(for (timer, fields) in timers.timers.iter().zip(self.fields.iter_mut()) {
             write!(fields[0], "{}", timer.counter)?;
@@ -30,24 +25,22 @@ impl TimerView {
             write!(fields[12], "{}", timer.mode.overflow_reached())?;
         })
     }
-
-    pub fn update_fields(&mut self, cpu: &Cpu) {
-        self.fields.iter_mut().for_each(|fields|
-            fields.iter_mut().for_each(|field| field.clear())
-        );
-        if let Err(err) = self.write_fields(cpu.bus().timers()) {
-            eprintln!("{}", err);
-        }
-    }
-}
-
-impl Default for TimerView {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl App for TimerView {
+    fn name(&self) -> &'static str {
+        "Timer View"
+    }
+
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
+        self.fields.iter_mut().for_each(|fields|
+            fields.iter_mut().for_each(|field| field.clear())
+        );
+        if let Err(err) = self.write_fields(system.cpu.bus().timers()) {
+            eprintln!("{}", err);
+        }
+    }
+
     fn show(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for ((header, grid), timer) in UI_IDS.iter().zip(self.fields.iter()) {

@@ -1,13 +1,14 @@
 //! GUI app to view the content of the playstations VRAM.
 
 use super::App;
-use crate::gpu::Gpu;
-use std::str;
+use crate::system::System;
+use std::{str, time::Duration};
 
 /// One cell in the value matrix, which represent a 16-bit integer represented as 4 hex digits.
 type Cell = [u8; 4];
 
 /// ['App'] to view the content of ['gpu::Vram'].
+#[derive(Default)]
 pub struct VramView {
     /// The first x address.
     x: i32,
@@ -17,34 +18,26 @@ pub struct VramView {
     matrix: [[Cell; COLUMNS]; ROWS],
 }
 
-impl VramView {
-    pub fn new() -> Self {
-        Self {
-            x: 0,
-            y: 0,
-            matrix: [[[0x0; 4]; COLUMNS]; ROWS],
-        }
+impl App for VramView {
+    fn name(&self) -> &'static str {
+        "VRAM View"
     }
 
-    pub fn update_matrix(&mut self, gpu: &Gpu) {
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
         for (i, row) in self.matrix.iter_mut().enumerate() {
             for (j, col) in row.iter_mut().enumerate() {
-                let value = gpu.vram().load_16(self.x + j as i32, self.y + i as i32);
+                let value = system.cpu
+                    .bus()
+                    .gpu()
+                    .vram()
+                    .load_16(self.x + j as i32, self.y + i as i32);
                 for (c, i) in col.iter_mut().zip([12, 8, 4, 0]) {
                     *c = HEX_ASCII[((value >> i) & 0xf) as usize];
                 }
             }
         }
     }
-}
 
-impl Default for VramView {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl App for VramView {
     fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.x).speed(1.0));

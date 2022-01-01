@@ -26,6 +26,10 @@ impl Configurator {
 }
 
 impl App for Configurator {
+    fn name(&self) -> &'static str {
+        "Configurator"
+    }
+
     fn show(&mut self, ui: &mut egui::Ui) {
         // Show if something failed when loading config file.
         if let Some(ref err) = self.config_error {

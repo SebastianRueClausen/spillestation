@@ -5,7 +5,7 @@ mod config;
 pub mod gui;
 mod render;
 
-use crate::{cpu::Cpu, memory::bios::Bios};
+use crate::{system::System, memory::bios::Bios, timing};
 use config::Config;
 use gui::{app_menu::AppMenu, GuiCtx, config::Configurator};
 use render::{Canvas, ComputeStage, DrawStage, RenderCtx, SurfaceSize};
@@ -17,6 +17,12 @@ use winit::{
 };
 pub use render::compute::DrawInfo;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RunMode {
+    Debug,
+    Emulation,
+}
+
 enum State {
     Startup,
     Config {
@@ -24,9 +30,10 @@ enum State {
         bios: Option<Bios>,
     },
     Running {
-        cpu: Box<Cpu>,
+        system: System,
         app_menu: Box<AppMenu>,
         last_update: Instant,
+        mode: RunMode,
     },
 }
 
@@ -35,7 +42,7 @@ pub fn run() {
     env_logger::init();
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new()
-        .with_title("Spillestation")
+        .with_title("spillestation")
         .build(&event_loop)
         .expect("Failed to create window");
     let mut render_ctx = RenderCtx::new(&window);
@@ -55,19 +62,24 @@ pub fn run() {
         *control_flow = ControlFlow::Poll;
         match event {
             Event::RedrawEventsCleared => {
-                // Lock frame to 60 fps. This seems to be required to avoid huge memory leaks on
-                // mac, whe you minimize or switch workspace. It also runs much smoother for some
-                // reason.
+                let frame_time = Duration::from_secs_f32(1.0 / timing::PAL_FPS as f32);
                 let dt = last_draw.elapsed();
-                if dt >= Duration::from_secs_f32(1.0 / 60.0) {
+                if dt >= frame_time {
                     window.request_redraw();
-                    if let State::Running { ref mut app_menu, .. } = state {
-                        app_menu.draw_tick(dt);
+                    if let State::Running {
+                        ref mut app_menu,
+                        mode,
+                        ..
+                    } = state {
+                        match mode {
+                            RunMode::Debug => app_menu.draw_tick(dt),
+                            RunMode::Emulation => {},
+                        }
                     }
                     last_draw = Instant::now();
                 } else {
                     *control_flow = ControlFlow::WaitUntil(
-                        Instant::now() + Duration::from_secs_f32(1.0 / 60.0) - dt,
+                        Instant::now() + frame_time - dt,
                     );
                 }
             }
@@ -98,7 +110,7 @@ pub fn run() {
                         if let State::Running { ref mut app_menu, .. } = state {
                             match (input.virtual_keycode, input.state) {
                                 (Some(VirtualKeyCode::M), ElementState::Pressed) => {
-                                    app_menu.open = !app_menu.open;
+                                    app_menu.toggle_open();
                                 }
                                 (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
                                     *control_flow = ControlFlow::Exit;
@@ -115,22 +127,22 @@ pub fn run() {
             }
             Event::RedrawRequested(_) => match state {
                 State::Running {
-                    ref mut cpu,
+                    ref mut system,
                     ref mut app_menu,
+                    ref mut mode,
                     ..
                 } => {
                     render_ctx.render(|encoder, view, renderer| {
                         compute.compute_render_texture(
-                            cpu.bus().vram(),
-                            &cpu.bus().gpu().draw_info(),
+                            system.cpu.bus().vram(),
+                            &system.cpu.bus().gpu().draw_info(),
                             encoder,
                             &renderer.queue,
                             &canvas,
                         );
                         draw.render(encoder, view);
                         gui.begin_frame(&window);
-                        app_menu.show_apps(&mut gui);
-                        app_menu.show(&gui.egui_ctx);
+                        app_menu.show(&mut gui, mode);
                         gui.end_frame(&window);
                         if let Err(ref err) = gui.render(renderer, encoder, view) {
                             app_menu.close_apps();
@@ -154,9 +166,10 @@ pub fn run() {
                                     eprintln!("{}", err)
                                 }
                                 state = State::Running {
-                                    cpu: Cpu::new(bios),
+                                    system: System::new(bios),
                                     app_menu: Box::new(AppMenu::new()),
                                     last_update: Instant::now(),
+                                    mode: RunMode::Emulation,
                                 };
                             },
                             None => {
@@ -171,11 +184,19 @@ pub fn run() {
             },
             Event::MainEventsCleared => match state {
                 State::Running {
-                    ref mut cpu,
+                    ref mut system,
                     ref mut app_menu,
                     ref mut last_update,
+                    mode,
                 } => {
-                    app_menu.update_tick(last_update.elapsed(), cpu);
+                    match mode {
+                        RunMode::Debug => {
+                            app_menu.update_tick(last_update.elapsed(), system);
+                        }
+                        RunMode::Emulation => {
+                            system.run(last_update.elapsed());
+                        }
+                    }
                     *last_update = Instant::now();
                 },
                 State::Config {
@@ -207,9 +228,10 @@ pub fn run() {
                                 bios: None,
                             },
                             Ok(bios) => State::Running {
-                                cpu: Cpu::new(bios),
+                                system: System::new(bios),
                                 app_menu: Box::new(AppMenu::new()),
                                 last_update: Instant::now(),
+                                mode: RunMode::Emulation,
                             },
                         },
                         Err(ref err) => State::Config {
