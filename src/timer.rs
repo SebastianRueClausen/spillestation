@@ -280,7 +280,7 @@ impl Timer {
         let mut ticks = match self.mode.clock_source(self.id) {
             ClockSource::SystemClock => cpu_cycles,
             ClockSource::SystemClockDiv8 => cpu_cycles / 8,
-            ClockSource::Hblank => 1,
+            ClockSource::Hblank => 20000,
             ClockSource::DotClock => timing::cpu_to_gpu_cycles(cpu_cycles),
         };
         // If ticks is more than 0xffff, it has to be added in several steps.
