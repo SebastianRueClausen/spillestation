@@ -186,12 +186,15 @@ impl Mode {
     }
 
     fn store(&mut self, value: u32) {
-        // It seems that this always should be set after writing to the register. If it's in toggle
-        // mode, it will always be set, if it's in pulse mode, it will more or less always be set.
-        self.0 |= 1 << 10;
         // Bit 10..12 are readonly.
         self.0 |= value & 0x3ff;
-        
+        // In toggle mode, the irq master flag is always set after each store. When not in toggle
+        // mode, it will more or less always be on.
+        self.set_master_irq_flag(true);
+    }
+
+    fn set_master_irq_flag(&mut self, value: bool) {
+        self.0 |= (value as u32) << 10;
     }
 
     fn set_target_reached(&mut self) {
@@ -211,6 +214,9 @@ pub struct Timer {
     pub counter: u16,
     /// A target which can be set. The timer can be configured to 
     pub target: u16,
+    /// This is to track if it has interrupted since last write to ['mode'], since in oneshot
+    /// mode it only does it once.
+    has_triggered: bool,
 }
 
 impl Timer {
@@ -220,6 +226,7 @@ impl Timer {
             mode: Mode::new(),
             counter: 0,
             target: 0,
+            has_triggered: false,
         }
     }
 
@@ -235,9 +242,25 @@ impl Timer {
     fn store(&mut self, offset: u32, value: u32) {
         match offset.extract_bits(0, 3) {
             0 => self.counter = value as u16,
-            4 => self.mode.store(value),
+            4 => {
+                self.has_triggered = false;
+                self.mode.store(value);
+            }
             8 => self.target = value as u16,
             _ => unreachable!(),
+        }
+    }
+
+    fn trigger_irq(&mut self, irq: &mut IrqState) {
+        if self.mode.irq_repeat() || !self.has_triggered {
+            self.has_triggered = true;
+            if self.mode.master_irq_flag() {
+                irq.trigger(self.id.irq_kind());
+            }
+            if self.mode.irq_toggle_mode() {
+                // In toggle mode, the irq master flag is toggled each IRQ.
+                self.mode.set_master_irq_flag(!self.mode.master_irq_flag());   
+            }
         }
     }
 
@@ -247,7 +270,7 @@ impl Timer {
             self.counter = 0;
         }
         if self.mode.irq_on_target() {
-            irq.trigger(self.id.irq_kind());
+            self.trigger_irq(irq);
         }
     }
 
@@ -268,7 +291,7 @@ impl Timer {
                     self.target_reached(irq);
                 }
                 if self.mode.irq_on_overflow() {
-                    irq.trigger(self.id.irq_kind());
+                    self.trigger_irq(irq);
                 }
                 self.mode.set_overflow_reached(); 
             }
@@ -280,7 +303,7 @@ impl Timer {
         let mut ticks = match self.mode.clock_source(self.id) {
             ClockSource::SystemClock => cpu_cycles,
             ClockSource::SystemClockDiv8 => cpu_cycles / 8,
-            ClockSource::Hblank => 20000,
+            ClockSource::Hblank => 1,
             ClockSource::DotClock => timing::cpu_to_gpu_cycles(cpu_cycles),
         };
         // If ticks is more than 0xffff, it has to be added in several steps.

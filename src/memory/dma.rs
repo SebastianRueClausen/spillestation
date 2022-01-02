@@ -7,7 +7,7 @@ use crate::util::bits::BitExtract;
 use crate::cpu::{IrqState, Irq};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelPort {
+pub enum Port {
     MdecIn = 0,
     MdecOut = 1,
     Gpu = 2,
@@ -17,16 +17,16 @@ pub enum ChannelPort {
     Otc = 6,
 }
 
-impl ChannelPort {
+impl Port {
     fn from_value(value: u32) -> Self {
         match value {
-            0 => ChannelPort::MdecIn,
-            1 => ChannelPort::MdecOut,
-            2 => ChannelPort::Gpu,
-            3 => ChannelPort::CdRom,
-            4 => ChannelPort::Spu,
-            5 => ChannelPort::Pio,
-            6 => ChannelPort::Otc,
+            0 => Port::MdecIn,
+            1 => Port::MdecOut,
+            2 => Port::Gpu,
+            3 => Port::CdRom,
+            4 => Port::Spu,
+            5 => Port::Pio,
+            6 => Port::Otc,
             _ => unreachable!("Invalid MDA Port"),
         }
     }
@@ -34,9 +34,9 @@ impl ChannelPort {
 
 /// Keeps track of size information for channels.
 #[derive(Clone, Copy)]
-struct BlockControl(u32);
+struct BlockCtrl(u32);
 
-impl BlockControl {
+impl BlockCtrl {
     fn new(value: u32) -> Self {
         Self { 0: value }
     }
@@ -120,9 +120,9 @@ impl Step {
 /// - 28 - Manual trigger.
 /// - 29..30 - Uknown. Maybe for pausing tranfers.
 #[derive(Clone, Copy)]
-struct ChannelControl(u32);
+struct ChannelCtrl(u32);
 
-impl ChannelControl {
+impl ChannelCtrl {
     fn new(value: u32) -> Self {
         Self { 0: value }
     }
@@ -173,16 +173,16 @@ impl ChannelControl {
 struct Channel {
     /// The base address. Address of the first words the be read/written.
     base: u32,
-    block_control: BlockControl,
-    control: ChannelControl,
+    block_ctrl: BlockCtrl,
+    ctrl: ChannelCtrl,
 }
 
 impl Channel {
     fn new() -> Self {
         Self {
             base: 0x0,
-            block_control: BlockControl::new(0x0),
-            control: ChannelControl::new(0x0),
+            block_ctrl: BlockCtrl::new(0x0),
+            ctrl: ChannelCtrl::new(0x0),
         }
     }
 
@@ -190,8 +190,8 @@ impl Channel {
     fn load(&self, offset: u32) -> u32 {
         match offset {
             0 => self.base,
-            4 => self.block_control.0,
-            8 => self.control.0,
+            4 => self.block_ctrl.0,
+            8 => self.ctrl.0,
             _ => unreachable!("Invalid load in channel at offset {:08x}", offset),
         }
     }
@@ -200,27 +200,27 @@ impl Channel {
     fn store(&mut self, offset: u32, value: u32) {
         match offset {
             0 => self.base = value.extract_bits(0, 23),
-            4 => self.block_control = BlockControl::new(value),
-            8 => self.control = ChannelControl::new(value),
+            4 => self.block_ctrl = BlockCtrl::new(value),
+            8 => self.ctrl = ChannelCtrl::new(value),
             _ => unreachable!("Invalid store at in channel at offset {:08x}", offset),
         }
     }
 }
 
 #[derive(Copy, Clone)]
-struct Control(u32);
+struct CtrlReg(u32);
 
-impl Control {
+impl CtrlReg {
     fn new(value: u32) -> Self {
         Self { 0: value }
     }
 
-    pub fn channel_priority(self, channel: ChannelPort) -> u32 {
+    pub fn channel_priority(self, channel: Port) -> u32 {
         let base = (channel as u32) << 2;
         self.0.extract_bits(base, base + 2)
     }
 
-    pub fn channel_enabled(self, channel: ChannelPort) -> bool {
+    pub fn channel_enabled(self, channel: Port) -> bool {
         let base = (channel as u32) << 2;
         self.0.extract_bit(base + 3) == 1
     }
@@ -228,9 +228,9 @@ impl Control {
 
 /// DMA Interrupt register.
 #[derive(Copy, Clone)]
-pub struct Interrupt(u32);
+pub struct IrqReg(u32);
 
-impl Interrupt {
+impl IrqReg {
     fn new(value: u32) -> Self {
         Self { 0: value }
     }
@@ -242,7 +242,7 @@ impl Interrupt {
     }
 
     /// If interrupts are enabled for each channel.
-    fn channel_irq_enabled(self, channel: ChannelPort) -> bool {
+    fn channel_irq_enabled(self, channel: Port) -> bool {
         self.0.extract_bit((channel as u32) + 16) == 1
     }
 
@@ -253,11 +253,11 @@ impl Interrupt {
 
     /// This is set when a channel is done with a transfer, if interrupts are enabled for the
     /// channel.
-    fn channel_irq_flag(self, channel: ChannelPort) -> bool {
+    fn channel_irq_flag(self, channel: Port) -> bool {
         self.0.extract_bit((channel as u32) + 24) == 1
     }
 
-    fn set_channel_irq_flag(&mut self, channel: ChannelPort) {
+    fn set_channel_irq_flag(&mut self, channel: Port) {
         self.0 |= 1 << 24 + channel as u32;
     }
 
@@ -289,7 +289,7 @@ impl Interrupt {
 /// transferred to or from something like VRAM or CDROM.
 #[derive(Copy, Clone)]
 pub struct BlockTransfer {
-    pub port: ChannelPort,
+    pub port: Port,
     pub direction: Direction,
     /// The starting address of the transfer.
     pub start: u32,
@@ -326,17 +326,17 @@ impl Transfers {
 /// for breaking up large transfers, to give the CPU time during transfers.
 pub struct Dma {
     /// Control register. 
-    control: Control,
+    ctrl: CtrlReg,
     /// Interrupt register.
-    pub interrupt: Interrupt,
+    pub irq: IrqReg,
     channels: [Channel; 7],
 }
 
 impl Dma {
     pub fn new() -> Self {
         Self {
-            control: Control::new(0x0),
-            interrupt: Interrupt::new(0x0),
+            ctrl: CtrlReg::new(0x0),
+            irq: IrqReg::new(0x0),
             channels: [Channel::new(); 7],
         }
     }
@@ -348,8 +348,8 @@ impl Dma {
         match channel {
             0..=6 => self.channels[channel as usize].load(offset),
             7 => match offset {
-                0 => self.control.0,
-                4 => self.interrupt.0,
+                0 => self.ctrl.0,
+                4 => self.irq.0,
                 _ => unreachable!(),
             },
             _ => unreachable!(),
@@ -371,10 +371,10 @@ impl Dma {
                 self.channels[channel as usize].store(offset, value);
             }
             7 => match offset {
-                0 => self.control.0 = value,
+                0 => self.ctrl.0 = value,
                 4 => {
-                    self.interrupt.0 = value;
-                    self.interrupt.update_master_irq_flag(irq);
+                    self.irq.0 = value;
+                    self.irq.update_master_irq_flag(irq);
                 }
                 _ => unreachable!(),
             },
@@ -384,54 +384,50 @@ impl Dma {
     }
 
     /// Mark channel as done.
-    pub fn channel_done(
-        &mut self,
-        port: ChannelPort,
-        irq: &mut IrqState,
-    ) {
-        self.channels[port as usize].control.mark_as_finished();
-        if self.interrupt.channel_irq_enabled(port) {
-            self.interrupt.set_channel_irq_flag(port);
-            self.interrupt.update_master_irq_flag(irq);
-            if self.interrupt.master_irq_flag() {
+    pub fn channel_done(&mut self, port: Port, irq: &mut IrqState) {
+        self.channels[port as usize].ctrl.mark_as_finished();
+        if self.irq.channel_irq_enabled(port) {
+            self.irq.set_channel_irq_flag(port);
+            self.irq.update_master_irq_flag(irq);
+            if self.irq.master_irq_flag() {
                 irq.trigger(Irq::Dma);
             }
         }
     }
 
     /// Build transfer command for the BUS to execute.
-    fn build_transfers(&mut self, transfers: &mut Transfers) {
+    fn build_transfers(&mut self, trans: &mut Transfers) {
         fn increment(step: Step) -> u32 {
             match step {
                 Step::Increment => 4,
                 Step::Decrement => (-4_i32) as u32,
             }
         }
-        for (i, channel) in self.channels.iter().enumerate() {
-            match channel.control.sync_mode() {
-                SyncMode::Manual if channel.control.start() && channel.control.enabled() => {
-                    transfers.block.push(BlockTransfer {
-                        port: ChannelPort::from_value(i as u32),
-                        direction: channel.control.direction(),
-                        size: channel.block_control.block_size(),
-                        increment: increment(channel.control.step()),
-                        start: channel.base,
+        for (i, ch) in self.channels.iter().enumerate() {
+            match ch.ctrl.sync_mode() {
+                SyncMode::Manual if ch.ctrl.start() && ch.ctrl.enabled() => {
+                    trans.block.push(BlockTransfer {
+                        port: Port::from_value(i as u32),
+                        direction: ch.ctrl.direction(),
+                        size: ch.block_ctrl.block_size(),
+                        increment: increment(ch.ctrl.step()),
+                        start: ch.base,
                     });
                 }
-                SyncMode::Request if channel.control.enabled() => {
-                    transfers.block.push(BlockTransfer {
-                        port: ChannelPort::from_value(i as u32),
-                        direction: channel.control.direction(),
-                        size: channel.block_control.block_size()
-                            * channel.block_control.block_count(),
-                        increment: increment(channel.control.step()),
-                        start: channel.base,
+                SyncMode::Request if ch.ctrl.enabled() => {
+                    trans.block.push(BlockTransfer {
+                        port: Port::from_value(i as u32),
+                        direction: ch.ctrl.direction(),
+                        size: ch.block_ctrl.block_size()
+                            * ch.block_ctrl.block_count(),
+                        increment: increment(ch.ctrl.step()),
+                        start: ch.base,
                     });
                 }
-                SyncMode::LinkedList if channel.control.enabled() => {
-                    assert!(ChannelPort::from_value(i as u32) == ChannelPort::Gpu);
-                    transfers.linked.push(LinkedTransfer {
-                        start: channel.base,
+                SyncMode::LinkedList if ch.ctrl.enabled() => {
+                    assert!(Port::from_value(i as u32) == Port::Gpu);
+                    trans.linked.push(LinkedTransfer {
+                        start: ch.base,
                     });
                 }
                 _ => {}

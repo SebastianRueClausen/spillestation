@@ -62,12 +62,13 @@ pub fn run() {
                     window.request_redraw();
                     if let State::Running {
                         ref mut app_menu,
+                        ref mut system,
                         mode,
                         ..
                     } = state {
                         match mode {
                             RunMode::Debug => app_menu.draw_tick(dt),
-                            RunMode::Emulation => {},
+                            RunMode::Emulation => system.cpu.bus_mut().irq_state.trigger(crate::cpu::irq::Irq::VBlank),
                         }
                     }
                     last_draw = Instant::now();

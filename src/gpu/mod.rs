@@ -5,7 +5,7 @@ mod primitive;
 mod rasterize;
 pub mod vram;
 
-use crate::{front::DrawInfo, util::bits::BitExtract, cpu::{IrqState, Irq}, timing};
+use crate::{front::DrawInfo, util::bits::BitExtract, cpu::{IrqState, Irq}};
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
 use rasterize::{
@@ -174,16 +174,20 @@ impl MemTransfer {
         }
     }
 
-    fn next(&mut self) -> Option<()> {
+    fn next(&mut self) -> bool {
         self.x += 1;
         if self.x == self.x_end {
             self.x = self.x_start;
             self.y += 1;
-            if self.y == self.y_end {
-                return None;
+            if self.is_done() {
+                return false;
             }
         }
-        Some(())
+        true
+    }
+
+    fn is_done(&self) -> bool {
+        self.y >= self.y_end
     }
 }
 
@@ -336,6 +340,9 @@ pub struct Gpu {
     to_vram_transfer: Option<MemTransfer>,
     /// The status register.
     pub status: Status,
+    /// The GPUREAD register. This contains various info about the GPU, and is generated after each
+    /// GP1(10) command call. It is read through the BUS at GPUREAD, if no transfer is ongoing.
+    gpu_read: u32,
     /// Mirros textured rectangles on the x axis if true,
     rect_tex_x_flip: bool,
     /// Mirros textured rectangles on the y axis if true,
@@ -374,6 +381,7 @@ impl Gpu {
             to_cpu_transfer: None,
             to_vram_transfer: None,
             status: Status(0x14802000),
+            gpu_read: 0x0,
             rect_tex_x_flip: false,
             rect_tex_y_flip: false,
             tex_window_x_mask: 0x0,
@@ -415,27 +423,29 @@ impl Gpu {
         self.gp0_store(value);
     }
 
-    fn load_from_transfer(&mut self) -> u16 {
-        if let Some(ref mut transfer) = self.to_cpu_transfer {
-            let value = self.vram.load_16(transfer.x, transfer.y);
-            if transfer.next().is_none() {
-                self.to_cpu_transfer = None;
+    fn gpu_read(&mut self) -> u32 {
+        match self.to_cpu_transfer {
+            Some(ref mut transfer) => {
+                let value: u32 = [0, 16].iter().fold(0, |state, shift| {
+                    let value = self.vram.load_16(transfer.x, transfer.y) as u32;
+                    transfer.next();
+                    state | value << shift
+                });
+                if transfer.is_done() {
+                    self.to_cpu_transfer = None;
+                }
+                value
             }
-            value
-        } else {
-            // TODO: This should return GPU info generated from GP1(10).
-            0
+            None => {
+                println!("GPUREAD");
+                self.gpu_read
+            }
         }
     }
 
-    fn gpu_read(&mut self) -> u32 {
-        let low = self.load_from_transfer() as u32;
-        let high = self.load_from_transfer() as u32;
-        (high << 16) | low
-    }
-
     fn status_read(&mut self) -> u32 {
-        self.status.0 & !(1 << 19) | ((self.to_cpu_transfer.is_some() as u32) << 27)
+        self.status.0 & !(1 << 19)
+            | ((self.to_cpu_transfer.is_some() as u32) << 27)
     }
 
     pub fn dma_load(&mut self) -> u32 {
@@ -449,10 +459,10 @@ impl Gpu {
                 for (lo, hi) in [(0, 15), (16, 31)] {
                     let value = value.extract_bits(lo, hi) as u16;
                     self.vram.store_16(transfer.x, transfer.y, value);
-                    if transfer.next() == None {
-                        self.to_vram_transfer = None;
-                        break;
-                    }
+                    transfer.next();
+                }
+                if transfer.is_done() {
+                    self.to_vram_transfer = None;
                 }
             },
             None => {
@@ -544,14 +554,20 @@ impl Gpu {
                 let value = self.fifo.pop();
                 match i {
                     0 => {
-                        params.clut_x = (value.extract_bits(16, 21) / 16) as i32;
-                        params.clut_y = value.extract_bits(22, 30) as i32;
+                        let value = (value >> 16) as i32;
+                        params.clut_x = value.extract_bits(0, 5) * 16;
+                        params.clut_y = value.extract_bits(6, 14);
                     }
                     1 => {
-                        params.texture_x = value.extract_bits(16, 19) as i32 * 64;
-                        params.texture_y = value.extract_bit(20) as i32 * 256;
-                        params.blend_mode = TransBlend::from_value(value.extract_bits(21, 22));
-                        params.texture_depth = TextureDepth::from_value(value.extract_bits(23, 24));
+                        let value = (value >> 16) as i32;
+                        params.texture_x = value.extract_bits(0, 3) * 64;
+                        params.texture_y = value.extract_bit(4) * 256;
+                        params.blend_mode = TransBlend::from_value(
+                            value.extract_bits(5, 6) as u32
+                        );
+                        params.texture_depth = TextureDepth::from_value(
+                            value.extract_bits(7, 8) as u32
+                        );
                     }
                     _ => {}
                 }
@@ -573,7 +589,7 @@ impl Gpu {
             Color::from_rgb(0, 0, 0)
         };
         for (i, vertex) in verts.iter_mut().enumerate() {
-            // If it's shaded the color is always the first.
+            // If it's shaded the color is always the first attribute.
             if S::is_shaded() {
                 vertex.color = Color::from_u32(self.fifo.pop());
             }
@@ -584,14 +600,20 @@ impl Gpu {
                 let value = self.fifo.pop();
                 match i {
                     0 => {
-                        params.clut_x = value.extract_bits(16, 21) as i32 * 16;
-                        params.clut_y = value.extract_bits(22, 30) as i32;
+                        let value = (value >> 16) as i32;
+                        params.clut_x = value.extract_bits(0, 5) * 16;
+                        params.clut_y = value.extract_bits(6, 14);
                     }
                     1 => {
-                        params.texture_x = value.extract_bits(16, 19) as i32 * 64;
-                        params.texture_y = value.extract_bit(20) as i32 * 256;
-                        params.blend_mode = TransBlend::from_value(value.extract_bits(21, 22));
-                        params.texture_depth = TextureDepth::from_value(value.extract_bits(23, 24));
+                        let value = (value >> 16) as i32;
+                        params.texture_x = value.extract_bits(0, 3) * 64;
+                        params.texture_y = value.extract_bit(4) * 256;
+                        params.blend_mode = TransBlend::from_value(
+                            value.extract_bits(5, 6) as u32
+                        );
+                        params.texture_depth = TextureDepth::from_value(
+                            value.extract_bits(7, 8) as u32
+                        );
                     }
                     _ => {}
                 }
@@ -641,7 +663,6 @@ impl Gpu {
     /// - 5..9 - Texture window mask y.
     /// - 10..14 - Texture window offset x.
     /// - 15..19 - Texture window offset y.
-    /// - 20..23 - Not used.
     fn gp0_texture_window_setting(&mut self) {
         let value = self.fifo.pop();
         self.tex_window_x_mask = value.extract_bits(0, 4) as u8;
@@ -653,7 +674,6 @@ impl Gpu {
     /// GP0(e6) - Mask bit setting.
     /// - 0 - Set mask while drawing.
     /// - 1 - Check mask before drawing.
-    /// - 2..23 - Not used.
     fn gp0_mask_bit_setting(&mut self) {
         let value = self.fifo.pop();
         self.status.0 |= value.extract_bit(0) << 11;
@@ -679,7 +699,7 @@ impl Gpu {
         self.draw_area_bottom = value.extract_bits(10, 18) as u16;
     }
 
-    /// GP0(e6) - Set drawing offset.
+    /// GP0(e5) - Set drawing offset.
     /// - 0..10 - x-offset.
     /// - 11..21 - y-offset.
     /// - 24..23 - Not used.
@@ -704,7 +724,7 @@ impl Gpu {
         self.to_vram_transfer = Some(MemTransfer::new(x, y, w, h));
     }
 
-    /// GP0(80) - Copy rectanlge from VRAM to CPU.
+    /// GP0(c0) - Copy rectanlge from VRAM to CPU.
     fn gp0_copy_rect_vram_to_cpu(&mut self) {
         self.fifo.pop();
         let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
@@ -732,7 +752,6 @@ impl Gpu {
 
     /// GP1(4) - Set DMA Direction.
     /// - 0..1 - DMA direction.
-    /// - 2..23 - Not used.
     fn gp1_dma_direction(&mut self, value: u32) {
         self.status.0 |= value.extract_bits(0, 1) << 29;
     }
@@ -746,7 +765,6 @@ impl Gpu {
     /// GP1(5) - Start display area in VRAM.
     /// - 0..9 - x (address in VRAM).
     /// - 10..18 - y (address in VRAM).
-    /// - 19..23 - Not used.
     fn gp1_start_display_area(&mut self, value: u32) {
         self.display_vram_x_start = value.extract_bits(0, 9) as u16;
         self.display_vram_y_start = value.extract_bits(10, 18) as u16;
@@ -776,7 +794,6 @@ impl Gpu {
     /// - 5 - Horizontal interlace.
     /// - 6 - Horizontal resolution 2.
     /// - 7 - Reverseflag.
-    /// - 8..23 - Not used.
     fn gp1_display_mode(&mut self, value: u32) {
         self.status.0 |= value.extract_bits(0, 5) << 17;
         self.status.0 |= value.extract_bit(6) << 16;

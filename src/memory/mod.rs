@@ -11,7 +11,7 @@ use crate::{
     timer::Timers,
 };
 use bios::Bios;
-use dma::{BlockTransfer, ChannelPort, Direction, Dma, LinkedTransfer, Transfers};
+use dma::{BlockTransfer, Port, Direction, Dma, LinkedTransfer, Transfers};
 use ram::Ram;
 
 pub trait AddrUnit {
@@ -56,69 +56,6 @@ impl AddrUnit for Word {
     fn is_aligned(address: u32) -> bool {
         (address & 0x3) == 0
     }
-}
-
-mod map {
-    const REGION_MAP: [u32; 8] = [
-        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x7fffffff, 0x1fffffff, 0xffffffff,
-        0xffffffff,
-    ];
-
-    pub fn to_region(address: u32) -> u32 {
-        address & REGION_MAP[(address >> 29) as usize]
-    }
-
-    /// RAM - 2 megabytes.
-    pub const RAM_START: u32 = 0x00000000;
-    pub const RAM_END: u32 = RAM_START + 2 * 1024 * 1024 - 1;
-
-    /// Memory Control - 36 bytes.
-    pub const MEMCTRL_START: u32 = 0x1f801000;
-    pub const MEMCTRL_END: u32 = MEMCTRL_START + 36 - 1;
-
-    /// BIOS - 512 kilobytes.
-    pub const BIOS_START: u32 = 0x1fc00000;
-    pub const BIOS_END: u32 = BIOS_START + 512 * 1024 - 1;
-
-    /// Ram Size - 4 bytes.
-    pub const RAM_SIZE_START: u32 = 0x1f801060;
-    pub const RAM_SIZE_END: u32 = RAM_SIZE_START + 4 - 1;
-
-    /// Cache Control - 4 bytes.
-    pub const CACHE_CONTROL_START: u32 = 0xfffe0130;
-    pub const CACHE_CONTROL_END: u32 = CACHE_CONTROL_START + 4 - 1;
-
-    /// SPU - 640 bytes.
-    pub const SPU_START: u32 = 0x1f801c00;
-    pub const SPU_END: u32 = SPU_START + 640 - 1;
-
-    /// EXP1/EXPANSION REGION 1 - 8 kilobytes.
-    pub const EXP1_START: u32 = 0x1f000000;
-    pub const EXP1_END: u32 = EXP1_START + 512 * 1024 - 1;
-
-    /// EXP2/EXPANSION REGION 2 - 66 bytes.
-    pub const EXP2_START: u32 = 0x1f802000;
-    pub const EXP2_END: u32 = EXP2_START + 66 - 1;
-
-    /// IRQ Control - 8 bytes.
-    pub const IRQ_CONTROL_START: u32 = 0x1f801070;
-    pub const IRQ_CONTROL_END: u32 = IRQ_CONTROL_START + 8 - 1;
-
-    /// Timer Control - 48 bytes.
-    pub const TIMER_CONTROL_START: u32 = 0x1f801100;
-    pub const TIMER_CONTROL_END: u32 = TIMER_CONTROL_START + 48 - 1;
-
-    /// Direct Memory Access - 128 bytes.
-    pub const DMA_START: u32 = 0x1f801080;
-    pub const DMA_END: u32 = DMA_START + 128 - 1;
-
-    /// CDROM - 4 bytes.
-    pub const CDROM_START: u32 = 0x1f801800;
-    pub const CDROM_END: u32 = CDROM_START + 4 - 1;
-
-    /// GPU Control - 8 bytes.
-    pub const GPU_START: u32 = 0x1f801810;
-    pub const GPU_END: u32 = GPU_START + 8 - 1;
 }
 
 /// The BUS of the Playstation 1. This is what (mostly) all devices are connected with, and how to
@@ -292,39 +229,35 @@ impl Bus {
         // Execute linked list transfers.
         while let Some(transfer) = self.transfers.linked.pop() {
             self.trans_linked_to_port(&transfer);
-            self.dma.channel_done(dma::ChannelPort::Gpu, &mut self.irq_state);
+            self.dma.channel_done(Port::Gpu, &mut self.irq_state);
         }
     }
 
     /// Execute transfers to a port.
     fn trans_block_to_port(&mut self, transfer: &BlockTransfer) {
-        let mut address = transfer.start;
-        for _ in 0..transfer.size {
+        (0..transfer.size).fold(transfer.start, |address, _| {
             let value = self.ram.load::<Word>(address & 0x1ffffc);
-            // Hopefully the compiler can optimize this to be outside the loop.
             match transfer.port {
-                ChannelPort::Gpu => self.gpu.dma_store(value),
+                Port::Gpu => self.gpu.dma_store(value),
                 _ => todo!(),
             }
-            address = address.wrapping_add(transfer.increment);
-        }
+            address.wrapping_add(transfer.increment)
+        });
     }
    
     /// Execute transfers to RAM from a port.
     fn trans_block_to_ram(&mut self, transfer: &BlockTransfer) {
-        let mut address = transfer.start;
-        for remain in (0..transfer.size).rev() {
-            let value = match transfer.port {
-                ChannelPort::Otc => match remain {
+        (0..transfer.size).rev().fold(transfer.start, |address, remain| {
+            self.ram.store::<Word>(address & 0x1ffffc, match transfer.port {
+                Port::Otc => match remain {
                     0 => 0xffffff,
                     _ => address.wrapping_sub(4).extract_bits(0, 21),
-                },
-                ChannelPort::Gpu => self.gpu.dma_load(),
+                }
+                Port::Gpu => self.gpu.dma_load(),
                 _ => todo!(),
-            };
-            self.ram.store::<Word>(address & 0x1ffffc, value);
-            address = address.wrapping_add(transfer.increment);
-        }
+            });
+            address.wrapping_add(transfer.increment)
+        });
     }
 
     fn trans_linked_to_port(&mut self, transfer: &LinkedTransfer) {
@@ -342,4 +275,67 @@ impl Bus {
             address = header & 0x1ffffc;
         }
     }
+}
+
+mod map {
+    const REGION_MAP: [u32; 8] = [
+        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x7fffffff, 0x1fffffff, 0xffffffff,
+        0xffffffff,
+    ];
+
+    pub fn to_region(address: u32) -> u32 {
+        address & REGION_MAP[(address >> 29) as usize]
+    }
+
+    /// RAM - 2 megabytes.
+    pub const RAM_START: u32 = 0x00000000;
+    pub const RAM_END: u32 = RAM_START + 2 * 1024 * 1024 - 1;
+
+    /// Memory Control - 36 bytes.
+    pub const MEMCTRL_START: u32 = 0x1f801000;
+    pub const MEMCTRL_END: u32 = MEMCTRL_START + 36 - 1;
+
+    /// BIOS - 512 kilobytes.
+    pub const BIOS_START: u32 = 0x1fc00000;
+    pub const BIOS_END: u32 = BIOS_START + 512 * 1024 - 1;
+
+    /// Ram Size - 4 bytes.
+    pub const RAM_SIZE_START: u32 = 0x1f801060;
+    pub const RAM_SIZE_END: u32 = RAM_SIZE_START + 4 - 1;
+
+    /// Cache Control - 4 bytes.
+    pub const CACHE_CONTROL_START: u32 = 0xfffe0130;
+    pub const CACHE_CONTROL_END: u32 = CACHE_CONTROL_START + 4 - 1;
+
+    /// SPU - 640 bytes.
+    pub const SPU_START: u32 = 0x1f801c00;
+    pub const SPU_END: u32 = SPU_START + 640 - 1;
+
+    /// EXP1/EXPANSION REGION 1 - 8 kilobytes.
+    pub const EXP1_START: u32 = 0x1f000000;
+    pub const EXP1_END: u32 = EXP1_START + 512 * 1024 - 1;
+
+    /// EXP2/EXPANSION REGION 2 - 66 bytes.
+    pub const EXP2_START: u32 = 0x1f802000;
+    pub const EXP2_END: u32 = EXP2_START + 66 - 1;
+
+    /// IRQ Control - 8 bytes.
+    pub const IRQ_CONTROL_START: u32 = 0x1f801070;
+    pub const IRQ_CONTROL_END: u32 = IRQ_CONTROL_START + 8 - 1;
+
+    /// Timer Control - 48 bytes.
+    pub const TIMER_CONTROL_START: u32 = 0x1f801100;
+    pub const TIMER_CONTROL_END: u32 = TIMER_CONTROL_START + 48 - 1;
+
+    /// Direct Memory Access - 128 bytes.
+    pub const DMA_START: u32 = 0x1f801080;
+    pub const DMA_END: u32 = DMA_START + 128 - 1;
+
+    /// CDROM - 4 bytes.
+    pub const CDROM_START: u32 = 0x1f801800;
+    pub const CDROM_END: u32 = CDROM_START + 4 - 1;
+
+    /// GPU Control - 8 bytes.
+    pub const GPU_START: u32 = 0x1f801810;
+    pub const GPU_END: u32 = GPU_START + 8 - 1;
 }

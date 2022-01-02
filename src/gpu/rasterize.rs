@@ -222,8 +222,7 @@ impl Gpu {
                     let uv = TexCoord {
                         u: (v1.texcoord.u as f32 * res.x
                             + v2.texcoord.u as f32 * res.y
-                            + v3.texcoord.u as f32 * res.z) as u8
-                            + 1,
+                            + v3.texcoord.u as f32 * res.z) as u8,
                         v: (v1.texcoord.v as f32 * res.x
                             + v2.texcoord.v as f32 * res.y
                             + v3.texcoord.v as f32 * res.z) as u8,
