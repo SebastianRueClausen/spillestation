@@ -245,10 +245,11 @@ fn generate_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect)
         (texture.x / screen.x - 1.0).max(0.0),
         (1.0 - texture.y / screen.y).min(0.0),
     );
-    // Transformation matrix.
+    // Transformation matrix. It flips the image vertically since the Playstations coordinates in VRAM
+    // are the opposite of wgpu.
     let transform = Mat4::from([
         [s.x, 0.0, 0.0, 0.0],
-        [0.0, s.y, 0.0, 0.0],
+        [0.0, -s.y, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
         [t.x, t.y, 0.0, 1.0],
     ]);

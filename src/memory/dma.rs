@@ -3,8 +3,11 @@
 
 #![allow(dead_code)]
 
-use crate::util::bits::BitExtract;
-use crate::cpu::{IrqState, Irq};
+use crate::{
+    util::bits::BitExtract,
+    cpu::{IrqState, Irq},
+    memory::BusMap,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Port {
@@ -434,4 +437,9 @@ impl Dma {
             }
         }
     }
+}
+
+impl BusMap for Dma {
+    const BUS_BEGIN: u32 = 0x1f801080;
+    const BUS_END: u32 = Self::BUS_BEGIN + 128 - 1;
 }

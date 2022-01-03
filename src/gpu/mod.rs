@@ -5,7 +5,12 @@ mod primitive;
 mod rasterize;
 pub mod vram;
 
-use crate::{front::DrawInfo, util::bits::BitExtract, cpu::{IrqState, Irq}};
+use crate::{
+    front::DrawInfo,
+    util::bits::BitExtract,
+    cpu::{IrqState, Irq},
+    memory::{BusMap, AddrUnit},
+};
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
 use rasterize::{
@@ -403,19 +408,19 @@ impl Gpu {
         }
     }
 
-    pub fn store(&mut self, offset: u32, value: u32) {
-        match offset {
-            0 => self.gp0_store(value),
-            4 => self.gp1_store(value),
-            _ => unreachable!("Invalid GPU store at offset {:08x}.", offset),
+    pub fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) {
+        match addr {
+            0 => self.gp0_store(val),
+            4 => self.gp1_store(val),
+            _ => unreachable!("Invalid GPU store at offset {:08x}.", addr),
         }
     }
 
-    pub fn load(&mut self, offset: u32) -> u32 {
-        match offset {
+    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> u32 {
+        match addr {
             0 => self.gpu_read(),
             4 => self.status_read(),
-            _ => unreachable!("Invalid GPU load at offset {:08x}.", offset),
+            _ => unreachable!("Invalid GPU load at offset {:08x}.", addr),
         }
     }
 
@@ -799,4 +804,9 @@ impl Gpu {
         self.status.0 |= value.extract_bit(6) << 16;
         self.status.0 |= value.extract_bit(7) << 14;
     }
+}
+
+impl BusMap for Gpu {
+    const BUS_BEGIN: u32 = 0x1f801810;
+    const BUS_END: u32 = Self::BUS_BEGIN + 8 - 1;
 }

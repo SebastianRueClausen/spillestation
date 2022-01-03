@@ -1,5 +1,5 @@
 use super::App;
-use crate::{cpu::{Cpu, REGISTER_NAMES}, system::System, timing};
+use crate::{cpu::{Cpu, REGISTER_NAMES}, system::{System, DebugStop}, timing};
 use std::fmt::Write;
 use std::time::Duration;
 
@@ -103,6 +103,7 @@ pub struct CpuCtrl {
     /// CPU at a lower Hz than the update rate, since there may be multiple
     /// updates between each CPU cycle.
     remainder: Duration,
+    break_message: Option<String>
 }
 
 impl Default for CpuCtrl {
@@ -113,6 +114,7 @@ impl Default for CpuCtrl {
             mode: RunMode::Run,
             stepped: false,
             remainder: Duration::ZERO,
+            break_message: None,
         }
     }
 }
@@ -123,14 +125,23 @@ impl App for CpuCtrl {
     }
 
     fn update_tick(&mut self, dt: Duration, system: &mut System) {
-        match self.mode {
+        let stop = match self.mode {
             RunMode::Step if self.stepped => {
-                system.step_debug(self.step_amount);
+                self.break_message = None;
+                system.step_debug(self.step_amount)
             }
-            RunMode::Run  => {
-                self.remainder = system.run_debug(self.cycle_hz, self.remainder + dt);
+            RunMode::Run => {
+                let (remainder, stop) = system.run_debug(self.cycle_hz, self.remainder + dt);
+                self.remainder = remainder;
+                stop
             }
-            _ => {},
+            _ => DebugStop::Time,
+        };
+        if let DebugStop::Breakpoint(addr) = stop {
+            self.mode = RunMode::Step;
+            self.break_message = Some(
+                format!("Stopped at breakpoint on address: {:08x}", addr)
+            );
         }
     }
 
@@ -176,6 +187,12 @@ impl App for CpuCtrl {
                 );
             }
         }
+        if let Some(ref msg) = self.break_message {
+            ui.separator();
+            ui.label(msg);
+        }
+        ui.separator();
+
     }
 
     fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {

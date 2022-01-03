@@ -1,51 +1,21 @@
 use directories_next::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::{io, fmt, fs};
-use std::path::PathBuf;
-use std::io::Write;
+use std::{{io, io::Write, fs}, path::PathBuf};
+use thiserror::Error;
 
+#[derive(Error, Debug)]
 pub enum ConfigError {
+    #[error("Failed to find config directory")]
     ConfigDir,
-    Io(io::Error),
-    Serialize(toml::ser::Error),
-    Deserialize(toml::de::Error),
-}
 
-impl From<io::Error> for ConfigError {
-    fn from(err: io::Error) -> Self {
-        ConfigError::Io(err)
-    }
-}
+    #[error("Failed to load config file: {0}")]
+    Io(#[from] io::Error),
 
-impl From<toml::de::Error> for ConfigError {
-    fn from(err: toml::de::Error) -> Self {
-        ConfigError::Deserialize(err)
-    }
-}
+    #[error("Failed to serialize config file: {0}")]
+    Serialize(#[from] toml::ser::Error),
 
-impl From<toml::ser::Error> for ConfigError {
-    fn from(err: toml::ser::Error) -> Self {
-        ConfigError::Serialize(err)
-    }
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            ConfigError::ConfigDir => {
-                write!(f, "Failed to find config directory")
-            },
-            ConfigError::Io(ref err) => {
-                write!(f, "Failed to load config file: {}", err)
-            },
-            ConfigError::Serialize(ref err) => {
-                write!(f, "Failed to serialize config file: {}", err)
-            },
-            ConfigError::Deserialize(ref err) => {
-                write!(f, "Failed to deserialize config file: {}", err)
-            },
-        }
-    }
+    #[error("Failed to deserialize config file: {0}")]
+    Deserialize(#[from] toml::de::Error),
 }
 
 #[derive(Default, Serialize, Deserialize)]

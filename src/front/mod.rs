@@ -5,7 +5,7 @@ mod config;
 pub mod gui;
 mod render;
 
-use crate::{system::System, memory::bios::Bios, timing};
+use crate::{system::{System, RunMode}, memory::bios::Bios, timing};
 use config::Config;
 use gui::{App, app_menu::AppMenu, GuiCtx, config::Configurator};
 use render::{Canvas, ComputeStage, DrawStage, RenderCtx, SurfaceSize};
@@ -16,12 +16,6 @@ use winit::{
     window::WindowBuilder,
 };
 pub use render::compute::DrawInfo;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum RunMode {
-    Debug,
-    Emulation,
-}
 
 enum State {
     Startup,
@@ -190,7 +184,9 @@ pub fn run() {
                         RunMode::Debug => {
                             app_menu.update_tick(last_update.elapsed(), system);
                         }
-                        RunMode::Emulation => system.run(last_update.elapsed()),
+                        RunMode::Emulation => {
+                            system.run(last_update.elapsed());
+                        }
                     }
                     *last_update = Instant::now();
                 },

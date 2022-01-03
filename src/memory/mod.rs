@@ -4,76 +4,42 @@ pub mod bios;
 pub mod dma;
 pub mod ram;
 
+mod mem_ctrl;
+mod cache_ctrl;
+mod ram_size;
+
 use crate::{
     gpu::{Gpu, Vram},
     util::bits::BitExtract, cdrom::CdRom,
     cpu::IrqState,
     timer::Timers,
+    spu::Spu,
 };
 use bios::Bios;
 use dma::{BlockTransfer, Port, Direction, Dma, LinkedTransfer, Transfers};
 use ram::Ram;
-
-pub trait AddrUnit {
-    fn width() -> usize;
-    fn is_aligned(address: u32) -> bool;
-}
-
-/// 8 bit.
-pub struct Byte;
-
-impl AddrUnit for Byte {
-    fn width() -> usize {
-        1
-    }
-
-    fn is_aligned(_: u32) -> bool {
-        true
-    }
-}
-
-/// 16 bit.
-pub struct HalfWord;
-
-impl AddrUnit for HalfWord {
-    fn width() -> usize {
-        2
-    }
-
-    fn is_aligned(address: u32) -> bool {
-        (address & 0x1) == 0
-    }
-}
-
-/// 32 bit.
-pub struct Word;
-
-impl AddrUnit for Word {
-    fn width() -> usize {
-        4
-    }
-
-    fn is_aligned(address: u32) -> bool {
-        (address & 0x3) == 0
-    }
-}
+use mem_ctrl::MemCtrl;
+use cache_ctrl::CacheCtrl;
+use ram_size::RamSize;
 
 /// The BUS of the Playstation 1. This is what (mostly) all devices are connected with, and how to
 /// the CPU interacts with the rest of the machine.
 pub struct Bus {
     /// The amount of CPU cycles since boot.
     pub cycle_count: u64,
-    bios: Bios,
+    pub cache_ctrl: CacheCtrl,
     pub irq_state: IrqState,
+    bios: Bios,
     ram: Ram,
     dma: Dma,
     transfers: Transfers,
     gpu: Gpu,
     cdrom: CdRom,
     timers: Timers,
+    spu: Spu,
+    mem_ctrl: MemCtrl,
+    ram_size: RamSize,
 }
-
-use map::*;
 
 impl Bus {
     pub fn new(bios: Bios) -> Self {
@@ -87,6 +53,10 @@ impl Bus {
             gpu: Gpu::new(),
             cdrom: CdRom::new(),
             timers: Timers::new(),
+            spu: Spu::new(),
+            mem_ctrl: MemCtrl::new(),
+            cache_ctrl: CacheCtrl::new(),
+            ram_size: RamSize::new(),
         }
     }
 
@@ -94,39 +64,45 @@ impl Bus {
         debug_assert!(T::is_aligned(address));
         let address = to_region(address);
         match address {
-            RAM_START..=RAM_END => {
+            Ram::BUS_BEGIN..=Ram::BUS_END => {
                 Some(self.ram.load::<T>(address))
             }
-            BIOS_START..=BIOS_END => {
-                Some(self.bios.load::<T>(address - BIOS_START))
+            Bios::BUS_BEGIN..=Bios::BUS_END => {
+                Some(self.bios.load::<T>(address - Bios::BUS_BEGIN))
             }
-            MEMCTRL_START..=MEMCTRL_END => None,
-            RAM_SIZE_START..=RAM_SIZE_END => None,
-            CACHE_CONTROL_START..=CACHE_CONTROL_END => None,
-            EXP1_START..=EXP1_END => {
+            MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
+                Some(self.mem_ctrl.load(address - MemCtrl::BUS_BEGIN))
+            }
+            RamSize::BUS_BEGIN..=RamSize::BUS_END => {
+                Some(self.ram_size.load())
+            }
+            CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
+                Some(self.cache_ctrl.load())
+            }
+            EXP1_BEGIN..=EXP1_END => {
                 Some(0xff)
             },
-            IRQ_CONTROL_START..=IRQ_CONTROL_END => {
-                Some(self.irq_state.load(address - IRQ_CONTROL_START))
+            IrqState::BUS_BEGIN..=IrqState::BUS_END => {
+                Some(self.irq_state.load(address - IrqState::BUS_BEGIN))
             }
-            DMA_START..=DMA_END => {
-                Some(self.dma.load(address - DMA_START))
+            Dma::BUS_BEGIN..=Dma::BUS_END => {
+                Some(self.dma.load(address - Dma::BUS_BEGIN))
             }
-            CDROM_START..=CDROM_END => {
-                Some(self.cdrom.load(address - CDROM_START))
+            CdRom::BUS_BEGIN..=CdRom::BUS_END => {
+                Some(self.cdrom.load::<T>(address - CdRom::BUS_BEGIN))
             }
-            SPU_START..=SPU_END => {
-                Some(0x0)
+            Spu::BUS_BEGIN..=Spu::BUS_END => {
+                Some(self.spu.load(address - Spu::BUS_BEGIN))
             }
-            TIMER_CONTROL_START..=TIMER_CONTROL_END => {
+            Timers::BUS_BEGIN..=Timers::BUS_END => {
                 Some(self.timers.load(
                     &mut self.irq_state,
                     self.cycle_count,
-                    address - TIMER_CONTROL_START,
+                    address - Timers::BUS_BEGIN,
                 ))
             }
-            GPU_START..=GPU_END => {
-                Some(self.gpu.load(address - GPU_START))
+            Gpu::BUS_BEGIN..=Gpu::BUS_END => {
+                Some(self.gpu.load::<T>(address - Gpu::BUS_BEGIN))
             }
             _ => None,
         }
@@ -143,52 +119,52 @@ impl Bus {
         debug_assert!(T::is_aligned(address));
         let address = to_region(address);
         match address {
-            RAM_START..=RAM_END => {
+            Ram::BUS_BEGIN..=Ram::BUS_END => {
                 self.ram.store::<T>(address, value);
             }
-            MEMCTRL_START..=MEMCTRL_END => {
-                // TODO: Memory Control.
+            MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
+                self.mem_ctrl.store(address - MemCtrl::BUS_BEGIN, value);
             }
-            RAM_SIZE_START..=RAM_SIZE_END => {
-                // TODO: Ram size.
+            RamSize::BUS_BEGIN..=RamSize::BUS_END => {
+                self.ram_size.store(value)
             }
-            CACHE_CONTROL_START..=CACHE_CONTROL_END => {
-                // TODO: Cache Control.
+            CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
+                self.cache_ctrl.store(value)
             }
-            SPU_START..=SPU_END => {
-                // TODO: Sound.
+            Spu::BUS_BEGIN..=Spu::BUS_END => {
+                self.spu.store(address - Spu::BUS_BEGIN, value);
             }
-            EXP1_START..=EXP1_END => {
+            EXP1_BEGIN..=EXP1_END => {
                 // TODO.
             }
-            EXP2_START..=EXP2_END => {
+            EXP2_BEGIN..=EXP2_END => {
                 // TODO.
             }
-            IRQ_CONTROL_START..=IRQ_CONTROL_END => {
-                self.irq_state.store(address - IRQ_CONTROL_START, value);
+            IrqState::BUS_BEGIN..=IrqState::BUS_END => {
+                self.irq_state.store(address - IrqState::BUS_BEGIN, value);
             }
-            TIMER_CONTROL_START..=TIMER_CONTROL_END => {
+            Timers::BUS_BEGIN..=Timers::BUS_END => {
                 self.timers.store(
                     &mut self.irq_state,
                     self.cycle_count,
-                    address - TIMER_CONTROL_START,
+                    address - Timers::BUS_BEGIN,
                     value
                 ); 
             }
-            DMA_START..=DMA_END => {
+            Dma::BUS_BEGIN..=Dma::BUS_END => {
                 self.dma.store(
                     &mut self.transfers,
                     &mut self.irq_state,
-                    address - DMA_START,
+                    address - Dma::BUS_BEGIN,
                     value,
                 );
                 self.exec_transfers();
             }
-            CDROM_START..=CDROM_END => {
-                self.cdrom.store(address - CDROM_START, value);
+            CdRom::BUS_BEGIN..=CdRom::BUS_END => {
+                self.cdrom.store::<T>(address - CdRom::BUS_BEGIN, value);
             }
-            GPU_START..=GPU_END => {
-                self.gpu.store(address - GPU_START, value);
+            Gpu::BUS_BEGIN..=Gpu::BUS_END => {
+                self.gpu.store::<T>(address - Gpu::BUS_BEGIN, value);
             }
             _ => {
                 panic!("Trying to store invalid address to bus at {:08x}", address)
@@ -277,65 +253,63 @@ impl Bus {
     }
 }
 
-mod map {
+/// Represents the address range of a device mapped to the BUS.
+pub trait BusMap {
+    /// The first address in the range.
+    const BUS_BEGIN: u32;
+    /// The last address included in the range.
+    const BUS_END: u32;
+}
+
+pub trait AddrUnit {
+    const WIDTH: usize;
+
+    fn is_aligned(address: u32) -> bool;
+}
+
+/// 8 bit.
+pub struct Byte;
+
+impl AddrUnit for Byte {
+    const WIDTH: usize = 1;
+
+    fn is_aligned(_: u32) -> bool {
+        true
+    }
+}
+
+/// 16 bit.
+pub struct HalfWord;
+
+impl AddrUnit for HalfWord {
+    const WIDTH: usize = 2;
+
+    fn is_aligned(address: u32) -> bool {
+        (address & 0x1) == 0
+    }
+}
+
+/// 32 bit.
+pub struct Word;
+
+impl AddrUnit for Word {
+    const WIDTH: usize = 4;
+
+    fn is_aligned(address: u32) -> bool {
+        (address & 0x3) == 0
+    }
+}
+
+pub fn to_region(address: u32) -> u32 {
     const REGION_MAP: [u32; 8] = [
         0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x7fffffff, 0x1fffffff, 0xffffffff,
         0xffffffff,
     ];
-
-    pub fn to_region(address: u32) -> u32 {
-        address & REGION_MAP[(address >> 29) as usize]
-    }
-
-    /// RAM - 2 megabytes.
-    pub const RAM_START: u32 = 0x00000000;
-    pub const RAM_END: u32 = RAM_START + 2 * 1024 * 1024 - 1;
-
-    /// Memory Control - 36 bytes.
-    pub const MEMCTRL_START: u32 = 0x1f801000;
-    pub const MEMCTRL_END: u32 = MEMCTRL_START + 36 - 1;
-
-    /// BIOS - 512 kilobytes.
-    pub const BIOS_START: u32 = 0x1fc00000;
-    pub const BIOS_END: u32 = BIOS_START + 512 * 1024 - 1;
-
-    /// Ram Size - 4 bytes.
-    pub const RAM_SIZE_START: u32 = 0x1f801060;
-    pub const RAM_SIZE_END: u32 = RAM_SIZE_START + 4 - 1;
-
-    /// Cache Control - 4 bytes.
-    pub const CACHE_CONTROL_START: u32 = 0xfffe0130;
-    pub const CACHE_CONTROL_END: u32 = CACHE_CONTROL_START + 4 - 1;
-
-    /// SPU - 640 bytes.
-    pub const SPU_START: u32 = 0x1f801c00;
-    pub const SPU_END: u32 = SPU_START + 640 - 1;
-
-    /// EXP1/EXPANSION REGION 1 - 8 kilobytes.
-    pub const EXP1_START: u32 = 0x1f000000;
-    pub const EXP1_END: u32 = EXP1_START + 512 * 1024 - 1;
-
-    /// EXP2/EXPANSION REGION 2 - 66 bytes.
-    pub const EXP2_START: u32 = 0x1f802000;
-    pub const EXP2_END: u32 = EXP2_START + 66 - 1;
-
-    /// IRQ Control - 8 bytes.
-    pub const IRQ_CONTROL_START: u32 = 0x1f801070;
-    pub const IRQ_CONTROL_END: u32 = IRQ_CONTROL_START + 8 - 1;
-
-    /// Timer Control - 48 bytes.
-    pub const TIMER_CONTROL_START: u32 = 0x1f801100;
-    pub const TIMER_CONTROL_END: u32 = TIMER_CONTROL_START + 48 - 1;
-
-    /// Direct Memory Access - 128 bytes.
-    pub const DMA_START: u32 = 0x1f801080;
-    pub const DMA_END: u32 = DMA_START + 128 - 1;
-
-    /// CDROM - 4 bytes.
-    pub const CDROM_START: u32 = 0x1f801800;
-    pub const CDROM_END: u32 = CDROM_START + 4 - 1;
-
-    /// GPU Control - 8 bytes.
-    pub const GPU_START: u32 = 0x1f801810;
-    pub const GPU_END: u32 = GPU_START + 8 - 1;
+    address & REGION_MAP[(address >> 29) as usize]
 }
+
+const EXP1_BEGIN: u32 = 0x1f000000;
+const EXP1_END: u32 = EXP1_BEGIN + 512 * 1024 - 1;
+
+const EXP2_BEGIN: u32 = 0x1f802000;
+const EXP2_END: u32 = EXP2_BEGIN + 66 - 1;

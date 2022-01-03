@@ -23,3 +23,4 @@ directories-next = "2.0.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.5.8"
 native-dialog = "0.6.1"
+thiserror = "*"

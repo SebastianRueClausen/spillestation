@@ -13,11 +13,13 @@ impl Point {
         Self { x, y }
     }
 
-    /// Mainly for getting the point from a GP0 attribute.
-    pub fn from_u32(value: u32) -> Self {
+    pub fn from_u32(val: u32) -> Self {
+        fn to_i11(val: u32) -> i32 {
+            ((val << 21) as i32) >> 21
+        }
         Self {
-            x: value.extract_bits(0, 10) as i32,
-            y: value.extract_bits(16, 26) as i32,
+            x: to_i11(val), 
+            y: to_i11(val >> 16),
         }
     }
 }

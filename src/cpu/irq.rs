@@ -1,4 +1,5 @@
 use std::fmt;
+use crate::memory::BusMap;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
@@ -77,4 +78,9 @@ impl IrqState {
             _ => unreachable!("Invalid load at offset {}", offset),
         }
     }
+}
+
+impl BusMap for IrqState {
+    const BUS_BEGIN: u32 = 0x1f801070;
+    const BUS_END: u32 = Self::BUS_BEGIN + 8 - 1;
 }

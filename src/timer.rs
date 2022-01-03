@@ -1,4 +1,9 @@
-use crate::{util::bits::BitExtract, cpu::{IrqState, Irq}, timing};
+use crate::{
+    util::bits::BitExtract,
+    cpu::{IrqState, Irq},
+    timing,
+    memory::BusMap,
+};
 use std::fmt;
 
 /// The Playstation has three different timers, which all have different uses.
@@ -348,4 +353,9 @@ impl Timers {
         }
         self.last_run = cycle;
     }
+}
+
+impl BusMap for Timers {
+    const BUS_BEGIN: u32 = 0x1f801100;
+    const BUS_END: u32 = Self::BUS_BEGIN + 48 - 1;
 }

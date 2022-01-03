@@ -2,8 +2,11 @@
 mod fifo;
 
 use fifo::Fifo;
-use crate::util::bits::BitExtract;
-use crate::cpu::{IrqState, Irq};
+use crate::{
+    util::bits::BitExtract,
+    cpu::{IrqState, Irq},
+    memory::{AddrUnit, BusMap},
+};
 
 pub struct CdRom {
     index: u8,
@@ -28,22 +31,22 @@ impl CdRom {
         }
     }
 
-    pub fn store(&mut self, offset: u32, value: u32) {
-        match offset {
-            0 => self.index = value.extract_bits(0, 1) as u8,
+    pub fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) {
+        match addr {
+            0 => self.index = val.extract_bits(0, 1) as u8,
             1 => match self.index {
-                0 => self.command = Some(value as u8),
+                0 => self.command = Some(val as u8),
                 _ => todo!(),
             }
             2 => match self.index {
-                0 => self.arg_fifo.push(value as u8),
-                1 => self.irq_mask = value as u8,
+                0 => self.arg_fifo.push(val as u8),
+                1 => self.irq_mask = val as u8,
                 2 => todo!(),
                 _ => unreachable!(),
             }
             3 => match self.index {
                 0 => todo!(),
-                1 => self.irq_flags &= !(value as u8),
+                1 => self.irq_flags &= !(val as u8),
                 2 => todo!(),
                 _ => unreachable!(),
             }
@@ -51,8 +54,8 @@ impl CdRom {
         }
     }
 
-    pub fn load(&mut self, offset: u32) -> u32 {
-        match offset {
+    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> u32 {
+        match addr {
             // Status register.
             0 => {
                 let register = self.index
@@ -73,6 +76,7 @@ impl CdRom {
             _ => unreachable!(),
         }
     }
+
 
     pub fn exec_cmd(&mut self, irq: &mut IrqState) {
         if let Some(cmd) = self.command.take() {
@@ -95,4 +99,9 @@ impl CdRom {
             _ => todo!(),
         }
     }
+}
+
+impl BusMap for CdRom {
+    const BUS_BEGIN: u32 = 0x1f801800;
+    const BUS_END: u32 = Self::BUS_BEGIN + 4 - 1;
 }

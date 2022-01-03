@@ -1,34 +1,16 @@
-use super::AddrUnit;
-use std::fs::File;
-use std::io::{self, Read};
-use std::fmt;
-use std::path::Path;
+use super::{AddrUnit, BusMap};
+use std::{fs::File, io::{self, Read}, path::Path};
+use thiserror::Error;
 
 /// Bios always takes up 512 kilobytes.
 pub const BIOS_SIZE: usize = 1024 * 512;
 
+#[derive(Error, Debug)]
 pub enum BiosError {
-    IoError(io::Error),
+    #[error("Failed to load BIOS: {0}")]
+    IoError(#[from] io::Error),
+    #[error("Invalid BIOS file: must be 512 kb, is {0} bytes")]
     InvalidSize(usize),
-}
-
-impl From<io::Error> for BiosError {
-    fn from(err: io::Error) -> Self {
-        BiosError::IoError(err)
-    }
-}
-
-impl fmt::Display for BiosError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            BiosError::IoError(ref err) => {
-                write!(f, "Failed to load BIOS: {}", err)
-            },
-            BiosError::InvalidSize(size) => {
-                write!(f, "BIOS must be {} bytes, not {}", BIOS_SIZE, size)
-            },
-        }
-    }
 }
 
 pub struct Bios {
@@ -51,11 +33,14 @@ impl Bios {
         Self { data }
     }
 
-    pub fn load<T: AddrUnit>(&self, offset: u32) -> u32 {
-        let mut value: u32 = 0;
-        for i in 0..T::width() {
-            value |= (self.data[offset as usize + i] as u32) << (8 * i);
-        }
-        value
+    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> u32 {
+        (0..T::WIDTH).fold(0, |value, byte| {
+            value | (self.data[addr as usize + byte] as u32) << 8 * byte
+        })
     }
+}
+
+impl BusMap for Bios {
+    const BUS_BEGIN: u32 = 0x1fc00000;
+    const BUS_END: u32 = Self::BUS_BEGIN + BIOS_SIZE as u32 - 1;
 }

@@ -31,7 +31,7 @@ pub struct Cpu {
     /// cycle. During the cycle it points at the next instruction.
     pub pc: u32,
     /// Always one step ahead of PC. Used to simulate branch delay.
-    next_pc: u32,
+    pub next_pc: u32,
     /// Set if instruction is in branch delay slot.
     in_branch_delay: bool,
     /// This is set if the last instruction branched.
@@ -41,7 +41,7 @@ pub struct Cpu {
     pub lo: u32,
     /// The cycle number MUL/DIV result is ready.
     hi_lo_ready: u64,
-    /// General purpose registers - [info]: http://problemkaputt.de/psx-spx.htm#cpuspecifications
+    /// General purpose registers.
     /// - 0 - Always 0.
     /// - 1 - Assembler temporary.
     /// - 2..3 - Subroutine return values.
@@ -60,6 +60,7 @@ pub struct Cpu {
     load_slot: DelaySlot,
     /// Instruction cache.
     icache: Box<[CacheLine; 1024]>,
+    // TODO: Some fields of the BUS is accessed a lot, which is causeing cache misses.
     bus: Bus,
     cop0: Cop0,
 }
@@ -179,15 +180,39 @@ impl Cpu {
         self.cop0.irq_enabled() && active != 0
     }
 
+    pub fn bus(&self) -> &Bus {
+        &self.bus
+    }
+
+    pub fn bus_mut(&mut self) -> &mut Bus {
+        &mut self.bus
+    }
+
+    pub fn current_instruction(&mut self) -> Opcode {
+        Opcode::new(self.load::<Word>(self.pc))
+    }
+
+    /// Fetch and execute next instruction.
+    pub fn step(&mut self) {
+        let op = self.fetch_ins(self.pc);
+        self.last_pc = self.pc;
+        self.pc = self.next_pc;
+        self.next_pc = self.next_pc.wrapping_add(4);
+        self.in_branch_delay = self.branched;
+        self.branched = false;
+        self.exec(op);
+        self.bus.cycle_count += 1;
+    }
+
     /// Fetch an instruction from either memory or the icache. Also update the icache if required.
-    fn fetch_instruction(&mut self, address: u32) -> Opcode {
+    fn fetch_ins(&mut self, address: u32) -> Opcode {
+        // TODO: Avoid having to check this every cycle.
         if self.irq_pending() {
             self.fetch_load_slot();
             self.throw_exception(Exception::Interrupt); 
         }
-        // TODO: Instruction cache could be disabled.
         // Only KUSEG and KSEG0 are cached.
-        let data = if address < 0xa0000000 {
+        let data = if address < 0xa0000000 && self.bus.cache_ctrl.icache_enabled() {
             // Only if this tag matches the tag of the cacheline is the cache valid.
             // This makes sure the valid flag is set, and it points at the right address.
             let tag = ((address & 0xfffff000) >> 12) | 0x80000000;
@@ -209,36 +234,6 @@ impl Cpu {
             self.load::<Word>(address)
         };
         Opcode::new(data)
-    }
-
-    /// Fetch and execute next instruction.
-    #[inline]
-    pub fn fetch_and_exec(&mut self) {
-        let op = self.fetch_instruction(self.pc);
-        // Save the current pc.
-        self.last_pc = self.pc;
-        // Increment pc and next_pc.
-        self.pc = self.next_pc;
-        self.next_pc = self.next_pc.wrapping_add(4);
-        // If the last instruction branched we are in branch delay slot.
-        self.in_branch_delay = self.branched;
-        self.branched = false;
-        // Execute instruction.
-        self.exec(op);
-        // Every instruction takes 1 cycle.
-        self.bus.cycle_count += 1;
-    }
-
-    pub fn bus(&self) -> &Bus {
-        &self.bus
-    }
-
-    pub fn bus_mut(&mut self) -> &mut Bus {
-        &mut self.bus
-    }
-
-    pub fn current_instruction(&mut self) -> Opcode {
-        Opcode::new(self.load::<Word>(self.pc))
     }
 
     /// Execute opcode.
@@ -773,7 +768,7 @@ impl Cpu {
             1 => (value & 0x0000ffff) | (word << 16),
             2 => (value & 0x000000ff) | (word << 8),
             3 => word,
-            _ => panic!("LWL: This should no be possible!"),
+            _ => unreachable!(),
         };
         self.add_load_slot(op.rt(), value);
     }
@@ -827,7 +822,7 @@ impl Cpu {
             1 => (value & 0xff000000) | (word >> 8),
             2 => (value & 0xffff0000) | (word >> 16),
             3 => (value & 0xffffff00) | (word >> 24),
-            _ => panic!("LWR: This should no be possible!"),
+            _ => unreachable!(),
         };
         self.add_load_slot(op.rt(), value);
     }
@@ -869,7 +864,7 @@ impl Cpu {
             1 => (word & 0xffff0000) | (value >> 16),
             2 => (word & 0xffffff00) | (value >> 8),
             3 => word,
-            _ => panic!("SWL: This should not be possible"),
+            _ => unreachable!(),
         };
         self.fetch_load_slot();
         self.store::<Word>(aligned, value);
@@ -902,7 +897,7 @@ impl Cpu {
             1 => (word & 0x000000ff) | (value << 8),
             2 => (word & 0x0000ffff) | (value << 16),
             3 => (word & 0x00ffffff) | (value << 24),
-            _ => panic!("SWL: This should not be possible"),
+            _ => unreachable!(),
         };
         self.fetch_load_slot();
         self.store::<Word>(aligned, value);
