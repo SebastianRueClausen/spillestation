@@ -7,9 +7,9 @@ pub mod vram;
 
 use crate::{
     front::DrawInfo,
-    util::bits::BitExtract,
+    util::BitExtract,
     cpu::{IrqState, Irq},
-    memory::{BusMap, AddrUnit},
+    bus::{BusMap, AddrUnit},
 };
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
@@ -184,11 +184,10 @@ impl MemTransfer {
         if self.x == self.x_end {
             self.x = self.x_start;
             self.y += 1;
-            if self.is_done() {
-                return false;
-            }
+            !self.is_done()
+        } else {
+            true
         }
-        true
     }
 
     fn is_done(&self) -> bool {
@@ -198,7 +197,7 @@ impl MemTransfer {
 
 /// Status register of the GPU.
 #[derive(Clone, Copy)]
-pub struct Status(u32);
+pub struct Status(pub u32);
 
 impl Status {
     /// Texture page x base coordinate. N * 64.
@@ -429,23 +428,17 @@ impl Gpu {
     }
 
     fn gpu_read(&mut self) -> u32 {
-        match self.to_cpu_transfer {
-            Some(ref mut transfer) => {
-                let value: u32 = [0, 16].iter().fold(0, |state, shift| {
-                    let value = self.vram.load_16(transfer.x, transfer.y) as u32;
-                    transfer.next();
-                    state | value << shift
-                });
-                if transfer.is_done() {
-                    self.to_cpu_transfer = None;
-                }
-                value
-            }
-            None => {
-                println!("GPUREAD");
-                self.gpu_read
+        if let Some(ref mut tran) = self.to_cpu_transfer {
+            self.gpu_read = [0, 16].iter().fold(0, |state, shift| {
+                let value = self.vram.load_16(tran.x, tran.y) as u32;
+                tran.next();
+                state | value << shift
+            });
+            if tran.is_done() {
+                self.to_cpu_transfer = None;
             }
         }
+        self.gpu_read
     }
 
     fn status_read(&mut self) -> u32 {
@@ -510,6 +503,7 @@ impl Gpu {
             0x6 => self.gp1_horizontal_display_range(value),
             0x7 => self.gp1_vertical_display_range(value),
             0x8 => self.gp1_display_mode(value),
+            0x4c => {},
             _ => unimplemented!("Invalid GP1 command {:08x}.", cmd),
         }
     }

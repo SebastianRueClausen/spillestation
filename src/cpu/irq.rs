@@ -1,5 +1,5 @@
 use std::fmt;
-use crate::memory::BusMap;
+use crate::bus::BusMap;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]

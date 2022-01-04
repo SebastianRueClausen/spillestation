@@ -1,4 +1,4 @@
-use crate::memory::BusMap;
+use crate::bus::BusMap;
 
 pub struct Spu;
 

@@ -1,4 +1,4 @@
-use crate::util::bits::BitExtract;
+use crate::util::BitExtract;
 
 const FIFO_SIZE: usize = 16;
 

@@ -23,7 +23,7 @@
 //!
 
 use super::REGISTER_NAMES;
-use crate::util::bits::BitExtract;
+use crate::util::BitExtract;
 use std::fmt;
 
 #[derive(Clone, Copy)]

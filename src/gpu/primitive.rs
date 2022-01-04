@@ -1,5 +1,5 @@
 use super::{TextureDepth, TransBlend};
-use crate::util::bits::BitExtract;
+use crate::util::BitExtract;
 
 /// A point on the screen or in VRAM.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]

@@ -4,7 +4,7 @@ mod cop0;
 pub mod irq;
 pub mod opcode;
 
-use super::memory::{AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
+use super::bus::{AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
 use cop0::{Cop0, Exception};
 
 pub use opcode::Opcode;

@@ -1,4 +1,4 @@
-use crate::{cpu::Cpu, memory::bios::Bios, timing};
+use crate::{cpu::Cpu, bus::bios::Bios, timing};
 use std::time::Duration;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

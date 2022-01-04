@@ -2,11 +2,7 @@
 mod fifo;
 
 use fifo::Fifo;
-use crate::{
-    util::bits::BitExtract,
-    cpu::{IrqState, Irq},
-    memory::{AddrUnit, BusMap},
-};
+use crate::{util::BitExtract, cpu::{IrqState, Irq}, bus::{AddrUnit, BusMap}};
 
 pub struct CdRom {
     index: u8,

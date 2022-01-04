@@ -1,9 +1,4 @@
-use crate::{
-    util::bits::BitExtract,
-    cpu::{IrqState, Irq},
-    timing,
-    memory::BusMap,
-};
+use crate::{util::BitExtract, cpu::{IrqState, Irq}, timing, bus::BusMap};
 use std::fmt;
 
 /// The Playstation has three different timers, which all have different uses.

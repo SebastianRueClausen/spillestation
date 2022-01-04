@@ -5,7 +5,7 @@ mod config;
 pub mod gui;
 mod render;
 
-use crate::{system::{System, RunMode}, memory::bios::Bios, timing};
+use crate::{system::{System, RunMode}, bus::bios::Bios, timing};
 use config::Config;
 use gui::{App, app_menu::AppMenu, GuiCtx, config::Configurator};
 use render::{Canvas, ComputeStage, DrawStage, RenderCtx, SurfaceSize};
@@ -50,21 +50,15 @@ pub fn run() {
         *control_flow = ControlFlow::Poll;
         match event {
             Event::RedrawEventsCleared => {
-                let frame_time = Duration::from_secs_f32(1.0 / timing::PAL_FPS as f32);
+                let frame_time = Duration::from_secs_f32(1.0 / timing::NTSC_FPS as f32);
                 let dt = last_draw.elapsed();
                 if dt >= frame_time {
-                    window.request_redraw();
-                    if let State::Running {
-                        ref mut app_menu,
-                        ref mut system,
-                        mode,
-                        ..
-                    } = state {
-                        match mode {
-                            RunMode::Debug => app_menu.draw_tick(dt),
-                            RunMode::Emulation => system.cpu.bus_mut().irq_state.trigger(crate::cpu::irq::Irq::VBlank),
+                    if let State::Running { ref mut app_menu, mode, .. } = state {
+                        if let RunMode::Debug = mode {
+                            app_menu.draw_tick(dt);
                         }
                     }
+                    window.request_redraw();
                     last_draw = Instant::now();
                 } else {
                     *control_flow = ControlFlow::WaitUntil(
@@ -140,7 +134,7 @@ pub fn run() {
                     });
                 }
                 State::Config { ref mut configurator, ref mut bios } => {
-                    let mut config_open = false;
+                    let mut config_open = true;
                     render_ctx.render(|encoder, view, renderer| {
                         draw.render(encoder, view);
                         let res = gui.render(renderer, encoder, view, &window, |gui| {
@@ -225,12 +219,14 @@ pub fn run() {
                                 mode: RunMode::Emulation,
                             },
                         },
-                        Err(ref err) => State::Config {
-                            configurator: Configurator::new(
-                                Some(format!("{}", err)),
-                                None,
-                            ),
-                            bios: None,
+                        Err(ref err) => {
+                            State::Config {
+                                configurator: Configurator::new(
+                                    Some(format!("{}", err)),
+                                    None,
+                                ),
+                                bios: None,
+                            }
                         },
                     };
                 }

@@ -1,6 +1,6 @@
 //! This module emulates the Playstations GPU command buffer.
 
-use crate::util::bits::BitExtract;
+use crate::util::BitExtract;
 use std::ops::Index;
 
 /// Power of 2 for fast modulo.

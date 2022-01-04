@@ -1,8 +1,5 @@
-//! Memory viewer/debugger GUI app. Can be configured to show either data or instructions from a
-//! given address on the Playstations BUS.
-
 use super::App;
-use crate::{memory::{Byte, Word}, cpu::Opcode, system::System};
+use crate::{bus::{Byte, Word}, cpu::Opcode, system::System};
 use std::{fmt::Write, str, time::Duration};
 
 /// One cell in the current value matrix. This is two hex characters which represent one byte.
@@ -12,18 +9,14 @@ type Cell = [u8; 2];
 /// vales read from the BUS of the Playstation. Instruction Mode show a list of instruction from
 /// the BUS. It obivously doesn't know if something is an instruction, so it might show junk.
 enum Mode {
-    Value { matrix: [[Cell; COLUMNS]; ROWS] },
-    Instruction { instructions: [String; ROWS] },
+    Value([[Cell; COLUMNS]; ROWS]),
+    Instruction([String; ROWS]),
 }
 
 /// An ['App'] used to view/display the memory of the Playstation.
 pub struct MemView {
-    /// The first address being shown.
     start_addr: u32,
-    /// Labels of all the addresses being shown. They get updated each frame, but saving them
-    /// avoids allocating new string each frame.
     addresses: [String; ROWS],
-    /// The current mode.
     mode: Mode,
 }
 
@@ -32,10 +25,7 @@ impl Default for MemView {
         Self {
             start_addr: 0x0,
             addresses: Default::default(),
-            // Default to value mode.
-            mode: Mode::Value {
-                matrix: [[[0x0; 2]; COLUMNS]; ROWS],
-            },
+            mode: Mode::Value([[[0x0; 2]; COLUMNS]; ROWS]),
         }
     }
 }
@@ -49,18 +39,16 @@ impl App for MemView {
         // The address get's aligned if it's in instruction mode, since instructions must start on
         // 4-byte aligned address.
         let (start_addr, delta) = match self.mode {
-            Mode::Instruction { .. } => ((self.start_addr + 4 - 1) / 4 * 4, 4),
-            Mode::Value { .. } => (self.start_addr, ROWS),
+            Mode::Instruction(..) => ((self.start_addr + 4 - 1) / 4 * 4, 4),
+            Mode::Value(..) => (self.start_addr, ROWS),
         };
         for (i, address) in self.addresses.iter_mut().enumerate() {
             address.clear();
             write!(address, "{:06x}:\t", start_addr + (delta * i) as u32).unwrap();
         }
         match self.mode {
-            Mode::Instruction {
-                ref mut instructions,
-            } => {
-                for (i, ins) in instructions.iter_mut().enumerate() {
+            Mode::Instruction(ref mut ins) => {
+                for (i, ins) in ins.iter_mut().enumerate() {
                     ins.clear();
                     match system.cpu
                         .bus_mut()
@@ -75,7 +63,7 @@ impl App for MemView {
                     }
                 }
             }
-            Mode::Value { ref mut matrix } => {
+            Mode::Value(ref mut matrix) => {
                 for (i, row) in matrix.iter_mut().enumerate() {
                     for (j, col) in row.iter_mut().enumerate() {
                         match system.cpu
@@ -101,37 +89,33 @@ impl App for MemView {
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.start_addr).speed(1.0));
             let mut ins_mode = match self.mode {
-                Mode::Instruction { .. } => true,
-                Mode::Value { .. } => false,
+                Mode::Instruction(..) => true,
+                Mode::Value(..) => false,
             };
             ui.selectable_value(&mut ins_mode, false, "Value");
             ui.selectable_value(&mut ins_mode, true, "Instruction");
             match self.mode {
-                Mode::Instruction { .. } if !ins_mode => {
-                    self.mode = Mode::Value {
-                        matrix: [[[0x0; 2]; COLUMNS]; ROWS],
-                    }
+                Mode::Instruction(..) if !ins_mode => {
+                    self.mode = Mode::Value([[[0x0; 2]; COLUMNS]; ROWS]);
                 }
                 Mode::Value { .. } if ins_mode => {
-                    self.mode = Mode::Instruction {
-                        instructions: Default::default(),
-                    }
+                    self.mode = Mode::Instruction(Default::default());
                 }
                 _ => {}
             }
         });
         ui.separator();
         match self.mode {
-            Mode::Instruction { ref instructions } => {
+            Mode::Instruction(ref ins) => {
                 egui::Grid::new("instruction_grid").striped(true).show(ui, |ui| {
-                    for (ins, addr) in instructions.iter().zip(self.addresses.iter()) {
+                    for (ins, addr) in ins.iter().zip(self.addresses.iter()) {
                         ui.label(addr);
                         ui.label(ins);
                         ui.end_row();
                     }
                 });
             }
-            Mode::Value { ref matrix } => {
+            Mode::Value(ref matrix) => {
                 egui::Grid::new("mem_value_grid")
                     .striped(true)
                     .spacing([0.0, 0.0])

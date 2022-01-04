@@ -1,7 +1,7 @@
 mod cpu;
 mod front;
 mod gpu;
-mod memory;
+mod bus;
 mod cdrom;
 mod util;
 mod timer;
