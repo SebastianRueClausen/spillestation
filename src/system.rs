@@ -15,7 +15,7 @@ pub struct Debugger {
 impl Debugger {
     fn new() -> Self {
         Self {
-            breakpoints: vec![0x80059e08],
+            breakpoints: vec![],
             changed_addr: None,
         }
     }

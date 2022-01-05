@@ -103,7 +103,9 @@ pub struct CpuCtrl {
     /// CPU at a lower Hz than the update rate, since there may be multiple
     /// updates between each CPU cycle.
     remainder: Duration,
-    break_message: Option<String>
+    break_message: Option<String>,
+    breakpoints: Vec<String>, 
+    breakpoint_add: String,
 }
 
 impl Default for CpuCtrl {
@@ -115,6 +117,8 @@ impl Default for CpuCtrl {
             stepped: false,
             remainder: Duration::ZERO,
             break_message: None,
+            breakpoints: vec!["80059e08".to_owned()],
+            breakpoint_add: String::new(),
         }
     }
 }
@@ -124,14 +128,27 @@ impl App for CpuCtrl {
         "CPU Control"
     }
 
-    fn update_tick(&mut self, dt: Duration, system: &mut System) {
+    fn update_tick(&mut self, dt: Duration, sys: &mut System) {
+        sys.dbg.breakpoints.clear();
+        self.breakpoints.retain(|bp| {
+            match u32::from_str_radix(bp, 16) {
+                Ok(val) => {
+                    sys.dbg.breakpoints.push(val);
+                    true
+                }
+                Err(..) => {
+                    self.break_message = Some(format!("Invalid address: {}", bp));
+                    false
+                }
+            }
+        });
         let stop = match self.mode {
             RunMode::Step if self.stepped => {
                 self.break_message = None;
-                system.step_debug(self.step_amount)
+                sys.step_debug(self.step_amount)
             }
             RunMode::Run => {
-                let (remainder, stop) = system.run_debug(self.cycle_hz, self.remainder + dt);
+                let (remainder, stop) = sys.run_debug(self.cycle_hz, self.remainder + dt);
                 self.remainder = remainder;
                 stop
             }
@@ -166,42 +183,61 @@ impl App for CpuCtrl {
                 } else {
                     " cycle"
                 };
-                ui.add(
-                    egui::Slider::new(&mut self.step_amount, 1..=timing::CPU_HZ)
-                        .suffix(suffix)
-                        .logarithmic(true)
-                        .clamp_to_range(true)
-                        .smart_aim(true)
-                        .text("Step amount"),
-                );
-                self.stepped = ui.button("Step").clicked();
+                let slider = egui::Slider::new(&mut self.step_amount, 1..=timing::CPU_HZ)
+                    .suffix(suffix)
+                    .logarithmic(true)
+                    .clamp_to_range(true)
+                    .smart_aim(true)
+                    .text("Step amount");
+                ui.add(slider);
+                if ui.button("Step").clicked() {
+                    self.stepped = true;
+                    self.break_message = None;
+                }
             }
             RunMode::Run => {
-                ui.add(
-                    egui::Slider::new(&mut self.cycle_hz, 1..=timing::CPU_HZ)
-                        .suffix("Hz")
-                        .logarithmic(true)
-                        .clamp_to_range(true)
-                        .smart_aim(true)
-                        .text("CPU Speed"),
-                );
+                let slider = egui::Slider::new(&mut self.cycle_hz, 1..=timing::CPU_HZ)
+                    .suffix("Hz")
+                    .logarithmic(true)
+                    .clamp_to_range(true)
+                    .smart_aim(true)
+                    .text("CPU Speed");
+                ui.add(slider);
             }
         }
+        ui.separator();
         if let Some(ref msg) = self.break_message {
-            ui.separator();
             ui.label(msg);
         }
-        ui.separator();
-
+        ui.collapsing("Breakpoints", |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Grid::new("breakpoint_grid").show(ui, |ui| {
+                    let line = egui::TextEdit::singleline(&mut self.breakpoint_add);
+                    ui.add_sized([120.0, 20.0], line);
+                    let add = ui.button("Add").clicked();
+                    if ui.input().key_pressed(egui::Key::Enter) || add {
+                        self.breakpoints.push(self.breakpoint_add.clone()); 
+                        self.breakpoint_add.clear();
+                        self.break_message = None;
+                    }
+                    ui.end_row();
+                    self.breakpoints.retain(|bp| {
+                        ui.label(bp); 
+                        let remove = !ui.button("Remove").clicked();
+                        ui.end_row();
+                        remove
+                    });
+                });
+            });
+        });
     }
 
     fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
         egui::Window::new("CPU Control")
             .open(open)
             .resizable(true)
-            .min_width(80.0)
             .default_width(100.0)
-            .default_height(100.0)
+            .default_height(300.0)
             .show(ctx, |ui| {
                 self.show(ui);
             });
