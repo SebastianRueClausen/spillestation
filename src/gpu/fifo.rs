@@ -4,7 +4,7 @@ use crate::util::BitExtract;
 use std::ops::Index;
 
 /// Power of 2 for fast modulo.
-const FIFO_SIZE: usize = 32;
+const FIFO_SIZE: usize = 64;
 
 /// Since the commands/instructions of the Playstations GPU aren't one word like the CPU, a buffer
 /// is used to store the words until it has a full command. This is done using a queue/fifo. The
