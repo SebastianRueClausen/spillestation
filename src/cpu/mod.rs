@@ -1,11 +1,15 @@
 //! Emulation of the MIPS R3000 used by the original Sony Playstation.
 
 mod cop0;
+mod gte;
+
 pub mod irq;
 pub mod opcode;
 
+use crate::util::BitExtract;
 use super::bus::{AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
 use cop0::{Cop0, Exception};
+use gte::Gte;
 
 pub use opcode::Opcode;
 pub use irq::{IrqState, Irq};
@@ -62,6 +66,7 @@ pub struct Cpu {
     icache: Box<[CacheLine; 1024]>,
     // TODO: Some fields of the BUS is accessed a lot, which is causeing cache misses.
     bus: Bus,
+    gte: Gte,
     cop0: Cop0,
 }
 
@@ -83,6 +88,7 @@ impl Cpu {
             load_slot: DelaySlot::default(),
             icache: Box::new([CacheLine::default(); 1024]),
             bus: Bus::new(bios),
+            gte: Gte::new(),
             cop0: Cop0::new(),
         })
     }
@@ -303,11 +309,11 @@ impl Cpu {
             0x2e => self.op_swr(opcode),
             0x30 => self.op_lwc0(),
             0x31 => self.op_lwc1(),
-            0x32 => self.op_lwc2(),
+            0x32 => self.op_lwc2(opcode),
             0x33 => self.op_lwc3(),
             0x38 => self.op_swc0(),
             0x39 => self.op_swc1(),
-            0x3a => self.op_swc2(),
+            0x3a => self.op_swc2(opcode),
             0x3b => self.op_swc3(),
             _ => self.op_illegal(),
         }
@@ -688,7 +694,7 @@ impl Cpu {
 
     /// COP0 - Coprocessor0 instruction.
     fn op_cop0(&mut self, op: Opcode) {
-        match op.cop0_op() {
+        match op.cop_op() {
             // MFC0 - Move from Co-Processor0.
             0x0 => {
                 let register = op.rd();
@@ -704,7 +710,7 @@ impl Cpu {
                 self.cop0.set_reg(op.rd(), self.read_reg(op.rt()));
             }
             // RFE - Restore from exception.
-            0b10000 => {
+            0x10 => {
                 self.fetch_load_slot();
                 self.cop0.exit_exception();
             }
@@ -719,8 +725,33 @@ impl Cpu {
     }
 
     /// COP2 - GME instruction.
-    fn op_cop2(&mut self, _: Opcode) {
-        todo!();
+    fn op_cop2(&mut self, op: Opcode) {
+        let cop = op.cop_op();
+        if cop.extract_bit(4) == 1 {
+            self.gte.cmd(op.0);
+        } else {
+            match cop {
+                // Load from COP2 data register.
+                0x0 => {
+                   todo!() 
+                }
+                // Load from COP2 control register.
+                0x2 => {
+                    todo!()
+                }
+                // Store to COP2 data register.
+                0x4 => {
+                    todo!()
+                }
+                // Store to COP2 control register.
+                0x6 => {
+                    let val = self.read_reg(op.rt());
+                    self.fetch_load_slot();
+                    self.gte.ctrl_store(op.rd(), val);
+                }
+               _ => unreachable!(),
+            }
+        }
     }
 
     /// COP3 - Coprocessor3 instruction.
@@ -915,8 +946,8 @@ impl Cpu {
     }
 
     /// LWC2 - Load word from Coprocessor2.
-    fn op_lwc2(&mut self) {
-        todo!();
+    fn op_lwc2(&mut self, _: Opcode) {
+        todo!()
     }
 
     /// LWC3 - Load word from Coprocessor3.
@@ -935,8 +966,8 @@ impl Cpu {
     }
 
     /// SWC2 - Store world in Coprocessor0.
-    fn op_swc2(&mut self) {
-        todo!();
+    fn op_swc2(&mut self, _: Opcode) {
+        todo!()
     }
 
     /// SWC3 - Store world in Coprocessor0.

@@ -101,7 +101,7 @@ impl App for MemView {
                 Mode::Value { .. } if ins_mode => {
                     self.mode = Mode::Instruction(Default::default());
                 }
-                _ => {}
+                _ => ()
             }
         });
         ui.separator();

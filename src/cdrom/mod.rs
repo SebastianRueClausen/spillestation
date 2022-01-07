@@ -7,6 +7,7 @@ use crate::{util::BitExtract, cpu::{IrqState, Irq}, bus::{AddrUnit, BusMap}};
 #[derive(Clone, Copy)]
 enum Interrupt {
     Ack = 0x3,
+    Error = 0x5,
 }
 
 pub struct CdRom {
@@ -14,6 +15,7 @@ pub struct CdRom {
     irq_mask: u8,
     irq_flags: u8,
     cmd: Option<u8>,
+    cmd_response: Option<u8>,
     response_fifo: Fifo,
     arg_fifo: Fifo,
     data_fifo: Fifo,
@@ -26,29 +28,46 @@ impl CdRom {
             irq_mask: 0x0,
             irq_flags: 0x0,
             cmd: None,
+            cmd_response: None,
             response_fifo: Fifo::new(),
             arg_fifo: Fifo::new(),
             data_fifo: Fifo::new(), 
         }
     }
 
-    pub fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) {
-        println!("store {}", addr);
+    pub fn store<T: AddrUnit>(&mut self, irq: &mut IrqState, addr: u32, val: u32) {
         match addr {
             0 => self.index = val.extract_bits(0, 1) as u8,
             1 => match self.index {
-                0 => self.cmd = Some(val as u8),
+                0 => {
+                    if self.cmd.is_some() {
+                        println!("CDROM: Beginning Command with pending command");
+                    }
+                    self.cmd = Some(val as u8);
+                    self.exec_cmd(irq);
+                },
                 _ => todo!(),
             }
             2 => match self.index {
                 0 => self.arg_fifo.push(val as u8),
-                1 => self.irq_mask = val as u8 & 0x1f,
+                1 => {
+                    let was_active = self.irq_active();
+                    self.irq_mask = val as u8 & 0x1f;
+                    if !was_active && self.irq_active() {
+                        irq.trigger(Irq::CdRom); 
+                    }
+                }
                 2 => todo!(),
                 _ => unreachable!(),
             }
             3 => match self.index {
                 0 => todo!(),
-                1 => self.irq_flags &= !(val as u8 & 0x1f),
+                1 => {
+                    self.irq_flags &= !(val as u8 & 0x1f);
+                    if val.extract_bit(6) == 1  {
+                        self.arg_fifo.clear();
+                    }
+                }
                 2 => todo!(),
                 _ => unreachable!(),
             }
@@ -64,18 +83,17 @@ impl CdRom {
                     | (self.arg_fifo.is_empty() as u8) << 3
                     | (!self.arg_fifo.is_full() as u8) << 4
                     | (!self.response_fifo.is_empty() as u8) << 5
-                    | (!self.data_fifo.is_empty() as u8) << 6;
+                    | (!self.data_fifo.is_empty() as u8) << 6
+                    | (self.cmd.is_some() as u8) << 7;
                 register.into()
             }
-            1 => self.response_fifo.pop() as u32,
-            2 => self.data_fifo.pop() as u32,
-            3 => {
-                match self.index {
-                    0 => self.irq_mask as u32 | 0xe0,
-                    1 => self.irq_flags as u32 | 0xe0,
-                    2 => todo!(),
-                    _ => unreachable!(),
-                }
+            1 => self.response_fifo.try_pop().unwrap_or(0x0).into(),
+            2 => self.data_fifo.pop().into(),
+            3 => match self.index {
+                0 => self.irq_mask as u32 | !0x1f,
+                1 => self.irq_flags as u32 | !0x1f,
+                2 => todo!(),
+                _ => unreachable!(),
             }
             _ => unreachable!(),
         }
@@ -83,32 +101,68 @@ impl CdRom {
 
 
     pub fn exec_cmd(&mut self, irq: &mut IrqState) {
+        if let Some(cmd) = self.cmd_response.take() {
+            match cmd {
+                0x1e => self.cmd_read_toc_response(),
+                _ => unreachable!(),
+            }
+        }
         if let Some(cmd) = self.cmd.take() {
             match cmd {
+                0x01 => self.cmd_stat(irq),
                 0x19 => self.cmd_test(irq),
-                _ => todo!(),
+                0x1a => self.cmd_get_id(irq),
+                0x1e => self.cmd_read_toc(),
+                _ => todo!("CDROM Command: {:08x}", cmd),
             }
+            self.arg_fifo.clear();
         }
     }
 
     fn set_interrupt(&mut self, irq: &mut IrqState, int: Interrupt) {
         self.irq_flags = int as u8;
-        if (self.irq_flags & self.irq_mask) != 0 {
+        if self.irq_active() {
             irq.trigger(Irq::CdRom);
         }
     }
 
+    fn irq_active(&self) -> bool {
+        (self.irq_flags & self.irq_mask) != 0
+    }
+
+    fn drive_stat(&self) -> u8 {
+        // This means that the drive cover is open.
+        0x10
+    }
+
+    fn cmd_stat(&mut self, irq: &mut IrqState) {
+        self.response_fifo.push(self.drive_stat());
+        self.set_interrupt(irq, Interrupt::Ack);
+    }
+
     fn cmd_test(&mut self, irq: &mut IrqState) {
         match self.arg_fifo.pop() {
-            // Get version data. This is ofcourse different from console to console.
             0x20 => {
                 // These represent year, month, day and version respectively.
-                self.response_fifo.push_slice(&[0x95, 0x05, 0x16, 0xc1]);
+                self.response_fifo.push_slice(&[0x98, 0x06, 0x10, 0xc3]);
                 self.set_interrupt(irq, Interrupt::Ack);
             }
             _ => todo!(),
         }
-        self.arg_fifo.clear();
+    }
+
+    fn cmd_get_id(&mut self, irq: &mut IrqState) {
+        self.response_fifo.push_slice(&[0x11, 0x80]);
+        self.set_interrupt(irq, Interrupt::Error);
+    }
+
+    fn cmd_read_toc(&mut self) {
+        self.response_fifo.push(self.drive_stat());
+        self.cmd_response = Some(0x1e);
+    }
+
+    fn cmd_read_toc_response(&mut self) {
+        self.response_fifo.push(self.drive_stat());
     }
 }
 

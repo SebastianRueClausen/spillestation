@@ -93,7 +93,7 @@ impl System {
 }
 
 /// How many CPU cycles between each CDROM run.
-const CDROM_FREQ: u64 = 2_u64.pow(21);
+const CDROM_FREQ: u64 = 2_u64.pow(14);
 
 /// How many CPU cycles between each timer run.
 const TIMER_FREQ: u64 = 2_u64.pow(14);

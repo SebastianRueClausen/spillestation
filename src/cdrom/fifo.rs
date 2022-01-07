@@ -41,6 +41,7 @@ impl Fifo {
     }
 
     pub fn push_slice(&mut self, values: &[u8]) {
+        debug_assert!(!self.is_full());
         for value in values {
             self.push(*value);
         }
@@ -48,7 +49,15 @@ impl Fifo {
 
     pub fn pop(&mut self) -> u8 {
         let value = self.data[self.tail.extract_bits(0, 3) as usize];
-        self.tail = self.tail.wrapping_sub(1).extract_bits(0, 3);
+        self.tail = self.tail.wrapping_add(1).extract_bits(0, 3);
         value
+    }
+
+    pub fn try_pop(&mut self) -> Option<u8> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.pop())
+        }
     }
 }

@@ -76,6 +76,9 @@ impl Bus {
             EXP1_BEGIN..=EXP1_END => {
                 Some(0xff)
             },
+            EXP2_BEGIN..=EXP2_END => {
+                Some(0xff)
+            }
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
                 Some(self.irq_state.load(address - IrqState::BUS_BEGIN))
             }
@@ -158,7 +161,10 @@ impl Bus {
                 self.exec_transfers();
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
-                self.cdrom.store::<T>(address - CdRom::BUS_BEGIN, value);
+                self.cdrom.store::<T>(
+                    &mut self.irq_state,
+                    address - CdRom::BUS_BEGIN, value,
+                );
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
                 self.gpu.store::<T>(address - Gpu::BUS_BEGIN, value);

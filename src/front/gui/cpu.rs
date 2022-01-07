@@ -83,44 +83,48 @@ impl App for CpuStatus {
 
 #[derive(PartialEq, Eq)]
 enum RunMode {
-    Step,
-    Run,
+    Step {
+        /// The amount of cycles each step.
+        amount: u64,
+        /// If the step button has been pressed.
+        stepped: bool,
+    },
+    Run {
+        /// The speed of which the run the system, in CPU cycles per second.
+        speed: u64,
+        /// This is used to run at a more precise HZ. It's also required to run the
+        /// CPU at a lower Hz than the update rate, since there may be multiple
+        /// updates between each CPU cycle.
+        remainder: Duration,
+    },
+}
+
+impl Default for RunMode {
+    fn default() -> Self {
+        RunMode::Step { amount: 1, stepped: false }
+    }
+}
+
+struct Breakpoint {
+    addr: u32,
+    name: String,
+}
+
+impl Breakpoint {
+    fn new(addr: u32, name: String) -> Self {
+        Self { addr, name }
+    }
 }
 
 /// ['App'] for controlling the ['System'] when it's in debug mode. It has two differnent modes.
 ///  - Run - Automatically runs the CPU at a given speed.
 ///  - Step - Manually step through each cycle.
+#[derive(Default)]
 pub struct CpuCtrl {
-    /// Cycles per second in run mode.
-    cycle_hz: u64,
-    /// The amount of cycles which is run each time step.
-    step_amount: u64,
-    /// If the step button has been pressed.
-    stepped: bool,
-    /// Paused aka. in step mode.
     mode: RunMode,
-    /// This is used to run at a more precise HZ. It's also required to run the
-    /// CPU at a lower Hz than the update rate, since there may be multiple
-    /// updates between each CPU cycle.
-    remainder: Duration,
     break_message: Option<String>,
-    breakpoints: Vec<String>, 
-    breakpoint_add: String,
-}
-
-impl Default for CpuCtrl {
-    fn default() -> Self {
-        Self {
-            cycle_hz: timing::CPU_HZ,
-            step_amount: 1,
-            mode: RunMode::Run,
-            stepped: false,
-            remainder: Duration::ZERO,
-            break_message: None,
-            breakpoints: vec!["80059e08".to_owned()],
-            breakpoint_add: String::new(),
-        }
-    }
+    bp: Vec<Breakpoint>, 
+    bp_add: String,
 }
 
 impl App for CpuCtrl {
@@ -130,32 +134,24 @@ impl App for CpuCtrl {
 
     fn update_tick(&mut self, dt: Duration, sys: &mut System) {
         sys.dbg.breakpoints.clear();
-        self.breakpoints.retain(|bp| {
-            match u32::from_str_radix(bp, 16) {
-                Ok(val) => {
-                    sys.dbg.breakpoints.push(val);
-                    true
-                }
-                Err(..) => {
-                    self.break_message = Some(format!("Invalid address: {}", bp));
-                    false
-                }
-            }
-        });
+        for bp in self.bp.iter() {
+            sys.dbg.breakpoints.push(bp.addr); 
+        }
         let stop = match self.mode {
-            RunMode::Step if self.stepped => {
+            RunMode::Step { amount, stepped } if stepped => {
                 self.break_message = None;
-                sys.step_debug(self.step_amount)
+                sys.step_debug(amount)
             }
-            RunMode::Run => {
-                let (remainder, stop) = sys.run_debug(self.cycle_hz, self.remainder + dt);
-                self.remainder = remainder;
+            RunMode::Run { speed, ref mut remainder } => {
+                self.break_message = None;
+                let (rem, stop) = sys.run_debug(speed, *remainder + dt);
+                *remainder = rem;
                 stop
             }
             _ => DebugStop::Time,
         };
         if let DebugStop::Breakpoint(addr) = stop {
-            self.mode = RunMode::Step;
+            self.mode = RunMode::default();
             self.break_message = Some(
                 format!("Stopped at breakpoint on address: {:08x}", addr)
             );
@@ -163,40 +159,41 @@ impl App for CpuCtrl {
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
+        let mut step_mode = match self.mode {
+            RunMode::Step { .. } => true,
+            RunMode::Run { .. } => false,
+        };
         ui.horizontal(|ui| {
-            ui.radio_value(
-                &mut self.mode,
-                RunMode::Step,
-                "Step"
-            );
-            ui.radio_value(
-                &mut self.mode,
-                RunMode::Run,
-                "Run"
-            );
+            ui.selectable_value(&mut step_mode, true, "Step");
+            ui.selectable_value(&mut step_mode, false, "Run");
         });
+        match self.mode {
+            RunMode::Step { .. } if !step_mode => {
+                self.mode = RunMode::Run { speed: 1, remainder: Duration::ZERO }     
+            }
+            RunMode::Run { .. } if step_mode => {
+                self.mode = RunMode::Step { amount: 1, stepped: false }
+            }
+            _ => (),
+        }
         ui.separator();
         match self.mode {
-            RunMode::Step => {
-                let suffix = if self.step_amount > 1 {
-                    " cycles"
-                } else {
-                    " cycle"
+            RunMode::Step { ref mut amount, ref mut stepped } => {
+                let suffix = match amount {
+                    0 | 2.. => " cycles",
+                    1 => " cycle",
                 };
-                let slider = egui::Slider::new(&mut self.step_amount, 1..=timing::CPU_HZ)
+                let slider = egui::Slider::new(amount, 1..=timing::CPU_HZ)
                     .suffix(suffix)
                     .logarithmic(true)
                     .clamp_to_range(true)
                     .smart_aim(true)
                     .text("Step amount");
                 ui.add(slider);
-                if ui.button("Step").clicked() {
-                    self.stepped = true;
-                    self.break_message = None;
-                }
+                *stepped = ui.button("Step").clicked();
             }
-            RunMode::Run => {
-                let slider = egui::Slider::new(&mut self.cycle_hz, 1..=timing::CPU_HZ)
+            RunMode::Run { ref mut speed, ..  } => {
+                let slider = egui::Slider::new(speed, 1..=timing::CPU_HZ)
                     .suffix("Hz")
                     .logarithmic(true)
                     .clamp_to_range(true)
@@ -212,17 +209,28 @@ impl App for CpuCtrl {
         ui.collapsing("Breakpoints", |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 egui::Grid::new("breakpoint_grid").show(ui, |ui| {
-                    let line = egui::TextEdit::singleline(&mut self.breakpoint_add);
-                    ui.add_sized([120.0, 20.0], line);
+                    ui.add_sized(
+                        [120.0, 20.0],
+                        egui::TextEdit::singleline(&mut self.bp_add),
+                    );
                     let add = ui.button("Add").clicked();
                     if ui.input().key_pressed(egui::Key::Enter) || add {
-                        self.breakpoints.push(self.breakpoint_add.clone()); 
-                        self.breakpoint_add.clear();
-                        self.break_message = None;
+                        // Parse the string as address in hex.
+                        match u32::from_str_radix(&self.bp_add, 16) {
+                            Ok(addr) => {
+                                self.bp.push(Breakpoint::new(addr, self.bp_add.clone()));
+                                self.bp_add.clear();
+                            }
+                            Err(..) => {
+                                self.break_message = Some(
+                                    format!("Invalid Breakpoint address: {}", self.bp_add)
+                                );
+                            }
+                        };
                     }
                     ui.end_row();
-                    self.breakpoints.retain(|bp| {
-                        ui.label(bp); 
+                    self.bp.retain(|bp| {
+                        ui.label(&bp.name); 
                         let remove = !ui.button("Remove").clicked();
                         ui.end_row();
                         remove

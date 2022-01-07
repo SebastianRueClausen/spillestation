@@ -27,7 +27,7 @@ use crate::util::BitExtract;
 use std::fmt;
 
 #[derive(Clone, Copy)]
-pub struct Opcode(u32);
+pub struct Opcode(pub(super) u32);
 
 impl Opcode {
     pub fn new(opcode: u32) -> Self {
@@ -44,8 +44,8 @@ impl Opcode {
         self.0.extract_bits(0, 5)
     }
 
-    /// Cop0 operation.
-    pub fn cop0_op(self) -> u32 {
+    /// Cop operation.
+    pub fn cop_op(self) -> u32 {
         self.rs()
     }
 
