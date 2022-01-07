@@ -63,10 +63,10 @@ impl IrqState {
         self.mask & (1 << irq as u32) == 1
     }
 
-    pub fn store(&mut self, offset: u32, value: u32) {
+    pub fn store(&mut self, offset: u32, val: u32) {
         match offset {
-            0 => self.status &= !value,
-            4 => self.mask = value,
+            0 => self.status &= val,
+            4 => self.mask = val,
             _ => unreachable!("Invalid store at offset {}", offset),
         }
     }

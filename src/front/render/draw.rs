@@ -183,7 +183,7 @@ impl DrawStage {
         }
     }
 
-    pub fn render(
+    pub fn render_canvas(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         render_target: &wgpu::TextureView,

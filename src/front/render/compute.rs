@@ -109,7 +109,7 @@ impl ComputeStage {
 
     /// Generate ['Canvas'] from the playstations VRAM. First it transfers the entire VRAM
     /// to the shdader, then it dispatches the compute shader for each pixel in ['Canvas'].
-    pub fn compute_render_texture(
+    pub fn compute_canvas(
         &mut self,
         vram: &Vram,
         draw_info: &DrawInfo,
@@ -117,7 +117,7 @@ impl ComputeStage {
         queue: &wgpu::Queue,
         canvas: &Canvas,
     ) {
-        // Transfer the entire VRAM. This could be done with a staging belt, which should be faster
+        // Transfer the entire ['Vram']. This could be done with a staging belt, which should be faster
         // in theory. However in the testing i have done, that didn't seem to be the case, which
         // means that either write_buffer does the same under the hood, or it just isn't a
         // bottleneck. Perhaps it's faster on some systems, in which case it probably should be

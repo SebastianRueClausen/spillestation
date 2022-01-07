@@ -8,6 +8,7 @@ mod timer;
 mod timing;
 mod system;
 mod spu;
+mod io_port;
 
 fn main() {
     front::run();

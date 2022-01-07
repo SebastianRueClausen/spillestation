@@ -3,6 +3,7 @@
 mod fifo;
 mod primitive;
 mod rasterize;
+
 pub mod vram;
 
 use crate::{
@@ -10,6 +11,8 @@ use crate::{
     util::BitExtract,
     cpu::{IrqState, Irq},
     bus::{BusMap, AddrUnit},
+    timing,
+    timer::Timers,
 };
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
@@ -17,6 +20,7 @@ use rasterize::{
     Opaque, Shaded, Shading, Textured, Textureing, Transparency, UnShaded, UnTextured,
 };
 use std::fmt;
+
 pub use vram::Vram;
 
 /// How to blend two colors. Used mainly for blending the color of a shape being drawn with the color
@@ -333,6 +337,30 @@ impl Status {
     }
 }
 
+struct Timing {
+    /// The current scanline.
+    scanline: u64,
+    /// The current progress into the scanline in dot cycles.
+    scanline_prog: u64,
+    in_hblank: bool,
+    in_vblank: bool,
+    last_run: u64,
+    last_draw: std::time::Instant,
+}
+
+impl Timing {
+    fn new() -> Self {
+        Self {
+            scanline: 0,
+            scanline_prog: 0,
+            in_hblank: false,
+            in_vblank: false,
+            last_run: 0,
+            last_draw: std::time::Instant::now(),
+        }
+    }
+}
+
 pub struct Gpu {
     /// Fifo command buffer.
     fifo: Fifo,
@@ -342,7 +370,7 @@ pub struct Gpu {
     to_cpu_transfer: Option<MemTransfer>,
     /// To VRAM transfer.
     to_vram_transfer: Option<MemTransfer>,
-    /// The status register.
+    timing: Timing,
     pub status: Status,
     /// The GPUREAD register. This contains various info about the GPU, and is generated after each
     /// GP1(10) command call. It is read through the BUS at GPUREAD, if no transfer is ongoing.
@@ -384,6 +412,7 @@ impl Gpu {
             vram: Vram::new(),
             to_cpu_transfer: None,
             to_vram_transfer: None,
+            timing: Timing::new(),
             status: Status(0x14802000),
             gpu_read: 0x0,
             rect_tex_x_flip: false,
@@ -484,11 +513,80 @@ impl Gpu {
         }
     }
 
-    pub fn run(&mut self, irq: &mut IrqState, cycles: u64) {
-        if self.status.irq_enabled() {
-            irq.trigger(Irq::Gpu);
+    pub fn in_vblank(&self) -> bool {
+        self.timing.in_vblank
+    }
+
+    pub fn run(&mut self, irq: &mut IrqState, timers: &mut Timers, cycles: u64) {
+        self.timing.scanline_prog += timing::cpu_to_gpu_cycles(cycles - self.timing.last_run);
+        self.timing.last_run = cycles;
+
+        // If the progress is less than a single scanline.
+        if self.timing.scanline_prog < timing::NTSC_CYCLES_PER_SCLN {
+            let in_hblank = self.timing.scanline_prog >= timing::HSYNC_CYCLES;
+
+            // If we have entered Hblank.
+            if in_hblank && !self.timing.in_hblank {
+                timers.hblank(1);
+            }
+
+            self.timing.in_hblank = in_hblank;
+        } else {
+            // Calculate the number of lines to be drawn.
+            let mut lines = self.timing.scanline_prog / timing::NTSC_CYCLES_PER_SCLN;
+            self.timing.scanline_prog %= timing::NTSC_CYCLES_PER_SCLN;
+
+            // At there must have been atleast a single Hblank, this calculates the amount.
+            //
+            // If the GPU wasn't in Hblank, it must have entered since then, which adds one to the
+            // count. We know it's going to enter into Hblank on each scanline, except the current
+            // one it's on, which is represented by 'in_hblank'.
+            let in_hblank = self.timing.scanline_prog >= timing::HSYNC_CYCLES;
+            let hblank_count = u64::from(!self.timing.in_hblank)
+                + u64::from(in_hblank)
+                + lines - 1;
+
+            timers.hblank(hblank_count);
+            self.timing.in_hblank = in_hblank;
+
+            while lines > 0 {
+                let line_count = u64::min(lines, timing::NTSC_SCLN_COUNT - self.timing.scanline);
+                lines -= line_count;
+
+                let scanline = self.timing.scanline + line_count;
+
+                // Calculate if the scanlines being drawn enters the display area, and clear the
+                // Vblank flag if not.
+                if self.timing.scanline < timing::NTSC_VBEGIN && scanline >= timing::NTSC_VEND {
+                    // TODO: Timer sync.
+                    self.timing.in_vblank = false;
+                }
+
+                self.timing.scanline = scanline;
+
+                let in_vblank = !timing::NTSC_VERTICAL_RANGE.contains(&scanline);
+
+                // If we are either leaving or entering Vblank.
+                if self.timing.in_vblank != in_vblank {
+                    if in_vblank {
+                        irq.trigger(Irq::VBlank);
+                        self.timing.last_draw = std::time::Instant::now();
+                    }
+                    self.timing.in_vblank = in_vblank;
+                    // TODO: Timer sync.
+                }
+
+                // Prepare new frame if we are at the end of Vblank.
+                if self.timing.scanline == timing::NTSC_SCLN_COUNT {
+                    self.timing.scanline = 0;
+                    if self.status.vertical_interlace_enabled() {
+                        self.status.0 ^= 1 << 13; 
+                    } else {
+                        self.status.0 &= !(1 << 13);
+                    }
+                }
+            }
         }
-        // let cycles = timing::cpu_to_gpu_cycles(cycles);
     }
 
     fn gp1_store(&mut self, value: u32) {

@@ -2,19 +2,19 @@
 //! emulator itself.
 
 mod config;
-pub mod gui;
-mod render;
+
+pub mod render;
+mod gui;
 
 use crate::{system::{System, RunMode}, bus::bios::Bios, timing};
 use config::Config;
 use gui::{App, app_menu::AppMenu, GuiCtx, config::Configurator};
 use render::{Canvas, ComputeStage, DrawStage, RenderCtx, SurfaceSize};
 use std::{path::Path, time::{Duration, Instant}};
-use winit::{
-    event::{ElementState, Event, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
-};
+use winit::event::{ElementState, Event, VirtualKeyCode, WindowEvent};
+use winit::event_loop::{ControlFlow, EventLoop};
+use winit::window::WindowBuilder;
+
 pub use render::compute::DrawInfo;
 
 enum State {
@@ -52,18 +52,37 @@ pub fn run() {
             Event::RedrawEventsCleared => {
                 let frame_time = Duration::from_secs_f32(1.0 / timing::NTSC_FPS as f32);
                 let dt = last_draw.elapsed();
-                if dt >= frame_time {
-                    if let State::Running { ref mut app_menu, mode, .. } = state {
-                        if let RunMode::Debug = mode {
-                            app_menu.draw_tick(dt);
-                        }
-                    }
+                let mut redraw = || {
                     window.request_redraw();
                     last_draw = Instant::now();
-                } else {
-                    *control_flow = ControlFlow::WaitUntil(
-                        Instant::now() + frame_time - dt,
-                    );
+                };
+                match state {
+                    State::Running {
+                        ref mut app_menu,
+                        ref system,
+                        mode,
+                        ..
+                    } => match mode {
+                        RunMode::Emulation => {
+                            if system.cpu.bus().gpu().in_vblank() {
+                                redraw();
+                            }
+                        }
+                        RunMode::Debug => {
+                            if dt >= frame_time {
+                                app_menu.draw_tick(dt);
+                                redraw();
+                            }
+                        }
+                    },
+                    State::Config { .. } if dt >= frame_time => redraw(),
+                    _ => {
+                        // This can be reached in config and startup. This just makes the window
+                        // wait until the next frame should be drawn.
+                        *control_flow = ControlFlow::WaitUntil(
+                            Instant::now() + frame_time - dt,
+                        );
+                    }
                 }
             }
             Event::WindowEvent {
@@ -116,14 +135,14 @@ pub fn run() {
                     ..
                 } => {
                     render_ctx.render(|encoder, view, renderer| {
-                        compute.compute_render_texture(
+                        compute.compute_canvas(
                             system.cpu.bus().vram(),
                             &system.cpu.bus().gpu().draw_info(),
                             encoder,
                             &renderer.queue,
                             &canvas,
                         );
-                        draw.render(encoder, view);
+                        draw.render_canvas(encoder, view);
                         let res = gui.render(renderer, encoder, view, &window, |gui| {
                             app_menu.show(gui, mode);
                         });
@@ -136,7 +155,7 @@ pub fn run() {
                 State::Config { ref mut configurator, ref mut bios } => {
                     let mut config_open = true;
                     render_ctx.render(|encoder, view, renderer| {
-                        draw.render(encoder, view);
+                        draw.render_canvas(encoder, view);
                         let res = gui.render(renderer, encoder, view, &window, |gui| {
                             configurator.show_window(gui, &mut config_open);
                         });

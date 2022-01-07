@@ -298,13 +298,13 @@ impl Timer {
         }
     }
 
-    fn run(&mut self, irq: &mut IrqState, cpu_cycles: u64) {
+    fn run(&mut self, irq: &mut IrqState, hblanks: u64, cycles: u64) {
         // Translate CPU cycles to whatever the current clocksource. This is not very accurate.
         let mut ticks = match self.mode.clock_source(self.id) {
-            ClockSource::SystemClock => cpu_cycles,
-            ClockSource::SystemClockDiv8 => cpu_cycles / 8,
-            ClockSource::Hblank => 1,
-            ClockSource::DotClock => timing::cpu_to_gpu_cycles(cpu_cycles),
+            ClockSource::SystemClock => cycles,
+            ClockSource::SystemClockDiv8 => cycles / 8,
+            ClockSource::Hblank => hblanks,
+            ClockSource::DotClock => timing::cpu_to_gpu_cycles(cycles),
         };
         // If ticks is more than 0xffff, it has to be added in several steps.
         while let (value, false) = ticks.overflowing_sub(0xffff) {
@@ -318,6 +318,7 @@ impl Timer {
 pub struct Timers {
     pub timers: [Timer; 3],
     last_run: u64,
+    hblanks: u64,
 }
 
 impl Timers {
@@ -329,6 +330,7 @@ impl Timers {
                 Timer::new(TimerId::Tmr2),
             ],
             last_run: 0,
+            hblanks: 0,
         }
     }
 
@@ -344,9 +346,14 @@ impl Timers {
 
     pub fn run(&mut self, irq: &mut IrqState, cycle: u64) {
         for timer in self.timers.iter_mut() {
-            timer.run(irq, cycle - self.last_run);
+            timer.run(irq, self.hblanks, cycle - self.last_run);
         }
         self.last_run = cycle;
+        self.hblanks = 0;
+    }
+
+    pub fn hblank(&mut self, count: u64) {
+        self.hblanks += count;
     }
 }
 

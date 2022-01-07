@@ -10,6 +10,7 @@ use crate::{
     cpu::IrqState,
     timer::Timers,
     spu::Spu,
+    io_port::IoPort,
 };
 use bios::Bios;
 use dma::{BlockTransfer, Port, Direction, Dma, LinkedTransfer, Transfers};
@@ -30,6 +31,7 @@ pub struct Bus {
     spu: Spu,
     mem_ctrl: MemCtrl,
     ram_size: RamSize,
+    io_port: IoPort,
 }
 
 impl Bus {
@@ -45,6 +47,7 @@ impl Bus {
             cdrom: CdRom::new(),
             timers: Timers::new(),
             spu: Spu::new(),
+            io_port: IoPort::new(),
             mem_ctrl: MemCtrl::new(),
             cache_ctrl: CacheCtrl(0),
             ram_size: RamSize(0),
@@ -94,6 +97,9 @@ impl Bus {
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
                 Some(self.gpu.load::<T>(address - Gpu::BUS_BEGIN))
+            }
+            IoPort::BUS_BEGIN..=IoPort::BUS_BEGIN => {
+                Some(self.io_port.load(address - IoPort::BUS_BEGIN))
             }
             _ => None,
         }
@@ -157,6 +163,9 @@ impl Bus {
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
                 self.gpu.store::<T>(address - Gpu::BUS_BEGIN, value);
             }
+            IoPort::BUS_BEGIN..=IoPort::BUS_END => {
+                self.io_port.store(address - IoPort::BUS_BEGIN, value);
+            }
             _ => {
                 panic!("Trying to store invalid address to bus at {:08x}", address)
             }
@@ -181,6 +190,10 @@ impl Bus {
 
     pub fn run_timers(&mut self) {
         self.timers.run(&mut self.irq_state, self.cycle_count);
+    }
+
+    pub fn run_gpu(&mut self) {
+        self.gpu.run(&mut self.irq_state, &mut self.timers, self.cycle_count);
     }
 
     /// This executes waiting DAM transfers.

@@ -31,6 +31,10 @@ impl Fifo {
         self.len() == FIFO_SIZE
     }
 
+    pub fn clear(&mut self) {
+        self.head = self.tail;
+    }
+
     pub fn push(&mut self, value: u8) {
         self.data[self.head.extract_bits(0, 3) as usize] = value;
         self.head = self.head.wrapping_add(1).extract_bits(0, 3);

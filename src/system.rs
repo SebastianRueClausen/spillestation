@@ -52,6 +52,9 @@ impl System {
         if cycle % TIMER_FREQ == 0 {
             self.cpu.bus_mut().run_timers();
         }
+        if cycle % GPU_FREQ == 0 {
+            self.cpu.bus_mut().run_gpu();
+        }
     }
 
     /// Run at full speed.
@@ -94,3 +97,5 @@ const CDROM_FREQ: u64 = 2_u64.pow(21);
 
 /// How many CPU cycles between each timer run.
 const TIMER_FREQ: u64 = 2_u64.pow(14);
+
+const GPU_FREQ: u64 = 2_u64.pow(12);
