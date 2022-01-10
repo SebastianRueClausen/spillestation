@@ -14,7 +14,6 @@ use gte::Gte;
 pub use opcode::Opcode;
 pub use irq::{IrqState, Irq};
 
-/// Used to store pending loads from the Bus.
 #[derive(Default, Copy, Clone)]
 struct DelaySlot {
     pub register: u32,
@@ -28,24 +27,48 @@ struct CacheLine {
 }
 
 pub struct Cpu {
-    /// At the start of each cycle, this points to the last instruction which was executed. During
-    /// the cycle, it points to the current instruction being executed.
+    /// At the start of each instruction, this points to the last instruction executed. During
+    /// the instruction, it points to the current opcode being executed.
     last_pc: u32,
-    /// This points to the instruction about to be executed at the start of each
-    /// cycle. During the cycle it points at the next instruction.
+    /// This points to the opcode about to be executed at the start of each
+    /// instruction. During the instruction it points at the next opcode.
     pub pc: u32,
-    /// Always one step ahead of PC. Used to simulate branch delay.
+    /// Always one step ahead of 'pc'. This is used to emulate CPU pipelineing and more
+    /// specifically branch delay.
+    ///
+    /// The MIPS R3000 pipelines one instruction ahead, meaning it loads the next
+    /// opcode while the current instruction is being executed to speed up execution. This it not a
+    /// problem when executing straight line code without branches, but it becomes problematic when
+    /// a branch occours. Unlike modern processors, MIPS doesn't flush the pipeline and start
+    /// over from the taken branch. This means that the processor always will execute the
+    /// instruction right after a branch, no matter if the branch was taken or not.
+    ///
+    /// To emulate this, 'next_pc' is get's changed when branching instead of 'pc', which works
+    /// well besides when entering and expception.
     pub next_pc: u32,
-    /// Set if instruction is in branch delay slot.
+    /// Set to true if the current instruction is executed in the branch delay slot, in other words
+    /// if the previous instruction branched.
+    ///
+    /// It's used when entering an exception. If the CPU is in a delay slot, it has to return one
+    /// instruction behind 'last_pc'.
     in_branch_delay: bool,
-    /// This is set if the last instruction branched.
+    /// Set when a branch occours. Used to set 'in_branch_delay'.
     branched: bool,
-    /// Multiply/divide result.
+    /// Results of multiply and divide instructions aren't stored in general purpose
+    /// registers like normal instructions, but is instead stored in two special registers hi and
+    /// lo.
     pub hi: u32,
     pub lo: u32,
-    /// The cycle number MUL/DIV result is ready.
+    /// This stores the absolute cycle when the result of an multiply or divide instruction is
+    /// ready since they take more than a single cycle to complete. The CPU can run while the
+    /// result is being calculated, but if the result is being read before it's ready, the CPU will
+    /// wait before continuing.
     hi_lo_ready: u64,
-    /// General purpose registers.
+    /// # General Purpose Registers
+    ///
+    /// All registers of the MIPS R3000 are essentially general purpose besides $r0 which always
+    /// contains the value 0. They are however used for specific purposes depending on convention.
+    ///
     /// - 0 - Always 0.
     /// - 1 - Assembler temporary.
     /// - 2..3 - Subroutine return values.
@@ -59,12 +82,27 @@ pub struct Cpu {
     /// - 30 - Frame pointer, or static variable.
     /// - 31 - Return address.
     pub registers: [u32; 32],
-    /// This takes advantage of the fact that the zero register always is zero. This means no
-    /// branching is required to check of there is something in the load slot.
-    load_slot: DelaySlot,
-    /// Instruction cache.
+    /// # Load Delay Slot
+    ///
+    /// This is used to emulate the pipeline of the MIPS R3000. When loading data from the BUS,
+    /// it's not immediately ready to be read from the register, because fetching data takes more
+    /// than a single cycle. Unlike modern CPUs, this doesn't wait or handle that automatically.
+    ///
+    /// When loading a value from the BUS to a register, the value is ready in the register after
+    /// the next instruction has read the registers, but before it has written to them. This is
+    /// emulated by calling 'fetch_load_slot' in (mostly) every instruction, after reading the
+    /// data needed from the registers, but after writing to any. If the load delay slot
+    /// alreay contains a pending load to the same register when a load instruction tries to add a
+    /// new pending load, it ignores the first load.
+    /// 
+    /// This field contains the value and register index of any pending loads. It takes advantage
+    /// of the fact that the $r0 register always contains the value 0 to avoid branching every
+    /// instruction. If there is any pending load, it writes the data to the register, if there
+    /// isn't any load, it writes 0 to the $r0 register. This seems to speeds up the CPU at
+    /// least 15% compared to branching, most likely because the branch predicter has a hard time.
+    load_delay: DelaySlot,
+    /// Memory sections KUSEG and KSEG0 are cached for instructions.
     icache: Box<[CacheLine; 1024]>,
-    // TODO: Some fields of the BUS is accessed a lot, which is causeing cache misses.
     bus: Bus,
     gte: Gte,
     cop0: Cop0,
@@ -85,7 +123,7 @@ impl Cpu {
             lo: 0x0,
             hi_lo_ready: 0x0,
             registers: [0x0; 32],
-            load_slot: DelaySlot::default(),
+            load_delay: DelaySlot::default(),
             icache: Box::new([CacheLine::default(); 1024]),
             bus: Bus::new(bios),
             gte: Gte::new(),
@@ -93,58 +131,47 @@ impl Cpu {
         })
     }
 
-    /// Get value of register at index.
     fn read_reg(&self, index: u32) -> u32 {
         self.registers[index as usize]
     }
 
-    /// Set register at index.
     fn set_reg(&mut self, index: u32, value: u32) {
         self.registers[index as usize] = value;
     }
 
-    /// Load address from bus.
     fn load<T: AddrUnit>(&mut self, address: u32) -> u32 {
         self.bus.load::<T>(address)
     }
 
-    /// Store address to bus.
     fn store<T: AddrUnit>(&mut self, address: u32, value: u32) {
         if !self.cop0.cache_isolated() {
             self.bus.store::<T>(address, value);
         } else {
-            // TODO: Write to cache/scratchpad.
+            // TODO: Write to scratchpad.
         }
     }
 
     /// Add pending load. If there's already one pending, fetch it.
     fn add_load_slot(&mut self, register: u32, value: u32) {
-        // If there already a pending load to the same register, we avoid writing to that register.
-        // The branching is optimized away.
-        let eq = if register == self.load_slot.register {
-            0
-        } else {
-            1
-        };
-        self.set_reg(self.load_slot.register * eq, self.load_slot.value * eq);
-        self.load_slot = DelaySlot { register, value };
+        let eq = (register != self.load_delay.register) as u32;
+        self.set_reg(self.load_delay.register * eq, self.load_delay.value * eq);
+        self.load_delay = DelaySlot { register, value };
     }
 
-    /// Do pending load, if any.
+    /// Fetch pending load if there is any.
     fn fetch_load_slot(&mut self) {
-        self.set_reg(self.load_slot.register, self.load_slot.value);
-        self.load_slot = DelaySlot::default();
+        self.set_reg(self.load_delay.register, self.load_delay.value);
+        self.load_delay = DelaySlot::default();
     }
 
-    /// MUL/DIV takes more than one cycle, but other instructions can run while the result is
-    /// pending. This is an attempt to simulate that.
+    /// Add result to hi and lo register.
     fn add_pending_hi_lo(&mut self, cycles: u32, hi: u32, lo: u32) {
         self.hi_lo_ready = self.bus.cycle_count + cycles as u64;
         self.hi = hi;
         self.lo = lo;
     }
 
-    /// If there is a DIV/MUL result pending, wait the required until it's ready.
+    /// Wait for hi lo results.
     fn fetch_pending_hi_lo(&mut self) {
         self.bus.cycle_count = u64::max(self.bus.cycle_count, self.hi_lo_ready);
     }
@@ -155,13 +182,12 @@ impl Cpu {
         self.next_pc = self.pc.wrapping_add(offset << 2);
         self.branched = true;
         if !Word::is_aligned(self.next_pc) {
-            // This is probably not required.
             self.cop0.set_reg(8, self.next_pc);
             self.throw_exception(Exception::AddressLoadError);
         }
     }
 
-    /// Jump sets pc to address,
+    /// Jump to absolute.
     fn jump(&mut self, address: u32) {
         self.next_pc = address;
         self.branched = true;
@@ -181,8 +207,8 @@ impl Cpu {
     }
 
     fn irq_pending(&self) -> bool {
-        let cause = self.cop0.read_reg(13)
-            | ((self.bus.irq_state.active() as u32) << 10);
+        let active = (self.bus.irq_state.active() as u32) << 10;
+        let cause = self.cop0.read_reg(13) | active;
         let active = self.cop0.read_reg(12) & cause & 0xffff00;
         self.cop0.irq_enabled() && active != 0
     }
@@ -218,20 +244,14 @@ impl Cpu {
             self.fetch_load_slot();
             self.throw_exception(Exception::Interrupt); 
         }
-        // Only KUSEG and KSEG0 are cached.
-        let data = if address < 0xa0000000 && self.bus.cache_ctrl.icache_enabled() {
-            // Only if this tag matches the tag of the cacheline is the cache valid.
-            // This makes sure the valid flag is set, and it points at the right address.
+        Opcode::new(if address < 0xa0000000 && self.bus.cache_ctrl.icache_enabled() {
             let tag = ((address & 0xfffff000) >> 12) | 0x80000000;
             let index = ((address & 0xffc) >> 2) as usize;
-            let cache = self.icache[index as usize];
-            // If the cacheline is valid, we just read from it, otherwise we fetch the instruction
-            // from memory and store it in the cache.
+            let cache = self.icache[index];
             if cache.tag == tag {
                 cache.data
             } else {
                 let data = self.load::<Word>(address);
-                // Update cacheline.
                 self.icache[index] = CacheLine { tag, data };
                 data
             }
@@ -239,8 +259,7 @@ impl Cpu {
             // Cache misses take about 4 cycles.
             self.bus.cycle_count += 4;
             self.load::<Word>(address)
-        };
-        Opcode::new(data)
+        })
     }
 
     /// Execute opcode.
@@ -319,7 +338,10 @@ impl Cpu {
             _ => self.op_illegal(),
         }
     }
+}
 
+/// CPU opcode implementation.
+impl Cpu {
     /// SLL - Shift left logical.
     fn op_sll(&mut self, op: Opcode) {
         let value = self.read_reg(op.rt()) << op.shift();
@@ -787,8 +809,8 @@ impl Cpu {
     fn op_lwl(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         // This instruction somehow doesn't wait on load delay.
-        let value = if self.load_slot.register == op.rt() {
-            self.load_slot.value
+        let value = if self.load_delay.register == op.rt() {
+            self.load_delay.value
         } else {
             self.read_reg(op.rt())
         };
@@ -841,8 +863,8 @@ impl Cpu {
     fn op_lwr(&mut self, op: Opcode) {
         let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         // This instruction somehow doesn't wait on load delay.
-        let value = if self.load_slot.register == op.rt() {
-            self.load_slot.value
+        let value = if self.load_delay.register == op.rt() {
+            self.load_delay.value
         } else {
             self.read_reg(op.rt())
         };

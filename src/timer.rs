@@ -1,4 +1,7 @@
-use crate::{util::BitExtract, cpu::{IrqState, Irq}, timing, bus::BusMap};
+use crate::util::{BitExtract, BitSet};
+use crate::cpu::{IrqState, Irq};
+use crate::timing;
+use crate::bus::BusMap;
 use std::fmt;
 
 /// The Playstation has three different timers, which all have different uses.
@@ -97,15 +100,10 @@ impl fmt::Display for ClockSource {
 
 /// The mode register.
 #[derive(Clone, Copy)]
-pub struct Mode(u32);
+pub struct Mode(u16);
 
 impl Mode {
-    /// The reset value of the ['Mode'] register.
-    fn new() -> Self {
-        Mode(0)
-    }
-
-    /// If the is false, then the timer effectively runs in free run sync mode.
+    /// If the is false, then the timer effectively runs in ['SyncMode::FreeRun'] sync mode.
     pub fn sync_enabled(self) -> bool {
         self.0.extract_bit(0) == 1
     }
@@ -116,7 +114,6 @@ impl Mode {
             (TimerId::Tmr0, 1) => SyncMode::HblankReset,
             (TimerId::Tmr0, 2) => SyncMode::HblankResetAndRun,
             (TimerId::Tmr0, 3) => SyncMode::HblankWait,
-            // This is the same as tmr0, just with Vblank instead of Hblank.
             (TimerId::Tmr1, 0) => SyncMode::VblankPause,
             (TimerId::Tmr1, 1) => SyncMode::VblankReset,
             (TimerId::Tmr1, 2) => SyncMode::VblankResetAndRun,
@@ -185,36 +182,41 @@ impl Mode {
         self.0.extract_bit(12) == 1
     }
 
-    fn store(&mut self, value: u32) {
-        // Bit 10..12 are readonly.
-        self.0 |= value & 0x3ff;
+    fn store(&mut self, val: u16) {
         // In toggle mode, the irq master flag is always set after each store. When not in toggle
         // mode, it will more or less always be on.
         self.set_master_irq_flag(true);
+        // Bit 10..12 are readonly.
+        self.0 |= val & 0x3ff;
     }
 
-    fn set_master_irq_flag(&mut self, value: bool) {
-        self.0 |= (value as u32) << 10;
+    fn load(&mut self) -> u32 {
+        let val = self.0;
+        // Overflow/target reached flags get's reset after each read.
+        self.set_target_reached(false);
+        self.set_overflow_reached(false);
+        val as u32
     }
 
-    fn set_target_reached(&mut self) {
-        self.0 |= 1 << 11; 
+    fn set_master_irq_flag(&mut self, val: bool) {
+        self.0.set_bit(10, val);
     }
 
-    fn set_overflow_reached(&mut self) {
-        self.0 |= 1 << 12; 
+    fn set_target_reached(&mut self, val: bool) {
+        self.0.set_bit(11, val);
+    }
+
+    fn set_overflow_reached(&mut self, val: bool) {
+        self.0.set_bit(12, val);
     }
 }
 
 pub struct Timer {
     pub id: TimerId,
-    /// The mode register.
     pub mode: Mode,
-    /// The counter increasing after each clock tick.
     pub counter: u16,
-    /// A target which can be set. The timer can be configured to 
     pub target: u16,
-    /// This is to track if it has interrupted since last write to ['mode'], since in oneshot
+    /// This is to track if it has interrupted since last write to 'mode', since in oneshot
     /// mode it only does it once.
     has_triggered: bool,
 }
@@ -223,7 +225,7 @@ impl Timer {
     fn new(id: TimerId) -> Self {
         Self {
             id,
-            mode: Mode::new(),
+            mode: Mode(0),
             counter: 0,
             target: 0,
             has_triggered: false,
@@ -270,6 +272,8 @@ impl Timer {
         if self.mode.irq_repeat() || !self.has_triggered {
             self.has_triggered = true;
             if self.mode.master_irq_flag() {
+                // TODO: In repeat mode, the master irq flag should be off when entering entering an
+                // Interrupt.
                 irq.trigger(self.id.irq_kind());
             }
             if self.mode.irq_toggle_mode() {
@@ -280,7 +284,7 @@ impl Timer {
     }
 
     fn target_reached(&mut self, irq: &mut IrqState) {
-        self.mode.set_target_reached();
+        self.mode.set_target_reached(true);
         if self.mode.reset_on_target() {
             self.counter = 0;
         }
@@ -308,7 +312,7 @@ impl Timer {
                 if self.mode.irq_on_overflow() {
                     self.trigger_irq(irq);
                 }
-                self.mode.set_overflow_reached(); 
+                self.mode.set_overflow_reached(true);
             }
         }
     }

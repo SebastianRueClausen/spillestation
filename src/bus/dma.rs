@@ -55,7 +55,7 @@ impl BlockCtrl {
 }
 
 /// DMA can transfer either from or to CPU.
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum Direction {
     ToRam,
     ToPort,
@@ -165,13 +165,22 @@ impl ChannelCtrl {
 
     fn mark_as_finished(&mut self) {
         // Clear both enabled and start flags.
-        self.0 &= !(1 << 24);
-        self.0 &= !(1 << 28);
+        self.0.set_bit(24, false);
+        self.0.set_bit(28, false);
+    }
+
+    fn store(&mut self, port: Port, val: u32) {
+        if port == Port::Otc {
+            self.0 &= 0x5100_0000;
+            self.0 |= 2;
+        }
+        self.0 = val;
     }
 }
 
 #[derive(Clone, Copy)]
 struct Channel {
+    port: Port,
     /// The base address. Address of the first words the be read/written.
     base: u32,
     block_ctrl: BlockCtrl,
@@ -179,8 +188,9 @@ struct Channel {
 }
 
 impl Channel {
-    fn new() -> Self {
+    fn new(port: Port) -> Self {
         Self {
+            port,
             base: 0x0,
             block_ctrl: BlockCtrl::new(0x0),
             ctrl: ChannelCtrl::new(0x0),
@@ -202,7 +212,12 @@ impl Channel {
         match offset {
             0 => self.base = value.extract_bits(0, 23),
             4 => self.block_ctrl = BlockCtrl::new(value),
-            8 => self.ctrl = ChannelCtrl::new(value),
+            8 => {
+                self.ctrl.store(self.port, value);
+                if self.ctrl.chopping_enabled() {
+                    warn!("DMA chopping enabled");
+                }
+            },
             _ => unreachable!("Invalid store at in channel at offset {:08x}", offset),
         }
     }
@@ -259,7 +274,7 @@ impl IrqReg {
     }
 
     fn set_channel_irq_flag(&mut self, channel: Port) {
-        self.0 |= 1 << 24 + channel as u32;
+        self.0.set_bit(24 + channel as usize, true);
     }
 
     /// This is a readonly and is updated whenever ['Interrupt'] is changed in any way.
@@ -269,18 +284,28 @@ impl IrqReg {
 
     /// If this ever get's set, an interrupt is triggered.
     fn update_master_irq_flag(&mut self, irq: &mut IrqState) {
-        let enabled = self.0.extract_bits(16, 22);
-        let flags = self.0.extract_bits(24, 30);
-        // If this is true, then the DMA should trigger an interrupt. If the force_irq flag is set,
-        // then it will always trigger an interrupt. Otherwise it will trigger if any of the
-        // channels with enabled interrupts has an interrupt.
+        // If this is true, then the DMA should trigger an interrupt if 'master_irq_flag' isn't
+        // already on. If the force_irq flag is set, then it will always trigger an interrupt.
+        // Otherwise it will trigger if any of the flags are set and 'master_irq_enabled' is on.
         let result = self.force_irq()
-            || (self.master_irq_enabled()
-            && (enabled & flags) > 0);
-        self.0 |= (result as u32) << 31;
+            || self.master_irq_enabled()
+            && self.0.extract_bits(24, 30) != 0;
         if result {
-            irq.trigger(Irq::Dma); 
+            if !self.master_irq_flag() {
+                self.0.set_bit(31, true);
+                irq.trigger(Irq::Dma);
+            }
+        } else {
+            self.0.set_bit(31, false);
         }
+    }
+
+    fn store(&mut self, irq: &mut IrqState, val: u32) {
+        let mask = 0x00ff_803f;
+        self.0 &= !mask;
+        self.0 |= val & mask;
+        self.0 &= !(val & 0x7f00_0000);
+        self.update_master_irq_flag(irq);
     }
 }
 
@@ -288,7 +313,7 @@ impl IrqReg {
 /// These tranfers could technically be done via CPU load operations, but these transfers are much
 /// faster, and therefore widely used, especially when large blocks of data has to be
 /// transferred to or from something like VRAM or CDROM.
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct BlockTransfer {
     pub port: Port,
     pub direction: Direction,
@@ -303,7 +328,7 @@ pub struct BlockTransfer {
 
 /// Linked list transfers are only used for GPU commands. It basically continues to transfer data
 /// until the end of a linked list is reached.
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct LinkedTransfer {
     pub start: u32,
 }
@@ -338,7 +363,15 @@ impl Dma {
         Self {
             ctrl: CtrlReg::new(0x0),
             irq: IrqReg::new(0x0),
-            channels: [Channel::new(); 7],
+            channels: [
+                Channel::new(Port::MdecIn),
+                Channel::new(Port::MdecOut),
+                Channel::new(Port::Gpu),
+                Channel::new(Port::CdRom),
+                Channel::new(Port::Spu),
+                Channel::new(Port::Pio),
+                Channel::new(Port::Otc),
+            ],
         }
     }
 
@@ -368,15 +401,10 @@ impl Dma {
         let channel = offset.extract_bits(4, 6);
         let reg = offset.extract_bits(0, 3);
         match channel {
-            0..=6 => {
-                self.channels[channel as usize].store(reg, value);
-            }
+            0..=6 => self.channels[channel as usize].store(reg, value),
             7 => match reg {
                 0 => self.ctrl.0 = value,
-                4 => {
-                    self.irq.0 = value;
-                    self.irq.update_master_irq_flag(irq);
-                }
+                4 => self.irq.store(irq, value),
                 _ => unreachable!(),
             },
             _ => unreachable!(),
@@ -389,11 +417,8 @@ impl Dma {
         self.channels[port as usize].ctrl.mark_as_finished();
         if self.irq.channel_irq_enabled(port) {
             self.irq.set_channel_irq_flag(port);
-            self.irq.update_master_irq_flag(irq);
-            if self.irq.master_irq_flag() {
-                irq.trigger(Irq::Dma);
-            }
         }
+        self.irq.update_master_irq_flag(irq);
     }
 
     /// Build transfer command for the BUS to execute.
@@ -407,20 +432,21 @@ impl Dma {
         for (i, ch) in self.channels.iter().enumerate() {
             match ch.ctrl.sync_mode() {
                 SyncMode::Manual if ch.ctrl.start() && ch.ctrl.enabled() => {
+                    let size = ch.block_ctrl.block_size();
                     trans.block.push(BlockTransfer {
-                        port: Port::from_value(i as u32),
+                        port: ch.port,
+                        size,
                         direction: ch.ctrl.direction(),
-                        size: ch.block_ctrl.block_size(),
                         increment: increment(ch.ctrl.step()),
                         start: ch.base,
                     });
                 }
                 SyncMode::Request if ch.ctrl.enabled() => {
+                    let size = ch.block_ctrl.block_size() * ch.block_ctrl.block_count();
                     trans.block.push(BlockTransfer {
-                        port: Port::from_value(i as u32),
+                        port: ch.port,
+                        size,
                         direction: ch.ctrl.direction(),
-                        size: ch.block_ctrl.block_size()
-                            * ch.block_ctrl.block_count(),
                         increment: increment(ch.ctrl.step()),
                         start: ch.base,
                     });

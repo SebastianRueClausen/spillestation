@@ -44,7 +44,7 @@ impl App for VramView {
             ui.add(egui::DragValue::new(&mut self.y).speed(1.0));
         });
         ui.separator();
-        egui::Grid::new("vram_value_grid").show(ui, |ui| {
+        egui::Grid::new("vram_value_grid").striped(true).show(ui, |ui| {
             ui.label("");
             for i in 0..COLUMNS {
                 ui.label(format!("{:06x}", self.x + i as i32));

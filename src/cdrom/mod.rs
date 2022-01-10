@@ -4,6 +4,7 @@ mod fifo;
 use fifo::Fifo;
 use crate::{util::BitExtract, cpu::{IrqState, Irq}, bus::{AddrUnit, BusMap}};
 
+/// Interrupt types used internally by the Playstations CDROM.
 #[derive(Clone, Copy)]
 enum Interrupt {
     Ack = 0x3,
@@ -11,12 +12,21 @@ enum Interrupt {
 }
 
 pub struct CdRom {
+    /// The index register. This decides what happens when the CPU writes to and
+    /// loads from the CDROM.
     index: u8,
+    /// Which ['Interrupt']s are enabled.
     irq_mask: u8,
+    /// Which ['Interrupt']s are active.
     irq_flags: u8,
+    /// The CDROM may or may not have a command waiting to be executed.
     cmd: Option<u8>,
+    /// Sometimes the response or part of the response from commands may take some time to be
+    /// available. This is uesd to emulate that. The Option contains the command number.
     cmd_response: Option<u8>,
+    /// Responses from commands.
     response_fifo: Fifo,
+    /// Arguments to commands.
     arg_fifo: Fifo,
     data_fifo: Fifo,
 }

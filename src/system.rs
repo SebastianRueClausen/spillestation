@@ -1,45 +1,28 @@
 use crate::{cpu::Cpu, bus::bios::Bios, timing};
 use std::time::Duration;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum RunMode {
-    Debug,
-    Emulation,
-}
-
-pub struct Debugger {
-    pub breakpoints: Vec<u32>,
-    pub changed_addr: Option<u32>,
-}
-
-impl Debugger {
-    fn new() -> Self {
-        Self {
-            breakpoints: vec![],
-            changed_addr: None,
-        }
-    }
-}
-
 #[derive(PartialEq, Eq)]
 pub enum DebugStop {
     Breakpoint(u32),
     Time,
 }
 
+/// Breakpoints which can be supplied to ['System::debug_step'] and ['System::debug_run'].
+pub struct Breaks<'a> {
+    pub code: &'a [u32],
+    pub store: &'a [u32],
+    pub load: &'a [u32],
+}
+
 /// The whole system is on ['Cpu']. This struct is to control and interact with the system
 /// from the frontend.
 pub struct System {
     pub cpu: Box<Cpu>,
-    pub dbg: Debugger,
 }
 
 impl System {
     pub fn new(bios: Bios) -> Self {
-        Self {
-            cpu: Cpu::new(bios),
-            dbg: Debugger::new(),
-        }
+        Self { cpu: Cpu::new(bios) }
     }
 
     /// Take a single CPU step, which can be multiple cycles.
@@ -67,24 +50,29 @@ impl System {
     }
 
 
-    /// Run at a given speed. Returns the remainder.
-    pub fn run_debug(&mut self, hz: u64, mut time: Duration) -> (Duration, DebugStop) {
+    /// Run at a given speed in debug mode. Returns the remainder.
+    pub fn run_debug<'a>(
+        &mut self,
+        hz: u64,
+        mut time: Duration,
+        breaks: Breaks<'a>,
+    ) -> (Duration, DebugStop) {
         let cycle_time = Duration::from_secs(1) / hz as u32;
         while let Some(new) = time.checked_sub(cycle_time) {
             time = new;
             self.cpu_step();
-            if self.dbg.breakpoints.contains(&self.cpu.next_pc) {
+            if breaks.code.contains(&self.cpu.next_pc) {
                 return (time, DebugStop::Breakpoint(self.cpu.next_pc));
             }
         }
         (time, DebugStop::Time)
     }
 
-    /// Take a given number of steps.
-    pub fn step_debug(&mut self, steps: u64) -> DebugStop {
+    /// Run for a given number of cycles in debug mode.
+    pub fn step_debug<'a>(&mut self, steps: u64, breaks: Breaks<'a>) -> DebugStop {
         for _ in 0..steps {
             self.cpu_step();
-            if self.dbg.breakpoints.contains(&self.cpu.next_pc) {
+            if breaks.code.contains(&self.cpu.next_pc) {
                 return DebugStop::Breakpoint(self.cpu.next_pc);
             }
         }
@@ -92,10 +80,6 @@ impl System {
     }
 }
 
-/// How many CPU cycles between each CDROM run.
-const CDROM_FREQ: u64 = 2_u64.pow(14);
-
-/// How many CPU cycles between each timer run.
-const TIMER_FREQ: u64 = 2_u64.pow(14);
-
+const CDROM_FREQ: u64 = 2_u64.pow(12);
+const TIMER_FREQ: u64 = 2_u64.pow(11);
 const GPU_FREQ: u64 = 2_u64.pow(12);

@@ -206,14 +206,20 @@ impl Bus {
     fn exec_transfers(&mut self) {
         // Execute block transfers.
         while let Some(transfer) = self.transfers.block.pop() {
+            trace!("DMA block transfer: {:?}", transfer);
             match transfer.direction {
-                Direction::ToPort => self.trans_block_to_port(&transfer),
-                Direction::ToRam => self.trans_block_to_ram(&transfer),
+                Direction::ToPort => {
+                    self.trans_block_to_port(&transfer);
+                }
+                Direction::ToRam => {
+                    self.trans_block_to_ram(&transfer);
+                }
             }
             self.dma.channel_done(transfer.port, &mut self.irq_state);
         }
         // Execute linked list transfers.
         while let Some(transfer) = self.transfers.linked.pop() {
+            trace!("DMA linked transfer: {:?}", transfer);
             self.trans_linked_to_port(&transfer);
             self.dma.channel_done(Port::Gpu, &mut self.irq_state);
         }
@@ -222,7 +228,7 @@ impl Bus {
     /// Execute transfers to a port.
     fn trans_block_to_port(&mut self, transfer: &BlockTransfer) {
         (0..transfer.size).fold(transfer.start, |address, _| {
-            let value = self.ram.load::<Word>(address & 0x1ffffc);
+            let value = self.ram.load::<Word>(address & 0x1f_fffc);
             match transfer.port {
                 Port::Gpu => self.gpu.dma_store(value),
                 _ => todo!(),
@@ -233,34 +239,33 @@ impl Bus {
    
     /// Execute transfers to RAM from a port.
     fn trans_block_to_ram(&mut self, transfer: &BlockTransfer) {
-        (0..transfer.size).rev().fold(transfer.start, |address, remain| {
-            self.ram.store::<Word>(address & 0x1ffffc, match transfer.port {
+        (0..transfer.size).rev().fold(transfer.start, |addr, remain| {
+            self.ram.store::<Word>(addr & 0x1_ffffc, match transfer.port {
                 Port::Otc => match remain {
-                    0 => 0xffffff,
-                    _ => address.wrapping_sub(4).extract_bits(0, 21),
+                    0 => 0xff_ffff,
+                    _ => addr.wrapping_sub(4).extract_bits(0, 21),
                 }
                 Port::Gpu => self.gpu.dma_load(),
                 _ => todo!(),
             });
-            address.wrapping_add(transfer.increment)
+            addr.wrapping_add(transfer.increment)
         });
     }
 
     fn trans_linked_to_port(&mut self, transfer: &LinkedTransfer) {
-        let mut address = transfer.start & 0x1ffffc;
+        let mut addr = transfer.start;
         loop {
-            let header = self.ram.load::<Word>(address);
+            let header = self.ram.load::<Word>(addr & 0x1f_fffc);
             // Bit 24..31 in the header represents the size of the node, which get's transfered to
             // the port.
             for _ in 0..header.extract_bits(24, 31) {
-                address = address.wrapping_add(4) & 0x1ffffc;
-                self.gpu.dma_store(self.ram.load::<Word>(address));
+                addr = addr.wrapping_add(4).extract_bits(0, 23);
+                self.gpu.dma_store(self.ram.load::<Word>(addr));
             }
-            // It's done when the 23rd bit is set in the header.
-            if header.extract_bit(23) == 1 {
+            addr = header.extract_bits(0, 23);
+            if addr == 0xff_ffff {
                 break;
             }
-            address = header & 0x1ffffc;
         }
     }
 }

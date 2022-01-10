@@ -6,13 +6,11 @@ use std::ops::Index;
 /// Power of 2 for fast modulo.
 const FIFO_SIZE: usize = 32;
 
-/// Since the commands/instructions of the Playstations GPU aren't one word like the CPU, a buffer
+/// Since the commands of the Playstations GPU aren't one word like the CPU, a buffer
 /// is used to store the words until it has a full command. This is done using a queue/fifo. The
 /// first word recives must be an instruction, since the instruction determines the length of
 /// the command. It then checks after each push if the length of the buffer is equal to the length
 /// of the instruction stored in the first slot. If it is, the command get's executed by the GPU.
-///
-/// Since we know the max size a command can have, this is implemented as a circular buffer.
 pub struct Fifo {
     data: [u32; FIFO_SIZE],
     head: u32,
@@ -29,7 +27,6 @@ impl Fifo {
     }
 
     pub fn len(&self) -> usize {
-        // Just to make sure we handle overflow, as there could be alot of writes to the fifo.
         self.head.wrapping_sub(self.tail) as usize
     }
 

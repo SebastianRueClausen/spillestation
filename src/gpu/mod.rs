@@ -6,19 +6,16 @@ mod rasterize;
 
 pub mod vram;
 
-use crate::{
-    front::DrawInfo,
-    util::BitExtract,
-    cpu::{IrqState, Irq},
-    bus::{BusMap, AddrUnit},
-    timing,
-    timer::Timers,
-};
+use crate::front::DrawInfo;
+use crate::util::{BitExtract, BitSet};
+use crate::cpu::{IrqState, Irq};
+use crate::bus::{BusMap, AddrUnit};
+use crate::timing;
+use crate::timer::Timers;
+
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
-use rasterize::{
-    Opaque, Shaded, Shading, Textured, Textureing, Transparency, UnShaded, UnTextured,
-};
+use rasterize::{Opaque, Shaded, Shading, Textured, Textureing, Transparency, UnShaded, UnTextured};
 use std::fmt;
 
 pub use vram::Vram;
@@ -64,11 +61,13 @@ impl fmt::Display for TransBlend {
     }
 }
 
-/// The frequency of the frames being drawn to the screen.
+/// Video mode mainly determines the output framerate. It depends on the region of the console,
+/// North American consoles uses NTSC for instance, while European consoles uses PAL. Every console
+/// can output both modes, so it purely determined by bios.
 pub enum VideoMode {
-    /// 60 Hz.
+    /// ~60 Hz.
     Ntsc = 60,
-    /// 50 Hz.
+    /// ~50 Hz.
     Pal = 50,
 }
 
@@ -99,7 +98,7 @@ impl fmt::Display for DmaDirection {
     }
 }
 
-/// Interlace output split into two fields.
+#[derive(PartialEq, Eq)]
 pub enum InterlaceField {
     Bottom = 0,
     Top = 1,
@@ -114,7 +113,7 @@ impl fmt::Display for InterlaceField {
     }
 }
 
-/// Number of bits used to represent 1 pixel.
+/// Number of bits used to represent a single pixel.
 pub enum ColorDepth {
     B15 = 15,
     B24 = 24,
@@ -129,46 +128,41 @@ impl fmt::Display for ColorDepth {
     }
 }
 
-/// Number of bits used to represent 1 texture pixel.
-pub enum TextureDepth {
+/// Number of bits used to represent a single texel.
+pub enum TexelDepth {
     B4 = 4,
     B8 = 8,
     B15 = 15,
 }
 
-impl TextureDepth {
+impl TexelDepth {
     fn from_value(value: u32) -> Self {
         match value {
-            0 => TextureDepth::B4,
-            1 => TextureDepth::B8,
-            2 => TextureDepth::B15,
+            0 => TexelDepth::B4,
+            1 => TexelDepth::B8,
+            2 => TexelDepth::B15,
             _ => unreachable!("Invalid texture depth"),
         }
     }
 }
 
-impl fmt::Display for TextureDepth {
+impl fmt::Display for TexelDepth {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", match *self {
-            TextureDepth::B4 => "4 bit",
-            TextureDepth::B8 => "8 bit",
-            TextureDepth::B15 => "15 bit",
+            TexelDepth::B4 => "4 bit",
+            TexelDepth::B8 => "8 bit",
+            TexelDepth::B15 => "15 bit",
         })
     }
 }
 
-/// An ongoing memory transfer between Bus and VRAM. Data is loaded/stored via DMA transfers.
+/// An ongoing memory transfer between Bus and VRAM.
 #[derive(Clone, Copy)]
 struct MemTransfer {
-    /// The current x coordinate.
     pub x: i32,
-    /// The current y coordinate.
     pub y: i32,
-    /// The first x coordinate.
     x_start: i32,
-    /// The last x coordinate.
     x_end: i32,
-    /// The last y coordinate.
     y_end: i32,
 }
 
@@ -220,8 +214,8 @@ impl Status {
     }
 
     /// Depth of the texture colors.
-    pub fn texture_depth(self) -> TextureDepth {
-        TextureDepth::from_value(self.0.extract_bits(7, 8))
+    pub fn texture_depth(self) -> TexelDepth {
+        TexelDepth::from_value(self.0.extract_bits(7, 8))
     }
 
     pub fn dithering_enabled(self) -> bool {
@@ -296,10 +290,11 @@ impl Status {
     }
 
     /// Draw interlaced instead of progressive.
-    pub fn vertical_interlace_enabled(self) -> bool {
+    pub fn vertical_interlace(self) -> bool {
         self.0.extract_bit(22) == 1
     }
 
+    // Nocash says that the display is enabled if bit 23 equals 0.
     pub fn display_enabled(self) -> bool {
         self.0.extract_bit(23) == 1
     }
@@ -334,6 +329,13 @@ impl Status {
             3 => DmaDirection::VramToCpu,
             _ => unreachable!("Invalid dma direction"),
         }
+    }
+
+    /// If 'vertical_interlace' is enabled for when 'vertical_res' is 240 bits, it switches between
+    /// each between the same line each frame, so this tells if the GPU actually uses two fields in
+    /// VRAM.
+    fn interlaced480(self) -> bool {
+        self.vertical_interlace() && self.vertical_res() == 480
     }
 }
 
@@ -454,6 +456,10 @@ impl Gpu {
 
     pub fn dma_store(&mut self, value: u32) {
         self.gp0_store(value);
+    }
+
+    pub fn dma_load(&mut self) -> u32 {
+        self.gpu_read()
     }
 
     fn gpu_read(&mut self) -> u32 {
@@ -578,14 +584,30 @@ impl Gpu {
                 // Prepare new frame if we are at the end of Vblank.
                 if self.timing.scanline == timing::NTSC_SCLN_COUNT {
                     self.timing.scanline = 0;
-                    if self.status.vertical_interlace_enabled() {
-                        self.status.0 ^= 1 << 13; 
+                    // The interlace field is toggled every frame if vertical interlace is turned
+                    // on.
+                    if self.status.interlaced480() {
+                        self.status.0 ^= 1 << 13;
                     } else {
                         self.status.0 &= !(1 << 13);
                     }
                 }
             }
         }
+        // The the current line being displayed in VRAM. It's used here to determine
+        // the value of bit 31 of 'status'.
+        let line_offset = if self.status.interlaced480() {
+            let offset = if self.timing.in_vblank {
+                (self.status.interlace_field() == InterlaceField::Bottom) as u16
+            } else {
+                0
+            };
+            (self.timing.scanline << 1) as u16 | offset
+        } else {
+            self.timing.scanline as u16
+        };
+        let vram_line = self.display_vram_y_start + line_offset;
+        self.status.0.set_bit(31, vram_line & 0x1 == 1);
     }
 
     fn gp1_store(&mut self, value: u32) {
@@ -619,10 +641,10 @@ impl Gpu {
             0xe5 => self.gp0_draw_offset(),
             0xe6 => self.gp0_mask_bit_setting(),
             // Draw commands.
-            0x28 => self.gp0_four_point_poly::<UnShaded, UnTextured, Opaque>(),
-            0x2c => self.gp0_four_point_poly::<UnShaded, Textured, Opaque>(),
-            0x30 => self.gp0_three_point_poly::<Shaded, UnTextured, Opaque>(),
-            0x38 => self.gp0_four_point_poly::<Shaded, UnTextured, Opaque>(),
+            0x28 => self.gp0_quad_poly::<UnShaded, UnTextured, Opaque>(),
+            0x2c => self.gp0_quad_poly::<UnShaded, Textured, Opaque>(),
+            0x30 => self.gp0_tri_poly::<Shaded, UnTextured, Opaque>(),
+            0x38 => self.gp0_quad_poly::<Shaded, UnTextured, Opaque>(),
             // Opaque no shading.
             0x44 => self.gp0_line(),
             // Copy react command.
@@ -632,13 +654,14 @@ impl Gpu {
         }
     }
 
-    fn gp0_three_point_poly<S: Shading, Tex: Textureing, Trans: Transparency>(&mut self) {
+    fn gp0_tri_poly<S: Shading, Tex: Textureing, Trans: Transparency>(&mut self) {
         let mut verts = [Vertex::default(); 3];
         let mut params = TextureParams::default();
-        let mut color = Color::from_rgb(0, 0, 0);
-        if !S::is_shaded() {
-            color = Color::from_u32(self.fifo.pop());
-        }
+        let color = if !S::is_shaded() {
+            Color::from_u32(self.fifo.pop())
+        } else {
+            Color::from_rgb(0, 0, 0)
+        };
         for (i, vertex) in verts.iter_mut().enumerate() {
             if S::is_shaded() {
                 vertex.color = Color::from_u32(self.fifo.pop());
@@ -661,7 +684,7 @@ impl Gpu {
                         params.blend_mode = TransBlend::from_value(
                             value.extract_bits(5, 6) as u32
                         );
-                        params.texture_depth = TextureDepth::from_value(
+                        params.texture_depth = TexelDepth::from_value(
                             value.extract_bits(7, 8) as u32
                         );
                     }
@@ -676,7 +699,7 @@ impl Gpu {
         self.draw_triangle::<S, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
     }
 
-    fn gp0_four_point_poly<S: Shading, Tex: Textureing, Trans: Transparency>(&mut self) {
+    fn gp0_quad_poly<S: Shading, Tex: Textureing, Trans: Transparency>(&mut self) {
         let mut verts = [Vertex::default(); 4];
         let mut params = TextureParams::default();
         let color = if !S::is_shaded() {
@@ -707,7 +730,7 @@ impl Gpu {
                         params.blend_mode = TransBlend::from_value(
                             value.extract_bits(5, 6) as u32
                         );
-                        params.texture_depth = TextureDepth::from_value(
+                        params.texture_depth = TexelDepth::from_value(
                             value.extract_bits(7, 8) as u32
                         );
                     }
@@ -730,6 +753,7 @@ impl Gpu {
     }
 
     fn gp0_line(&mut self) {
+        warn!("Drawing line");
         self.fifo.pop();
         let mut start = Point::from_u32(self.fifo.pop());
         start.x += self.draw_x_offset as i32;
@@ -747,11 +771,11 @@ impl Gpu {
     /// - 13 - Texture rectangle y-flip.
     /// - 14..23 - Not used.
     fn gp0_draw_mode_setting(&mut self) {
-        let value = self.fifo.pop();
-        self.status.0 |= value.extract_bits(0, 10);
-        self.status.0 |= value.extract_bit(11) << 15;
-        self.rect_tex_x_flip = value.extract_bit(12) == 1;
-        self.rect_tex_x_flip = value.extract_bit(13) == 1;
+        let val = self.fifo.pop();
+        self.status.0.set_bit_range(0, 10, val.extract_bits(0, 10));
+        self.status.0.set_bit(15, val.extract_bit(11) == 1);
+        self.rect_tex_x_flip = val.extract_bit(12) == 1;
+        self.rect_tex_x_flip = val.extract_bit(13) == 1;
     }
 
     /// GP0(e2) - Texture window setting.
@@ -771,9 +795,7 @@ impl Gpu {
     /// - 0 - Set mask while drawing.
     /// - 1 - Check mask before drawing.
     fn gp0_mask_bit_setting(&mut self) {
-        let value = self.fifo.pop();
-        self.status.0 |= value.extract_bit(0) << 11;
-        self.status.0 |= value.extract_bit(1) << 12;
+        self.status.0.set_bit_range(11, 12, self.fifo.pop().extract_bits(0, 1));
     }
 
     /// GP0(e3) - Set draw area top left.
@@ -781,18 +803,18 @@ impl Gpu {
     /// - 10..18 - Draw area top.
     /// TODO this differs between GPU versions.
     fn gp0_draw_area_top_left(&mut self) {
-        let value = self.fifo.pop();
-        self.draw_area_left = value.extract_bits(0, 9) as u16;
-        self.draw_area_top = value.extract_bits(10, 18) as u16;
+        let val = self.fifo.pop();
+        self.draw_area_left = val.extract_bits(0, 9) as u16;
+        self.draw_area_top = val.extract_bits(10, 18) as u16;
     }
 
     /// GP0(e4) - Set draw area bottom right.
     /// - 0..9 - Draw area right.
     /// - 10..18 - Draw area bottom.
     fn gp0_draw_area_bottom_right(&mut self) {
-        let value = self.fifo.pop();
-        self.draw_area_right = value.extract_bits(0, 9) as u16;
-        self.draw_area_bottom = value.extract_bits(10, 18) as u16;
+        let val = self.fifo.pop();
+        self.draw_area_right = val.extract_bits(0, 9) as u16;
+        self.draw_area_bottom = val.extract_bits(10, 18) as u16;
     }
 
     /// GP0(e5) - Set drawing offset.
@@ -800,9 +822,9 @@ impl Gpu {
     /// - 11..21 - y-offset.
     /// - 24..23 - Not used.
     fn gp0_draw_offset(&mut self) {
-        let value = self.fifo.pop();
-        let x_offset = value.extract_bits(0, 10) as u16;
-        let y_offset = value.extract_bits(11, 21) as u16;
+        let val = self.fifo.pop();
+        let x_offset = val.extract_bits(0, 10) as u16;
+        let y_offset = val.extract_bits(11, 21) as u16;
         // Because the command stores the values as 11 bit signed integers, the values have to be
         // bit-shifted to the most significant bits in order to make Rust generate sign extension.
         self.draw_x_offset = ((x_offset << 5) as i16) >> 5;
@@ -848,38 +870,38 @@ impl Gpu {
 
     /// GP1(4) - Set DMA Direction.
     /// - 0..1 - DMA direction.
-    fn gp1_dma_direction(&mut self, value: u32) {
-        self.status.0 |= value.extract_bits(0, 1) << 29;
+    fn gp1_dma_direction(&mut self, val: u32) {
+        self.status.0.set_bit_range(29, 30, val.extract_bits(0, 1));
     }
 
     /// GP1(3) - Display Enable.
     /// - 0 - Display On/Off.
-    fn gp1_display_enable(&mut self, value: u32) {
-        self.status.0 |= value.extract_bit(0) << 23;
+    fn gp1_display_enable(&mut self, val: u32) {
+        self.status.0.set_bit(23, val.extract_bit(0) == 1);
     }
 
     /// GP1(5) - Start display area in VRAM.
     /// - 0..9 - x (address in VRAM).
     /// - 10..18 - y (address in VRAM).
-    fn gp1_start_display_area(&mut self, value: u32) {
-        self.display_vram_x_start = value.extract_bits(0, 9) as u16;
-        self.display_vram_y_start = value.extract_bits(10, 18) as u16;
+    fn gp1_start_display_area(&mut self, val: u32) {
+        self.display_vram_x_start = val.extract_bits(0, 9) as u16;
+        self.display_vram_y_start = val.extract_bits(10, 18) as u16;
     }
 
     /// GP1(6) - Horizontal display range.
     /// - 0..11 - column start.
     /// - 12..23 - column end.
-    fn gp1_horizontal_display_range(&mut self, value: u32) {
-        self.display_column_start = value.extract_bits(0, 11) as u16;
-        self.display_column_end = value.extract_bits(12, 23) as u16;
+    fn gp1_horizontal_display_range(&mut self, val: u32) {
+        self.display_column_start = val.extract_bits(0, 11) as u16;
+        self.display_column_end = val.extract_bits(12, 23) as u16;
     }
 
     /// GP1(7) - Vertical display range.
     /// - 0..11 - line start.
     /// - 12..23 - line end.
-    fn gp1_vertical_display_range(&mut self, value: u32) {
-        self.display_line_start = value.extract_bits(0, 11) as u16;
-        self.display_line_end = value.extract_bits(12, 23) as u16;
+    fn gp1_vertical_display_range(&mut self, val: u32) {
+        self.display_line_start = val.extract_bits(0, 11) as u16;
+        self.display_line_end = val.extract_bits(12, 23) as u16;
     }
 
     /// GP1(8) - Set display mode.
@@ -887,13 +909,13 @@ impl Gpu {
     /// - 2 - Vertical resolution.
     /// - 3 - Display mode.
     /// - 4 - Display area color depth.
-    /// - 5 - Horizontal interlace.
+    /// - 5 - Vertical interlace.
     /// - 6 - Horizontal resolution 2.
     /// - 7 - Reverseflag.
     fn gp1_display_mode(&mut self, value: u32) {
-        self.status.0 |= value.extract_bits(0, 5) << 17;
-        self.status.0 |= value.extract_bit(6) << 16;
-        self.status.0 |= value.extract_bit(7) << 14;
+        self.status.0.set_bit_range(17, 22, value.extract_bits(0, 5));
+        self.status.0.set_bit(16, value.extract_bit(6) == 1);
+        self.status.0.set_bit(14, value.extract_bit(7) == 1);
     }
 }
 

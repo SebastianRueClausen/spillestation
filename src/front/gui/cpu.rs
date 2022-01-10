@@ -1,5 +1,9 @@
 use super::App;
-use crate::{cpu::{Cpu, REGISTER_NAMES}, system::{System, DebugStop}, timing};
+
+use crate::cpu::{Cpu, REGISTER_NAMES};
+use crate::system::{System, DebugStop, Breaks};
+use crate::timing::CPU_HZ;
+
 use std::fmt::Write;
 use std::time::Duration;
 
@@ -99,20 +103,32 @@ enum RunMode {
     },
 }
 
-impl Default for RunMode {
-    fn default() -> Self {
+impl RunMode {
+    fn default_step() -> Self {
         RunMode::Step { amount: 1, stepped: false }
+    }
+
+    fn default_run() -> Self {
+        RunMode::Run { speed: 1, remainder: Duration::ZERO }
     }
 }
 
-struct Breakpoint {
-    addr: u32,
-    name: String,
+impl Default for RunMode {
+    fn default() -> Self {
+        Self::default_step()
+    }
 }
 
-impl Breakpoint {
-    fn new(addr: u32, name: String) -> Self {
-        Self { addr, name }
+#[derive(Default)]
+struct Breakpoints {
+    addrs: Vec<u32>,
+    names: Vec<String>,
+}
+
+impl Breakpoints {
+    fn push(&mut self, addr: u32, name: String) {
+        self.addrs.push(addr);
+        self.names.push(name);
     }
 }
 
@@ -123,8 +139,48 @@ impl Breakpoint {
 pub struct CpuCtrl {
     mode: RunMode,
     break_message: Option<String>,
-    bp: Vec<Breakpoint>, 
+    code_bps: Breakpoints,
     bp_add: String,
+}
+
+impl CpuCtrl {
+    /// Show the breakpoint section.
+    fn show_breakpoint(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::Grid::new("breakpoint_grid").show(ui, |ui| {
+                let text_edit = egui::TextEdit::singleline(&mut self.bp_add);
+                ui.add_sized([120.0, 20.0], text_edit);
+
+                let add = ui.button("Add").clicked();
+                if ui.input().key_pressed(egui::Key::Enter) || add {
+                    // Parse the string as address in hex.
+                    if let Ok(addr) = u32::from_str_radix(&self.bp_add, 16) {
+                        self.code_bps.push(addr, self.bp_add.clone());
+                        self.bp_add.clear();
+                    } else {
+                        self.break_message =
+                            Some(format!("Invalid Breakpoint Address: {}", self.bp_add));
+                    }
+                }
+                ui.end_row();
+
+                // Check if any breakpoints should be removed.
+                let mut index = 0;
+                self.code_bps.names.retain(|bp| {
+                    ui.label(bp); 
+                    let retain = if ui.button("Remove").clicked() {
+                        self.code_bps.addrs.remove(index);
+                        false
+                    } else {
+                        index += 1;
+                        true
+                    };
+                    ui.end_row();
+                    retain
+                });
+            });
+        });
+    }
 }
 
 impl App for CpuCtrl {
@@ -133,25 +189,36 @@ impl App for CpuCtrl {
     }
 
     fn update_tick(&mut self, dt: Duration, sys: &mut System) {
-        sys.dbg.breakpoints.clear();
-        for bp in self.bp.iter() {
-            sys.dbg.breakpoints.push(bp.addr); 
-        }
         let stop = match self.mode {
-            RunMode::Step { amount, stepped } if stepped => {
-                self.break_message = None;
-                sys.step_debug(amount)
+            RunMode::Step { amount, stepped } => {
+                if stepped {
+                    self.break_message = None;
+                    sys.step_debug(amount, Breaks {
+                        code: self.code_bps.addrs.as_slice(),
+                        store: &[],
+                        load: &[],
+                    })
+                } else {
+                    DebugStop::Time 
+                }
             }
             RunMode::Run { speed, ref mut remainder } => {
                 self.break_message = None;
-                let (rem, stop) = sys.run_debug(speed, *remainder + dt);
+                let time = *remainder + dt;
+                let (rem, stop) = sys.run_debug(speed, time, Breaks {
+                    code: self.code_bps.addrs.as_slice(),
+                    store: &[],
+                    load: &[],
+                });
+                // Clear the break message if running, since the user must have clicked run again
+                // after a breakpoint.
                 *remainder = rem;
                 stop
             }
-            _ => DebugStop::Time,
         };
+
         if let DebugStop::Breakpoint(addr) = stop {
-            self.mode = RunMode::default();
+            self.mode = RunMode::default_step();
             self.break_message = Some(
                 format!("Stopped at breakpoint on address: {:08x}", addr)
             );
@@ -169,13 +236,14 @@ impl App for CpuCtrl {
         });
         match self.mode {
             RunMode::Step { .. } if !step_mode => {
-                self.mode = RunMode::Run { speed: 1, remainder: Duration::ZERO }     
+                self.mode = RunMode::default_run();
             }
             RunMode::Run { .. } if step_mode => {
-                self.mode = RunMode::Step { amount: 1, stepped: false }
+                self.mode = RunMode::default_step();
             }
             _ => (),
         }
+
         ui.separator();
         match self.mode {
             RunMode::Step { ref mut amount, ref mut stepped } => {
@@ -183,23 +251,23 @@ impl App for CpuCtrl {
                     0 | 2.. => " cycles",
                     1 => " cycle",
                 };
-                let slider = egui::Slider::new(amount, 1..=timing::CPU_HZ)
+                ui.add(egui::Slider::new(amount, 1..=CPU_HZ)
                     .suffix(suffix)
                     .logarithmic(true)
                     .clamp_to_range(true)
                     .smart_aim(true)
-                    .text("Step amount");
-                ui.add(slider);
+                    .text("Step Amount")
+                );
                 *stepped = ui.button("Step").clicked();
             }
             RunMode::Run { ref mut speed, ..  } => {
-                let slider = egui::Slider::new(speed, 1..=timing::CPU_HZ)
+                ui.add(egui::Slider::new(speed, 1..=CPU_HZ)
                     .suffix("Hz")
                     .logarithmic(true)
                     .clamp_to_range(true)
                     .smart_aim(true)
-                    .text("CPU Speed");
-                ui.add(slider);
+                    .text("CPU Speed")
+                );
             }
         }
         ui.separator();
@@ -207,36 +275,7 @@ impl App for CpuCtrl {
             ui.label(msg);
         }
         ui.collapsing("Breakpoints", |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                egui::Grid::new("breakpoint_grid").show(ui, |ui| {
-                    ui.add_sized(
-                        [120.0, 20.0],
-                        egui::TextEdit::singleline(&mut self.bp_add),
-                    );
-                    let add = ui.button("Add").clicked();
-                    if ui.input().key_pressed(egui::Key::Enter) || add {
-                        // Parse the string as address in hex.
-                        match u32::from_str_radix(&self.bp_add, 16) {
-                            Ok(addr) => {
-                                self.bp.push(Breakpoint::new(addr, self.bp_add.clone()));
-                                self.bp_add.clear();
-                            }
-                            Err(..) => {
-                                self.break_message = Some(
-                                    format!("Invalid Breakpoint address: {}", self.bp_add)
-                                );
-                            }
-                        };
-                    }
-                    ui.end_row();
-                    self.bp.retain(|bp| {
-                        ui.label(&bp.name); 
-                        let remove = !ui.button("Remove").clicked();
-                        ui.end_row();
-                        remove
-                    });
-                });
-            });
+            self.show_breakpoint(ui);
         });
     }
 

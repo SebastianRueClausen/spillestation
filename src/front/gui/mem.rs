@@ -107,7 +107,7 @@ impl App for MemView {
         ui.separator();
         match self.mode {
             Mode::Instruction(ref ins) => {
-                egui::Grid::new("instruction_grid").striped(true).show(ui, |ui| {
+                egui::Grid::new("instruction_grid").show(ui, |ui| {
                     for (ins, addr) in ins.iter().zip(self.addresses.iter()) {
                         ui.label(addr);
                         ui.label(ins);

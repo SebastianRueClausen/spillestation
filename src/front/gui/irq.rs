@@ -24,7 +24,7 @@ impl App for IrqView {
 
     fn show(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("irq_grid").striped(true).show(ui, |ui| {
+            egui::Grid::new("irq_grid").show(ui, |ui| {
                 ui.strong("interrupt");
                 ui.strong("active");
                 ui.strong("masked");

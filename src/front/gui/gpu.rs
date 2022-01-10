@@ -37,7 +37,7 @@ impl GpuStatus {
         write!(self.fields[19], "{}", gpu.status.vertical_res())?;
         write!(self.fields[20], "{}", gpu.status.video_mode())?;
         write!(self.fields[21], "{}", gpu.status.color_depth())?;
-        write!(self.fields[22], "{}", gpu.status.vertical_interlace_enabled())?;
+        write!(self.fields[22], "{}", gpu.status.vertical_interlace())?;
         write!(self.fields[23], "{}", gpu.status.display_enabled())?;
         write!(self.fields[24], "{}", gpu.status.irq_enabled())?;
         write!(self.fields[25], "{}", gpu.status.cmd_ready())?;

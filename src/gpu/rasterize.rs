@@ -1,5 +1,5 @@
 use super::primitive::{Color, Point, TexCoord, Texel, TextureParams, Vertex};
-use super::{Gpu, TextureDepth};
+use super::{Gpu, TexelDepth};
 use ultraviolet::vec::Vec3;
 
 /// The shading mode of a draw call.
@@ -126,29 +126,23 @@ impl Gpu {
     /// Load a texel at a given texture coordinate.
     fn load_texture_color(&self, params: &TextureParams, coord: TexCoord) -> Texel {
         match params.texture_depth {
-            TextureDepth::B4 => {
+            TexelDepth::B4 => {
                 let value = self.vram.load_16(
                     params.texture_x + (coord.u / 4) as i32,
                     params.texture_y + coord.v as i32,
                 );
-                let offset = (value >> ((coord.u & 0x3) * 4)) & 0xf;
-                Texel::new(
-                    self.vram
-                        .load_16(params.clut_x + offset as i32, params.clut_y),
-                )
+                let offset = (value >> ((coord.u & 0x3) * 4)) as i32& 0xf;
+                Texel::new(self.vram.load_16(params.clut_y + offset, params.clut_y))
             }
-            TextureDepth::B8 => {
+            TexelDepth::B8 => {
                 let value = self.vram.load_16(
                     params.texture_x + (coord.u / 2) as i32,
                     params.texture_y + coord.v as i32,
                 );
-                let offset = (value >> ((coord.u & 0x1) * 8)) & 0xff;
-                Texel::new(
-                    self.vram
-                        .load_16(params.clut_x + offset as i32, params.clut_y),
-                )
+                let offset = (value >> ((coord.u & 0x1) * 8)) as i32 & 0xff;
+                Texel::new(self.vram.load_16(params.clut_x + offset, params.clut_y))
             }
-            TextureDepth::B15 => {
+            TexelDepth::B15 => {
                 let value = self.vram.load_16(
                     params.texture_x + coord.u as i32,
                     params.texture_y + coord.v as i32,
@@ -235,11 +229,11 @@ impl Gpu {
                     } else {
                         texel.as_color().shade_blend(shade)
                     };
-                    // If both the triangle is (semi)transparent and the texel, the texture color
-                    // get's blended with the background.
+                    // If both the triangle and the texel is transparent, the texture color
+                    // get's blended with the background using the blending function specified in
+                    // the status register.
                     if Trans::is_transparent() && texel.is_transparent() {
                         let background = Color::from_u16(self.vram.load_16(p.x, p.y));
-                        // Apply the current blending.
                         self.status
                             .trans_blending()
                             .blend(texture_color, background)
