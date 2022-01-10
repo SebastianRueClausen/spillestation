@@ -41,7 +41,7 @@ impl CdRom {
             1 => match self.index {
                 0 => {
                     if self.cmd.is_some() {
-                        println!("CDROM: Beginning Command with pending command");
+                        warn!("CDROM beginning command while command is pending")
                     }
                     self.cmd = Some(val as u8);
                     self.exec_cmd(irq);

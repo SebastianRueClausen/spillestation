@@ -79,7 +79,7 @@ impl Gte {
     }
 
     pub fn ctrl_store(&mut self, reg: u32, val: u32) {
-        println!("GTE Control store");
+        trace!("GTE Control store to reg {:x}", reg);
         match reg {
             0x18 => self.ofx = val as i32,
             0x19 => self.ofy = val as i32,

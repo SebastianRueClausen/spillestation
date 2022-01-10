@@ -49,6 +49,11 @@ impl IrqState {
     /// Trigger an interrupt.
     pub fn trigger(&mut self, irq: Irq) {
         self.status |= 1 << irq as u32;
+        if log_enabled!(log::Level::Trace) {
+            if irq as u32 & self.mask != 0 {
+                trace!("Triggered irq of type {}", irq);
+            }
+        }
     }
 
     pub fn active(&self) -> bool {

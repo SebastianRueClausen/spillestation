@@ -471,12 +471,11 @@ impl Gpu {
     }
 
     fn status_read(&mut self) -> u32 {
-        self.status.0 & !(1 << 19)
+        trace!("GPU status load");
+        self.status.0
+            & !(1 << 19)
             | ((self.to_cpu_transfer.is_some() as u32) << 27)
-    }
-
-    pub fn dma_load(&mut self) -> u32 {
-        self.gpu_read()
+            | ((self.to_vram_transfer.is_some() as u32) << 28)
     }
 
     /// Store command in GP0 register. This is called from DMA linked transfer directly.

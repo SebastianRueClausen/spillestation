@@ -86,6 +86,7 @@ impl IoPort {
     }
 
     pub fn store(&mut self, addr: u32, val: u32) {
+        trace!("IO Port store");
         match addr {
             0 => todo!(),
             8 => self.mode = val as u8,

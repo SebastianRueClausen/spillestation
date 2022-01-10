@@ -3,7 +3,9 @@
 
 #![allow(dead_code)]
 
-use crate::{util::BitExtract, cpu::{IrqState, Irq}, bus::BusMap};
+use crate::util::{BitExtract, BitSet};
+use crate::cpu::{IrqState, Irq};
+use crate::bus::BusMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Port {

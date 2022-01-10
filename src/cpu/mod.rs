@@ -173,6 +173,7 @@ impl Cpu {
 
     /// Start handeling an exception, and jumps to exception handling code in bios.
     fn throw_exception(&mut self, ex: Exception) {
+        trace!("Exception thrown: {:?}", ex);
         self.pc = self
             .cop0
             .enter_exception(self.last_pc, self.in_branch_delay, ex);

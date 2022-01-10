@@ -232,8 +232,14 @@ impl Timer {
 
     fn load(&mut self, offset: u32) -> u32 {
         match offset.extract_bits(0, 3) {
-            0 => self.counter.into(),
-            4 => self.mode.0,
+            0 => {
+                trace!("Timer {} counter read", self.id);
+                self.counter.into()
+            }
+            4 => {
+                trace!("Timer {} mode read", self.id);
+                self.mode.load()
+            }
             8 => self.target.into(),
             _ => unreachable!(),
         }
@@ -241,10 +247,19 @@ impl Timer {
 
     fn store(&mut self, offset: u32, value: u32) {
         match offset.extract_bits(0, 3) {
-            0 => self.counter = value as u16,
-            4 => {
+            0 => {
                 self.has_triggered = false;
-                self.mode.store(value);
+                self.counter = value as u16;
+            }
+            4 => {
+                self.counter = 0;
+                self.has_triggered = false;
+                self.mode.store(value as u16);
+
+                trace!("Timer {} mode set", self.id);
+                if self.mode.sync_enabled() {
+                    warn!("Sync enabled for timer {}", self.id);
+                }
             }
             8 => self.target = value as u16,
             _ => unreachable!(),
@@ -308,6 +323,7 @@ impl Timer {
         };
         // If ticks is more than 0xffff, it has to be added in several steps.
         while let (value, false) = ticks.overflowing_sub(0xffff) {
+            warn!("More than a single overflow in a timer run");
             self.add_to_counter(irq, 0xffff);
             ticks = value;
         };

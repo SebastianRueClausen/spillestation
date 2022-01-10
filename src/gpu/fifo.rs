@@ -38,17 +38,26 @@ impl Fifo {
     }
 
     pub fn push(&mut self, value: u32) {
+        if log_enabled!(log::Level::Warn) {
+            if  self.len() == FIFO_SIZE {
+                warn!("Pushing to a full GPU FIFO");
+            }
+        }
         self.data[self.head as usize & (FIFO_SIZE - 1)] = value;
         self.head = self.head.wrapping_add(1);
     }
 
     pub fn pop(&mut self) -> u32 {
+        if log_enabled!(log::Level::Warn) {
+            if self.len() == 0 {
+                warn!("Poping from an empty GPU FIFO");
+            }
+        }
         let value = self[0];
         self.tail = self.tail.wrapping_add(1);
         value
     }
 
-    /// Checks if buffer holds a full command.
     pub fn has_full_cmd(&self) -> bool {
         let cmd = self[0].extract_bits(24, 31) as usize;
         CMD_LEN[cmd] as usize == self.len()
