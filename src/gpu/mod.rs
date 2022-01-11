@@ -80,6 +80,7 @@ impl fmt::Display for VideoMode {
     }
 }
 
+#[derive(PartialEq, Eq)]
 pub enum DmaDirection {
     Off = 0,
     Fifo = 1,
@@ -159,8 +160,8 @@ impl fmt::Display for TexelDepth {
 /// An ongoing memory transfer between Bus and VRAM.
 #[derive(Clone, Copy)]
 struct MemTransfer {
-    pub x: i32,
-    pub y: i32,
+    x: i32,
+    y: i32,
     x_start: i32,
     x_end: i32,
     y_end: i32,
@@ -303,7 +304,10 @@ impl Status {
         self.0.extract_bit(24) == 1
     }
 
-    // DMA request.
+    #[allow(dead_code)]
+    pub fn dma_data_request(self) -> bool {
+        self.0.extract_bit(25) == 1
+    }
 
     /// Ready to recieve commands.
     pub fn cmd_ready(self) -> bool {
@@ -363,15 +367,32 @@ impl Timing {
     }
 }
 
+enum State {
+    Idle,
+    VramStore(MemTransfer),
+    VramLoad(MemTransfer),
+}
+
+impl State {
+    fn is_vram_load(&self) -> bool {
+        match self {
+            State::VramLoad(..) => true,
+            _ => false,
+        }
+    }
+
+    fn is_idle(&self) -> bool {
+        match self {
+            State::Idle => true,
+            _ => false,
+        }
+    }
+}
+
 pub struct Gpu {
-    /// Fifo command buffer.
+    state: State,
     fifo: Fifo,
-    /// Video RAM.
     vram: Vram,
-    /// To CPU transfer.
-    to_cpu_transfer: Option<MemTransfer>,
-    /// To VRAM transfer.
-    to_vram_transfer: Option<MemTransfer>,
     timing: Timing,
     pub status: Status,
     /// The GPUREAD register. This contains various info about the GPU, and is generated after each
@@ -410,10 +431,9 @@ impl Gpu {
     pub fn new() -> Self {
         // Sets the reset values.
         Self {
+            state: State::Idle,
             fifo: Fifo::new(),
             vram: Vram::new(),
-            to_cpu_transfer: None,
-            to_vram_transfer: None,
             timing: Timing::new(),
             status: Status(0x14802000),
             gpu_read: 0x0,
@@ -459,51 +479,85 @@ impl Gpu {
     }
 
     pub fn dma_load(&mut self) -> u32 {
-        self.gpu_read()
+        if self.status.dma_direction() != DmaDirection::VramToCpu {
+            warn!("Invalid DMA load from GPU");
+            u32::MAX
+        } else {
+            self.gpu_read()
+        }
     }
 
     fn gpu_read(&mut self) -> u32 {
-        if let Some(ref mut tran) = self.to_cpu_transfer {
+        if let State::VramLoad(ref mut tran) = self.state {
             self.gpu_read = [0, 16].iter().fold(0, |state, shift| {
                 let value = self.vram.load_16(tran.x, tran.y) as u32;
                 tran.next();
                 state | value << shift
             });
             if tran.is_done() {
-                self.to_cpu_transfer = None;
+                self.state = State::Idle;
             }
         }
         self.gpu_read
     }
 
-    fn status_read(&mut self) -> u32 {
-        trace!("GPU status load");
-        self.status.0
-            & !(1 << 19)
-            | ((self.to_cpu_transfer.is_some() as u32) << 27)
-            | ((self.to_vram_transfer.is_some() as u32) << 28)
+    /// Calculate if the GPU is ready to recieve data from the DMA.
+    fn dma_block_ready(&self) -> bool {
+        match self.state {
+            State::VramLoad(..) => false,
+            State::VramStore(..) => !self.fifo.is_full(),
+            State::Idle => !self.fifo.has_full_cmd(),
+        }
     }
 
-    /// Store command in GP0 register. This is called from DMA linked transfer directly.
-    pub fn gp0_store(&mut self, value: u32) {
-        match self.to_vram_transfer {
-            Some(ref mut transfer) => {
-                for (lo, hi) in [(0, 15), (16, 31)] {
-                    let value = value.extract_bits(lo, hi) as u16;
-                    self.vram.store_16(transfer.x, transfer.y, value);
-                    transfer.next();
-                }
-                if transfer.is_done() {
-                    self.to_vram_transfer = None;
-                }
-            },
-            None => {
-                self.fifo.push(value);
+    fn status_read(&mut self) -> u32 {
+        self.status.0.set_bit(27, self.state.is_vram_load());
+        self.status.0.set_bit(28, self.dma_block_ready());
+
+        self.status.0.set_bit(26, self.state.is_idle() && self.fifo.is_empty());
+
+        self.status.0.set_bit(25, match self.status.dma_direction() {
+            DmaDirection::Off => false,
+            DmaDirection::Fifo => self.status.dma_block_ready(),
+            DmaDirection::CpuToGp0 => self.status.dma_block_ready(),
+            DmaDirection::VramToCpu => self.status.vram_to_cpu_ready(),
+        });
+
+        trace!("GPU status load");
+        self.status.0
+    }
+
+    fn gp0_store(&mut self, value: u32) {
+        self.fifo.push(value);
+        self.try_run_cmd();
+    }
+
+    fn try_run_cmd(&mut self) {
+        match self.state {
+            State::Idle => {
                 if self.fifo.has_full_cmd() {
+                    let cmd = self.fifo[0].extract_bits(24, 31);
                     self.gp0_exec();
+                    if !self.fifo.is_empty() {
+                        warn!("GPU FIFO not empty after GP0({:08x})", cmd);
+                    }
                     self.fifo.clear();
                 }
-            },
+            }
+            State::VramStore(ref mut tran) => {
+                let val = self.fifo.pop();
+                for (lo, hi) in [(0, 15), (16, 31)] {
+                    let value = val.extract_bits(lo, hi) as u16;
+                    self.vram.store_16(tran.x, tran.y, value);
+                    tran.next();
+                }
+                if tran.is_done() {
+                    self.state = State::Idle;
+                }
+            }
+            State::VramLoad(..) => {
+                warn!("VRAM load while running command");
+            }
         }
     }
 
@@ -630,8 +684,11 @@ impl Gpu {
     fn gp0_exec(&mut self) {
         let cmd = self.fifo[0].extract_bits(24, 31);
         match cmd {
-            0x0 => {}
+            0x0 => {
+                self.fifo.pop();
+            }
             0x1 => {
+                self.fifo.pop();
                 // TODO: clear cache.
             }
             0xe1 => self.gp0_draw_mode_setting(),
@@ -684,7 +741,7 @@ impl Gpu {
                         params.blend_mode = TransBlend::from_value(
                             value.extract_bits(5, 6) as u32
                         );
-                        params.texture_depth = TexelDepth::from_value(
+                        params.texel_depth = TexelDepth::from_value(
                             value.extract_bits(7, 8) as u32
                         );
                     }
@@ -730,7 +787,7 @@ impl Gpu {
                         params.blend_mode = TransBlend::from_value(
                             value.extract_bits(5, 6) as u32
                         );
-                        params.texture_depth = TexelDepth::from_value(
+                        params.texel_depth = TexelDepth::from_value(
                             value.extract_bits(7, 8) as u32
                         );
                     }
@@ -740,12 +797,6 @@ impl Gpu {
                     u: value.extract_bits(0, 7) as u8,
                     v: value.extract_bits(8, 15) as u8,
                 };
-            }
-        }
-        if Tex::is_textured() {
-            // println!("pal x = {} pal y = {} tex x = {} tex y = {}", params.clut_x, params.clut_y, params.texture_x, params.texture_y);
-            for _vert in verts {
-                // println!("{:?}", vert.texcoord);
             }
         }
         self.draw_triangle::<S, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
@@ -784,11 +835,11 @@ impl Gpu {
     /// - 10..14 - Texture window offset x.
     /// - 15..19 - Texture window offset y.
     fn gp0_texture_window_setting(&mut self) {
-        let value = self.fifo.pop();
-        self.tex_window_x_mask = value.extract_bits(0, 4) as u8;
-        self.tex_window_y_mask = value.extract_bits(5, 9) as u8;
-        self.tex_window_x_offset = value.extract_bits(10, 14) as u8;
-        self.tex_window_y_offset = value.extract_bits(15, 19) as u8;
+        let val = self.fifo.pop();
+        self.tex_window_x_mask = val.extract_bits(0, 4) as u8;
+        self.tex_window_y_mask = val.extract_bits(5, 9) as u8;
+        self.tex_window_x_offset = val.extract_bits(10, 14) as u8;
+        self.tex_window_y_offset = val.extract_bits(15, 19) as u8;
     }
 
     /// GP0(e6) - Mask bit setting.
@@ -839,7 +890,7 @@ impl Gpu {
         let y = pos.extract_bits(16, 31) as i32;
         let w = dim.extract_bits(00, 15) as i32;
         let h = dim.extract_bits(16, 31) as i32;
-        self.to_vram_transfer = Some(MemTransfer::new(x, y, w, h));
+        self.state = State::VramStore(MemTransfer::new(x, y, w, h));
     }
 
     /// GP0(c0) - Copy rectanlge from VRAM to CPU.
@@ -850,7 +901,7 @@ impl Gpu {
         let y = pos.extract_bits(16, 31) as i32;
         let w = dim.extract_bits(00, 15) as i32;
         let h = dim.extract_bits(16, 31) as i32;
-        self.to_cpu_transfer = Some(MemTransfer::new(x, y, w, h));
+        self.state = State::VramLoad(MemTransfer::new(x, y, w, h));
     }
 
     /// GP1(0) - Resets the state of the GPU.

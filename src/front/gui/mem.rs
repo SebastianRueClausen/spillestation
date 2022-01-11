@@ -52,12 +52,12 @@ impl App for MemView {
                     ins.clear();
                     match system.cpu
                         .bus_mut()
-                        .try_load::<Word>(start_addr + (i * 4) as u32)
+                        .load::<Word>(start_addr + (i * 4) as u32)
                     {
-                        Some(value) => {
-                            write!(ins, "{}", Opcode::new(value)).unwrap();
+                        Ok(val) => {
+                            write!(ins, "{}", Opcode::new(val)).unwrap();
                         }
-                        None => {
+                        Err(..) => {
                             write!(ins, "??").unwrap();
                         }
                     }
@@ -68,13 +68,13 @@ impl App for MemView {
                     for (j, col) in row.iter_mut().enumerate() {
                         match system.cpu
                             .bus_mut()
-                            .try_load::<Byte>((i * COLUMNS + j) as u32 + start_addr)
+                            .load::<Byte>((i * COLUMNS + j) as u32 + start_addr)
                         {
-                            Some(value) => {
-                                col[0] = HEX_ASCII[((value >> 4) & 0xf) as usize];
-                                col[1] = HEX_ASCII[(value & 0xf) as usize];
+                            Ok(val) => {
+                                col[0] = HEX_ASCII[((val >> 4) & 0xf) as usize];
+                                col[1] = HEX_ASCII[(val & 0xf) as usize];
                             }
-                            None => {
+                            Err(..) => {
                                 col[0] = b'?';
                                 col[1] = b'?';
                             }

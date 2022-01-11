@@ -125,7 +125,7 @@ impl Gpu {
 
     /// Load a texel at a given texture coordinate.
     fn load_texture_color(&self, params: &TextureParams, coord: TexCoord) -> Texel {
-        match params.texture_depth {
+        match params.texel_depth {
             TexelDepth::B4 => {
                 let value = self.vram.load_16(
                     params.texture_x + (coord.u / 4) as i32,

@@ -27,7 +27,7 @@ fn main() {
         .filter_module("wgpu", LevelFilter::Error)
         .filter_module("winit", LevelFilter::Error)
         .filter_module("naga", LevelFilter::Error)
-        .filter(None, LevelFilter::Trace)
+        .filter(None, LevelFilter::Debug)
         .init();
 
     Frontend::new().run();

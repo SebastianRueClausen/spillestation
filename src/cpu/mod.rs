@@ -1,6 +1,6 @@
 //! Emulation of the MIPS R3000 used by the original Sony Playstation.
 
-mod cop0;
+pub mod cop0;
 mod gte;
 
 pub mod irq;
@@ -139,15 +139,16 @@ impl Cpu {
         self.registers[index as usize] = value;
     }
 
-    fn load<T: AddrUnit>(&mut self, address: u32) -> u32 {
-        self.bus.load::<T>(address)
+    fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
+        self.bus.load::<T>(addr)
     }
 
-    fn store<T: AddrUnit>(&mut self, address: u32, value: u32) {
+    fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) -> Result<(), Exception> {
         if !self.cop0.cache_isolated() {
-            self.bus.store::<T>(address, value);
+            self.bus.store::<T>(addr, val)
         } else {
             // TODO: Write to scratchpad.
+            Ok(())
         }
     }
 
@@ -165,8 +166,8 @@ impl Cpu {
     }
 
     /// Add result to hi and lo register.
-    fn add_pending_hi_lo(&mut self, cycles: u32, hi: u32, lo: u32) {
-        self.hi_lo_ready = self.bus.cycle_count + cycles as u64;
+    fn add_pending_hi_lo(&mut self, cycles: u64, hi: u32, lo: u32) {
+        self.hi_lo_ready = self.bus.cycle_count + cycles;
         self.hi = hi;
         self.lo = lo;
     }
@@ -221,45 +222,57 @@ impl Cpu {
         &mut self.bus
     }
 
+    // Used fot debug.
     pub fn current_instruction(&mut self) -> Opcode {
-        Opcode::new(self.load::<Word>(self.pc))
+        Opcode::new(self.load::<Word>(self.pc).unwrap())
     }
 
     /// Fetch and execute next instruction.
     pub fn step(&mut self) {
-        let op = self.fetch_ins(self.pc);
+        let addr = self.pc;
+
         self.last_pc = self.pc;
         self.pc = self.next_pc;
         self.next_pc = self.next_pc.wrapping_add(4);
         self.in_branch_delay = self.branched;
         self.branched = false;
-        self.exec(op);
-        self.bus.cycle_count += 1;
-    }
 
-    /// Fetch an instruction from either memory or the icache. Also update the icache if required.
-    fn fetch_ins(&mut self, address: u32) -> Opcode {
-        // TODO: Avoid having to check this every cycle.
+        // This is somewhat expensive. It seems to slow down the CPU with atleast 5-10%, but i don't
+        // think it's a good idea to check it less often. It's not likely to be the branch that
+        // slows it down, since it's very rarely true, so maybe it would be better the calculate it
+        // whenever it possibly could change.
         if self.irq_pending() {
             self.fetch_load_slot();
             self.throw_exception(Exception::Interrupt); 
         }
-        Opcode::new(if address < 0xa0000000 && self.bus.cache_ctrl.icache_enabled() {
-            let tag = ((address & 0xfffff000) >> 12) | 0x80000000;
-            let index = ((address & 0xffc) >> 2) as usize;
+
+        if addr < 0xa0000000 && self.bus.cache_ctrl.icache_enabled() {
+            let tag = ((addr & 0xfffff000) >> 12) | 0x80000000;
+            let index = ((addr & 0xffc) >> 2) as usize;
             let cache = self.icache[index];
             if cache.tag == tag {
-                cache.data
+                self.exec(Opcode::new(cache.data));
             } else {
-                let data = self.load::<Word>(address);
-                self.icache[index] = CacheLine { tag, data };
-                data
+                if let Ok(data) = self.load::<Word>(addr) {
+                    self.icache[index] = CacheLine { tag, data };
+                    self.exec(Opcode::new(data));
+                } else {
+                    // Not sure if this is correct. If loading fails because of an invalid
+                    // address then instruction error seems correct. If it fails because of
+                    // misalignment then perhaps it sould be an address load error.
+                    self.throw_exception(Exception::BusInstructionError);
+                }
             }
         } else {
             // Cache misses take about 4 cycles.
             self.bus.cycle_count += 4;
-            self.load::<Word>(address)
-        })
+            if let Ok(val) = self.load::<Word>(addr) {
+                self.exec(Opcode::new(val));
+            } else {
+                self.throw_exception(Exception::BusInstructionError);
+            }
+        }
+        self.bus.cycle_count += 1;
     }
 
     /// Execute opcode.
@@ -344,45 +357,44 @@ impl Cpu {
 impl Cpu {
     /// SLL - Shift left logical.
     fn op_sll(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rt()) << op.shift();
+        let val = self.read_reg(op.rt()) << op.shift();
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value);
+        self.set_reg(op.rd(), val);
     }
 
     /// SRL - Shift right logical. Same as SRA, but unsigned.
     fn op_srl(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rt()) >> op.shift();
+        let val = self.read_reg(op.rt()) >> op.shift();
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value);
+        self.set_reg(op.rd(), val);
     }
 
     /// SRA - Shift right arithmetic.
     fn op_sra(&mut self, op: Opcode) {
-        let value = (self.read_reg(op.rt()) as i32) >> op.shift();
+        let val = (self.read_reg(op.rt()) as i32) >> op.shift();
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value as u32);
+        self.set_reg(op.rd(), val as u32);
     }
 
     /// SLLV - Shift left logical variable.
     fn op_sllv(&mut self, op: Opcode) {
-        // The 0x1f mask is to ensure you shift 32 bits.
-        let value = self.read_reg(op.rt()) << (self.read_reg(op.rs() & 0x1f));
+        let val = self.read_reg(op.rt()) << (self.read_reg(op.rs() & 0x1f));
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value);
+        self.set_reg(op.rd(), val);
     }
 
     /// SRLV - Shift right logical variable.
     fn op_srlv(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rt()) >> (self.read_reg(op.rs()) & 0x1f);
+        let val = self.read_reg(op.rt()) >> (self.read_reg(op.rs()) & 0x1f);
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value as u32);
+        self.set_reg(op.rd(), val as u32);
     }
 
     /// SRAV - Shift right arithmetic variable.
     fn op_srav(&mut self, op: Opcode) {
-        let value = (self.read_reg(op.rt()) as i32) >> (self.read_reg(op.rs()) & 0x1f);
+        let val = (self.read_reg(op.rt()) as i32) >> (self.read_reg(op.rs()) & 0x1f);
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value as u32);
+        self.set_reg(op.rd(), val as u32);
     }
 
     /// JR - Jump register.
@@ -399,7 +411,7 @@ impl Cpu {
         self.set_reg(op.rd(), pc);
     }
 
-    /// SYSCALL - Throws an syscall exception.
+    /// SYSCALL - Throws syscall exception.
     fn op_syscall(&mut self) {
         self.fetch_load_slot();
         self.throw_exception(Exception::Syscall);
@@ -415,8 +427,8 @@ impl Cpu {
     fn op_mfhi(&mut self, op: Opcode) {
         self.fetch_pending_hi_lo();
         self.fetch_load_slot();
-        let value = self.hi;
-        self.set_reg(op.rd(), value);
+        let val = self.hi;
+        self.set_reg(op.rd(), val);
     }
 
     /// MTHI - Move to high.
@@ -429,8 +441,8 @@ impl Cpu {
     fn op_mflo(&mut self, op: Opcode) {
         self.fetch_pending_hi_lo();
         self.fetch_load_slot();
-        let value = self.lo;
-        self.set_reg(op.rd(), value);
+        let val = self.lo;
+        self.set_reg(op.rd(), val);
     }
 
     /// MTLO - Move to low.
@@ -440,8 +452,9 @@ impl Cpu {
     }
 
     /// MUL - Signed multiplication.
+    ///
     /// Multiplication takes different amount of cycles to complete dependent on the size of the
-    /// inputs.
+    /// inputs numbers.
     fn op_mul(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs()) as i32;
         let rhs = self.read_reg(op.rt()) as i32;
@@ -450,9 +463,9 @@ impl Cpu {
             12..=20 => 9,
             _ => 7,
         };
-        let value = (lhs as i64) * (rhs as i64);
+        let val = (lhs as i64) * (rhs as i64);
         self.fetch_load_slot();
-        self.add_pending_hi_lo(cycles, (value >> 32) as u32, value as u32);
+        self.add_pending_hi_lo(cycles, (val >> 32) as u32, val as u32);
     }
 
     /// MULU - Unsigned multiplication.
@@ -464,15 +477,15 @@ impl Cpu {
             0x00000800..=0x000fffff => 9,
             _ => 7,
         };
-        let value = (lhs as u64) * (rhs as u64);
+        let val = (lhs as u64) * (rhs as u64);
         self.fetch_load_slot();
-        self.add_pending_hi_lo(cycles, (value >> 32) as u32, value as u32);
+        self.add_pending_hi_lo(cycles, (val >> 32) as u32, val as u32);
     }
 
     /// DIV - Signed division.
-    /// Stores result in hi/low registers. Division doesn't throw when dviding by 0 or overflow,
-    /// instead it gives garbage values. This takes 36 cycles to complete, but continues executing.
-    /// It only halts if hi/low registers are fetched.
+    ///
+    /// It always takes 36 cycles to complete. It doesn't throw an expception if dividing by 0, but
+    /// instead returns garbage values.
     fn op_div(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs()) as i32;
         let rhs = self.read_reg(op.rt()) as i32;
@@ -488,7 +501,6 @@ impl Cpu {
     }
 
     /// DIVU - Unsigned division.
-    /// Almost same as DIV, but only one error case.
     fn op_divu(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs());
         let rhs = self.read_reg(op.rt());
@@ -501,13 +513,12 @@ impl Cpu {
     }
 
     /// ADD - Add signed.
-    /// Throws on overflow.
     fn op_add(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs()) as i32;
         let rhs = self.read_reg(op.rt()) as i32;
         self.fetch_load_slot();
-        if let Some(value) = lhs.checked_add(rhs) {
-            self.set_reg(op.rd(), value as u32);
+        if let Some(val) = lhs.checked_add(rhs) {
+            self.set_reg(op.rd(), val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
         }
@@ -515,17 +526,17 @@ impl Cpu {
 
     /// ADDU - Add unsigned.
     fn op_addu(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()).wrapping_add(self.read_reg(op.rt()));
+        let val = self.read_reg(op.rs()).wrapping_add(self.read_reg(op.rt()));
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value);
+        self.set_reg(op.rd(), val);
     }
 
-    /// SUB - Signed subtraction. Throws on underflow.
+    /// SUB - Signed subtraction.
     fn op_sub(&mut self, op: Opcode) {
         let rhs = self.read_reg(op.rs()) as i32;
         let lhs = self.read_reg(op.rt()) as i32;
-        if let Some(value) = rhs.checked_sub(lhs) {
-            self.set_reg(op.rd(), value as u32);
+        if let Some(val) = rhs.checked_sub(lhs) {
+            self.set_reg(op.rd(), val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
         }
@@ -533,65 +544,67 @@ impl Cpu {
 
     /// SUBU - Subtract unsigned.
     fn op_subu(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()).wrapping_sub(self.read_reg(op.rt()));
+        let val = self.read_reg(op.rs()).wrapping_sub(self.read_reg(op.rt()));
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value);
+        self.set_reg(op.rd(), val);
     }
 
     /// AND - Bitwise and.
     fn op_and(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) & self.read_reg(op.rt());
+        let val = self.read_reg(op.rs()) & self.read_reg(op.rt());
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value);
+        self.set_reg(op.rd(), val);
     }
 
     /// OR - Bitwise or.
     fn op_or(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) | self.read_reg(op.rt());
+        let val = self.read_reg(op.rs()) | self.read_reg(op.rt());
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value);
+        self.set_reg(op.rd(), val);
     }
 
     /// XOR - Bitwise exclusive or.
     fn op_xor(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) ^ self.read_reg(op.rt());
+        let val = self.read_reg(op.rs()) ^ self.read_reg(op.rt());
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value);
+        self.set_reg(op.rd(), val);
     }
 
     /// NOR - Bitwise not or.
     fn op_nor(&mut self, op: Opcode) {
-        let value = !(self.read_reg(op.rs()) | self.read_reg(op.rt()));
+        let val = !(self.read_reg(op.rs()) | self.read_reg(op.rt()));
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value);
+        self.set_reg(op.rd(), val);
     }
 
     /// SLT - Set if less than.
     fn op_slt(&mut self, op: Opcode) {
-        let value = (self.read_reg(op.rs()) as i32) < (self.read_reg(op.rt()) as i32);
+        let val = (self.read_reg(op.rs()) as i32) < (self.read_reg(op.rt()) as i32);
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value as u32);
+        self.set_reg(op.rd(), val as u32);
     }
 
     /// SLTU - Set if less than unsigned.
     fn op_sltu(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) < self.read_reg(op.rt());
+        let val = self.read_reg(op.rs()) < self.read_reg(op.rt());
         self.fetch_load_slot();
-        self.set_reg(op.rd(), value as u32);
+        self.set_reg(op.rd(), val as u32);
     }
 
-    /// BCONDZ - Multiply branch instructions.
-    /// BLTZ - Branch if less than zero.
-    ///     - If bit 16 of the opcode is not set, and bit 17..20 doesn't equal 0x80.
-    /// BLTZAL - Branch if less than zero and set return register.
-    ///     - If bit 16 of the opcode is not set, but bit 17..20 equals 0x80.
-    /// BGEZ - Branch if greater than or equal to zero.
-    ///     - If bit 16 of the opcode is set, but bit 17..20 doesn't equal 0x80.
-    /// BGEZAL - Branch if greater than or equal to zero and set return register.
-    ///     - If bit 16 of the opcode is set, and bit 17..20 equals 0x80.
+    /// BCONDZ - Conditional branching.
+    ///
+    /// Multiple conditional branch instructions combined into on opcode. If bit 16 of the opcode
+    /// is set, then it set's the return value register. If bits 17..20 of the opcode equals 0x80,
+    /// then it branches if the value is greater than or equal to zero, otherwise it branches if
+    /// the values is less than zero. 
+    ///
+    /// - BLTZ - Branch if less than zero.
+    /// - BLTZAL - Branch if less than zero and set return register.
+    /// - BGEZ - Branch if greater than or equal to zero.
+    /// - BGEZAL - Branch if greater than or equal to zero and set return register.
     fn op_bcondz(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) as i32;
-        let cond = (value < 0) as u32;
+        let val = self.read_reg(op.rs()) as i32;
+        let cond = (val < 0) as u32;
         // If the instruction is to test greater or equal zero, we just
         // xor cond, since that's the oposite result.
         let cond = cond ^ op.bgez() as u32;
@@ -615,7 +628,6 @@ impl Cpu {
     fn op_jal(&mut self, op: Opcode) {
         let pc = self.next_pc;
         self.op_j(op);
-        // Store PC in return register.
         self.set_reg(31, pc);
     }
 
@@ -637,8 +649,8 @@ impl Cpu {
 
     /// BLEZ - Branch if less than or equal to zero.
     fn op_blez(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) as i32;
-        if value <= 0 {
+        let val = self.read_reg(op.rs()) as i32;
+        if val <= 0 {
             self.branch(op.signed_imm());
         }
         self.fetch_load_slot();
@@ -646,67 +658,67 @@ impl Cpu {
 
     /// BGTZ - Branch if greater than zero.
     fn op_bgtz(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) as i32;
-        if value > 0 {
+        let val = self.read_reg(op.rs()) as i32;
+        if val > 0 {
             self.branch(op.signed_imm());
         }
         self.fetch_load_slot();
     }
 
     /// ADDI - Add immediate signed.
-    /// Same as ADDUI but throw exception on overflow.
     fn op_addi(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) as i32;
+        let val = self.read_reg(op.rs()) as i32;
         self.fetch_load_slot();
-        if let Some(value) = value.checked_add(op.signed_imm() as i32) {
-            self.set_reg(op.rt(), value as u32);
+        if let Some(val) = val.checked_add(op.signed_imm() as i32) {
+            self.set_reg(op.rt(), val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
         }
     }
 
     /// ADDUI - Add immediate unsigned.
+    ///
     /// Actually adding a signed int to target register, not unsigned.
     /// Unsigned in this case just means wrapping on overflow.
     fn op_addiu(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let val = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
         self.fetch_load_slot();
-        self.set_reg(op.rt(), value);
+        self.set_reg(op.rt(), val);
     }
 
     /// SLTI - Set if less than immediate signed.
     fn op_slti(&mut self, op: Opcode) {
-        let value = (self.read_reg(op.rs()) as i32) < (op.signed_imm() as i32);
+        let val = (self.read_reg(op.rs()) as i32) < (op.signed_imm() as i32);
         self.fetch_load_slot();
-        self.set_reg(op.rt(), value as u32);
+        self.set_reg(op.rt(), val as u32);
     }
 
     /// SLTI - Set if less than immediate unsigned.
     fn op_sltui(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) < op.signed_imm();
+        let val = self.read_reg(op.rs()) < op.signed_imm();
         self.fetch_load_slot();
-        self.set_reg(op.rt(), value as u32);
+        self.set_reg(op.rt(), val as u32);
     }
 
     /// ANDI - Bitwise and immediate.
     fn op_andi(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) & op.imm();
+        let val = self.read_reg(op.rs()) & op.imm();
         self.fetch_load_slot();
-        self.set_reg(op.rt(), value);
+        self.set_reg(op.rt(), val);
     }
 
     /// ORI - Bitwise or immediate.
     fn op_ori(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) | op.imm();
+        let val = self.read_reg(op.rs()) | op.imm();
         self.fetch_load_slot();
-        self.set_reg(op.rt(), value);
+        self.set_reg(op.rt(), val);
     }
 
     /// XORI - Bitwise exclusive Or immediate.
     fn op_xori(&mut self, op: Opcode) {
-        let value = self.read_reg(op.rs()) ^ op.imm();
+        let val = self.read_reg(op.rs()) ^ op.imm();
         self.fetch_load_slot();
-        self.set_reg(op.rt(), value);
+        self.set_reg(op.rt(), val);
     }
 
     /// LUI - Load upper immediate.
@@ -720,11 +732,11 @@ impl Cpu {
         match op.cop_op() {
             // MFC0 - Move from Co-Processor0.
             0x0 => {
-                let register = op.rd();
-                if register > 15 {
+                let reg = op.rd();
+                if reg > 15 {
                     self.throw_exception(Exception::ReservedInstruction);
                 } else {
-                    self.add_load_slot(op.rt(), self.cop0.read_reg(register));
+                    self.add_load_slot(op.rt(), self.cop0.read_reg(reg));
                 }
             }
             // MTC0 - Move to Co-Processor0.
@@ -785,176 +797,217 @@ impl Cpu {
 
     /// LB - Load byte.
     fn op_lb(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        // Note: Byte is always aligned.
-        let value = self.load::<Byte>(address) as i8;
-        self.add_load_slot(op.rt(), value as u32);
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        match self.load::<Byte>(addr) {
+            Ok(val) => self.add_load_slot(op.rt(), (val as i8) as u32),
+            Err(exp) => self.throw_exception(exp),
+        }
     }
 
     /// LH - Load half word.
     fn op_lh(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        if HalfWord::is_aligned(address) {
-            // This casting is apperently required to avoid messing up sign extension.
-            let value = self.load::<HalfWord>(address) as i16;
-            self.add_load_slot(op.rt(), value as u32);
-        } else {
-            self.cop0.set_reg(8, address);
-            self.throw_exception(Exception::AddressLoadError);
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        match self.load::<HalfWord>(addr) {
+            Ok(val) => self.add_load_slot(op.rt(), (val as i16) as u32),
+            Err(exp) => {
+                if let Exception::AddressLoadError = exp {
+                    self.cop0.set_reg(8, addr);
+                }
+                self.throw_exception(exp);
+            }
         }
     }
 
     /// LWL - Load word left.
-    /// This is used to load words which aren't 32-bit aligned.
+    ///
+    /// This is used to load words which aren't 4 byte aligned. It first fetches a base value from a
+    /// given register, which doesn't wait for load delays for some reason?. It then fetches the word in
+    /// memory which contain the unaligned address. The result is a combination (bitwise or) of the
+    /// base value and the loaded word, where the combination depend on the alignment of the
+    /// address.
     fn op_lwl(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        // This instruction somehow doesn't wait on load delay.
-        let value = if self.load_delay.register == op.rt() {
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let val = if self.load_delay.register == op.rt() {
             self.load_delay.value
         } else {
             self.read_reg(op.rt())
         };
-        // Get word containing address.
-        let word = self.load::<Word>(address & !0x3);
-        // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
-        let value = match address & 0x3 {
-            0 => (value & 0x00ffffff) | (word << 24),
-            1 => (value & 0x0000ffff) | (word << 16),
-            2 => (value & 0x000000ff) | (word << 8),
-            3 => word,
-            _ => unreachable!(),
+        // Get word containing unaligned address.
+        match self.load::<Word>(addr & !0x3) {
+            Ok(word) => {
+                // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
+                let val = match addr & 0x3 {
+                    0 => (val & 0x00ffffff) | (word << 24),
+                    1 => (val & 0x0000ffff) | (word << 16),
+                    2 => (val & 0x000000ff) | (word << 8),
+                    3 => word,
+                    _ => unreachable!(),
+                };
+                self.add_load_slot(op.rt(), val);
+            }
+            Err(exp) => {
+                // This should never be an alignment problem, so there should be no need to store
+                // the address in COP0 bad virtual address register.
+                self.throw_exception(exp);
+            }
         };
-        self.add_load_slot(op.rt(), value);
     }
 
     /// LW - Load word.
     fn op_lw(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        if Word::is_aligned(address) {
-            let value = self.load::<Word>(address);
-            self.add_load_slot(op.rt(), value);
-        } else {
-            self.cop0.set_reg(8, address);
-            self.throw_exception(Exception::AddressLoadError);
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        match self.load::<Word>(addr) {
+            Ok(val) => self.add_load_slot(op.rt(), val),
+            Err(exp) => {
+                if let Exception::AddressLoadError = exp {
+                    self.cop0.set_reg(8, addr);
+                }
+                self.throw_exception(exp);
+            }
         }
     }
 
     /// LBU - Load byte unsigned.
     fn op_lbu(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        // Note: Byte is always aligned.
-        let value = self.load::<Byte>(address);
-        self.add_load_slot(op.rt(), value);
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        match self.load::<Byte>(addr) {
+            Ok(val) => self.add_load_slot(op.rt(), val),
+            Err(exp) => self.throw_exception(exp),
+        }
     }
 
     /// LHU - Load half word unsigned.
     fn op_lhu(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        if HalfWord::is_aligned(address) {
-            let value = self.load::<Byte>(address);
-            self.add_load_slot(op.rt(), value);
-        } else {
-            self.cop0.set_reg(8, address);
-            self.throw_exception(Exception::AddressLoadError);
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        match self.load::<Byte>(addr) {
+            Ok(val) => self.add_load_slot(op.rt(), val),
+            Err(exp) => {
+                if let Exception::AddressLoadError = exp {
+                    self.cop0.set_reg(8, addr);
+                }
+                self.throw_exception(exp);
+            }
         }
     }
 
     /// LWR - Load word right.
+    ///
+    /// See 'op_lwl'.
     fn op_lwr(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        // This instruction somehow doesn't wait on load delay.
-        let value = if self.load_delay.register == op.rt() {
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let val = if self.load_delay.register == op.rt() {
             self.load_delay.value
         } else {
             self.read_reg(op.rt())
         };
-        // Get word containing address.
-        let word = self.load::<Word>(address & !0x3);
-        // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
-        let value = match address & 0x3 {
-            0 => word,
-            1 => (value & 0xff000000) | (word >> 8),
-            2 => (value & 0xffff0000) | (word >> 16),
-            3 => (value & 0xffffff00) | (word >> 24),
-            _ => unreachable!(),
-        };
-        self.add_load_slot(op.rt(), value);
+        match self.load::<Word>(addr & !0x3) {
+            Ok(word) => {
+                let val = match addr & 0x3 {
+                    0 => word,
+                    1 => (val & 0xff000000) | (word >> 8),
+                    2 => (val & 0xffff0000) | (word >> 16),
+                    3 => (val & 0xffffff00) | (word >> 24),
+                    _ => unreachable!(),
+                };
+                self.add_load_slot(op.rt(), val);
+            }
+            Err(exp) => self.throw_exception(exp),
+        }
     }
 
     /// SB - Store byte.
-    /// Store byte from target register at address from source register + immediate value.
     fn op_sb(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        let value = self.read_reg(op.rt());
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let val = self.read_reg(op.rt());
         self.fetch_load_slot();
-        self.store::<Byte>(address, value);
+        if let Err(exp) = self.store::<Byte>(addr, val) {
+            self.throw_exception(exp);
+        }
     }
 
     /// SH - Store half word.
-    /// Store half word from target register at address from source register + immediate value.
     fn op_sh(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        let value = self.read_reg(op.rt());
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let val = self.read_reg(op.rt());
         self.fetch_load_slot();
-        if HalfWord::is_aligned(address) {
-            self.store::<HalfWord>(address, value);
-        } else {
-            self.cop0.set_reg(8, address);
+        if let Err(exp) = self.store::<HalfWord>(addr, val) {
+            if let Exception::AddressStoreError = exp {
+                self.cop0.set_reg(8, addr);
+            }
             self.throw_exception(Exception::AddressStoreError);
         }
     }
 
     /// SWL - Store world left.
-    /// This is used to store words to addresses which aren't 32-aligned.
+    ///
+    /// This is used to store words to addresses which aren't 32-aligned. It's the  same idea
+    /// as 'op_lwl' and 'op_lwr'.
     fn op_swl(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        let value = self.read_reg(op.rt());
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let val = self.read_reg(op.rt());
         // Get address of whole word containing unaligned address.
-        let aligned = address & !3;
-        let word = self.load::<Word>(aligned);
-        // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
-        let value = match address & 3 {
-            0 => (word & 0xffffff00) | (value >> 24),
-            1 => (word & 0xffff0000) | (value >> 16),
-            2 => (word & 0xffffff00) | (value >> 8),
-            3 => word,
-            _ => unreachable!(),
-        };
-        self.fetch_load_slot();
-        self.store::<Word>(aligned, value);
+        let aligned = addr & !3;
+        match self.load::<Word>(aligned) {
+            Ok(word) => {
+                let val = match addr & 3 {
+                    0 => (word & 0xffffff00) | (val >> 24),
+                    1 => (word & 0xffff0000) | (val >> 16),
+                    2 => (word & 0xffffff00) | (val >> 8),
+                    3 => word,
+                    _ => unreachable!(),
+                };
+                self.fetch_load_slot();
+                if let Err(exp) = self.store::<Word>(aligned, val) {
+                    if let Exception::AddressStoreError = exp {
+                        self.cop0.set_reg(8, addr);
+                    }
+                    self.throw_exception(Exception::AddressStoreError);
+                }
+            }
+            Err(exp) => self.throw_exception(exp),
+        }
     }
 
     /// SW - Store word.
     /// Store word from target register at address from source register + signed immediate value.
     fn op_sw(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        let value = self.read_reg(op.rt());
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let val = self.read_reg(op.rt());
         self.fetch_load_slot();
-        if Word::is_aligned(address) {
-            self.store::<Word>(address, value);
-        } else {
-            self.cop0.set_reg(8, address);
+        if let Err(exp) = self.store::<Word>(addr, val) {
+            if let Exception::AddressStoreError = exp {
+                self.cop0.set_reg(8, addr);
+            }
             self.throw_exception(Exception::AddressStoreError);
         }
     }
 
     /// SWR - Store world right.
+    ///
+    /// See 'op_swl'.
     fn op_swr(&mut self, op: Opcode) {
-        let address = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        let value = self.read_reg(op.rt());
-        // Get address of whole word containing unaligned address.
-        let aligned = address & !3;
-        let word = self.load::<Word>(aligned);
-        // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
-        let value = match address & 3 {
-            0 => word,
-            1 => (word & 0x000000ff) | (value << 8),
-            2 => (word & 0x0000ffff) | (value << 16),
-            3 => (word & 0x00ffffff) | (value << 24),
-            _ => unreachable!(),
-        };
-        self.fetch_load_slot();
-        self.store::<Word>(aligned, value);
+        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let val = self.read_reg(op.rt());
+        let aligned = addr & !3;
+        match self.load::<Word>(aligned) {
+            Ok(word) => {
+                let val = match addr & 3 {
+                    0 => word,
+                    1 => (word & 0x000000ff) | (val << 8),
+                    2 => (word & 0x0000ffff) | (val << 16),
+                    3 => (word & 0x00ffffff) | (val << 24),
+                    _ => unreachable!(),
+                };
+                self.fetch_load_slot();
+                if let Err(exp) = self.store::<Word>(aligned, val) {
+                    if let Exception::AddressStoreError = exp {
+                        self.cop0.set_reg(8, addr);
+                    }
+                    self.throw_exception(Exception::AddressStoreError);
+                }
+            }
+            Err(exp) => self.throw_exception(exp),
+        }
     }
 
     /// LWC0 - Load word from Coprocessor0.

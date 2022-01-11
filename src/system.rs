@@ -82,4 +82,4 @@ impl System {
 
 const CDROM_FREQ: u64 = 2_u64.pow(12);
 const TIMER_FREQ: u64 = 2_u64.pow(11);
-const GPU_FREQ: u64 = 2_u64.pow(12);
+const GPU_FREQ: u64 = 2_u64.pow(11);

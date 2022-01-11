@@ -4,14 +4,14 @@ pub mod bios;
 pub mod dma;
 pub mod ram;
 
-use crate::{
-    gpu::{Gpu, Vram},
-    util::BitExtract, cdrom::CdRom,
-    cpu::IrqState,
-    timer::Timers,
-    spu::Spu,
-    io_port::IoPort,
-};
+use crate::gpu::{Gpu, Vram};
+use crate::util::BitExtract;
+use crate::cdrom::CdRom;
+use crate::cpu::{IrqState, cop0::Exception};
+use crate::timer::Timers;
+use crate::spu::Spu;
+use crate::io_port::IoPort;
+
 use bios::Bios;
 use dma::{BlockTransfer, Port, Direction, Dma, LinkedTransfer, Transfers};
 use ram::Ram;
@@ -54,126 +54,128 @@ impl Bus {
         }
     }
 
-    pub fn try_load<T: AddrUnit>(&mut self, address: u32) -> Option<u32> {
-        debug_assert!(T::is_aligned(address));
-        let address = to_region(address);
-        match address {
+    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
+        if !T::is_aligned(addr) {
+            return Err(Exception::AddressLoadError);
+        }
+        let addr = to_region(addr);
+        match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
-                Some(self.ram.load::<T>(address))
+                Ok(self.ram.load::<T>(addr))
             }
             Bios::BUS_BEGIN..=Bios::BUS_END => {
-                Some(self.bios.load::<T>(address - Bios::BUS_BEGIN))
+                Ok(self.bios.load::<T>(addr - Bios::BUS_BEGIN))
             }
             MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
-                Some(self.mem_ctrl.load(address - MemCtrl::BUS_BEGIN))
+                Ok(self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN))
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
-                Some(self.ram_size.0)
+                Ok(self.ram_size.0)
             }
             CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
-                Some(self.cache_ctrl.0)
+                Ok(self.cache_ctrl.0)
             }
             EXP1_BEGIN..=EXP1_END => {
-                Some(0xff)
+                Ok(0xff)
             },
             EXP2_BEGIN..=EXP2_END => {
-                Some(0xff)
+                Ok(0xff)
             }
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
-                Some(self.irq_state.load(address - IrqState::BUS_BEGIN))
+                Ok(self.irq_state.load(addr - IrqState::BUS_BEGIN))
             }
             Dma::BUS_BEGIN..=Dma::BUS_END => {
-                Some(self.dma.load(address - Dma::BUS_BEGIN))
+                Ok(self.dma.load(addr - Dma::BUS_BEGIN))
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
-                Some(self.cdrom.load::<T>(address - CdRom::BUS_BEGIN))
+                Ok(self.cdrom.load::<T>(addr - CdRom::BUS_BEGIN))
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
-                Some(self.spu.load(address - Spu::BUS_BEGIN))
+                Ok(self.spu.load(addr - Spu::BUS_BEGIN))
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
-                Some(self.timers.load(
+                Ok(self.timers.load(
                     &mut self.irq_state,
                     self.cycle_count,
-                    address - Timers::BUS_BEGIN,
+                    addr - Timers::BUS_BEGIN,
                 ))
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
-                Some(self.gpu.load::<T>(address - Gpu::BUS_BEGIN))
+                Ok(self.gpu.load::<T>(addr - Gpu::BUS_BEGIN))
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_BEGIN => {
-                Some(self.io_port.load(address - IoPort::BUS_BEGIN))
+                Ok(self.io_port.load(addr - IoPort::BUS_BEGIN))
             }
-            _ => None,
+            _ => {
+                warn!("BUS data error when loading");
+                Err(Exception::BusDataError)
+            }
         }
     }
 
-    pub fn load<T: AddrUnit>(&mut self, address: u32) -> u32 {
-        match self.try_load::<T>(address) {
-            Some(value) => value,
-            None => panic!("Trying to load invalid address to bus at {:08x}", address),
+    pub fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) -> Result<(), Exception>{
+        if !T::is_aligned(addr) {
+            return Err(Exception::AddressStoreError);
         }
-    }
-
-    pub fn store<T: AddrUnit>(&mut self, address: u32, value: u32) {
-        debug_assert!(T::is_aligned(address));
-        let address = to_region(address);
-        match address {
+        let addr = to_region(addr);
+        match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
-                self.ram.store::<T>(address, value);
+                Ok(self.ram.store::<T>(addr, val))
             }
             MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
-                self.mem_ctrl.store(address - MemCtrl::BUS_BEGIN, value);
+                Ok(self.mem_ctrl.store(addr - MemCtrl::BUS_BEGIN, val))
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
-                self.ram_size.0 = value;
+                Ok(self.ram_size.0 = val)
             }
             CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
-                self.cache_ctrl.0 = value;
+                Ok(self.cache_ctrl.0 = val)
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
-                self.spu.store(address - Spu::BUS_BEGIN, value);
+                Ok(self.spu.store(addr - Spu::BUS_BEGIN, val))
             }
             EXP1_BEGIN..=EXP1_END => {
-                // TODO.
+                Ok(())
             }
             EXP2_BEGIN..=EXP2_END => {
-                // TODO.
+                Ok(())
             }
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
-                self.irq_state.store(address - IrqState::BUS_BEGIN, value);
+                Ok(self.irq_state.store(addr - IrqState::BUS_BEGIN, val))
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
-                self.timers.store(
+                Ok(self.timers.store(
                     &mut self.irq_state,
                     self.cycle_count,
-                    address - Timers::BUS_BEGIN,
-                    value
-                ); 
+                    addr - Timers::BUS_BEGIN,
+                    val
+                ))
             }
             Dma::BUS_BEGIN..=Dma::BUS_END => {
                 self.dma.store(
                     &mut self.transfers,
                     &mut self.irq_state,
-                    address - Dma::BUS_BEGIN,
-                    value,
+                    addr - Dma::BUS_BEGIN,
+                    val,
                 );
-                self.exec_transfers();
+                Ok(self.exec_transfers())
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
-                self.cdrom.store::<T>(
+                Ok(self.cdrom.store::<T>(
                     &mut self.irq_state,
-                    address - CdRom::BUS_BEGIN, value,
-                );
+                    addr - CdRom::BUS_BEGIN,
+                    val,
+                ))
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
-                self.gpu.store::<T>(address - Gpu::BUS_BEGIN, value);
+                Ok(self.gpu.store::<T>(addr - Gpu::BUS_BEGIN, val))
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
-                self.io_port.store(address - IoPort::BUS_BEGIN, value);
+                Ok(self.io_port.store(addr - IoPort::BUS_BEGIN, val))
             }
             _ => {
-                panic!("Trying to store invalid address to bus at {:08x}", address)
+                warn!("BUS data error when storing");
+                Err(Exception::BusDataError)
             }
         }
     }

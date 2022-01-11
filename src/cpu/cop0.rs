@@ -5,7 +5,6 @@
 
 use crate::util::{BitExtract, BitSet};
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum Exception {
     /// An interrupt has occured.
@@ -30,8 +29,8 @@ pub enum Exception {
     ArithmeticOverflow = 0xc,
 }
 
-pub struct Cop0 {
-    /// # COP0 registers.
+pub(super) struct Cop0 {
+    /// # COP0 registers
     ///
     /// Most aren't used by any game, so it would maybe be a better idea just to
     /// only implement the required onces.  
@@ -52,14 +51,14 @@ pub struct Cop0 {
 }
 
 impl Cop0 {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             registers: REGISTER_VALUES,
         }
     }
 
     /// Describes if the scrachpad is enabled.
-    pub fn cache_isolated(&self) -> bool {
+    pub(super) fn cache_isolated(&self) -> bool {
         self.registers[12].extract_bit(16) == 1
     }
 
@@ -68,19 +67,22 @@ impl Cop0 {
         self.registers[12].extract_bit(22) == 1
     }
 
-    pub fn irq_enabled(&self) -> bool {
+    pub(super) fn irq_enabled(&self) -> bool {
         self.registers[12].extract_bit(0) == 1
     }
 
-    pub fn set_reg(&mut self, reg: u32, value: u32) {
+    pub(super) fn set_reg(&mut self, reg: u32, value: u32) {
         self.registers[reg as usize] = value;
     }
 
-    pub fn read_reg(&self, reg: u32) -> u32 {
+    pub(super) fn read_reg(&self, reg: u32) -> u32 {
+        if reg == 8 {
+            trace!("Bad virtual address register read");
+        }
         self.registers[reg as usize]
     }
 
-    pub fn enter_exception(&mut self, last_pc: u32, in_delay: bool, ex: Exception) -> u32 {
+    pub(super) fn enter_exception(&mut self, last_pc: u32, in_delay: bool, ex: Exception) -> u32 {
         // Remember bits 0..5 of the status register, which keep track of interrupt and
         // kernel/user mode flags. Bits 0..1 keep track of the current flags, bits 2..3 keeps
         // track of the last flags, and bits 4..5 the ones before that.
@@ -108,7 +110,7 @@ impl Cop0 {
         }
     }
 
-    pub fn exit_exception(&mut self) {
+    pub(super) fn exit_exception(&mut self) {
         let flags = self.registers[12].extract_bits(0, 5);
         self.registers[12] &= !0xf;
         self.registers[12] |= flags >> 2;

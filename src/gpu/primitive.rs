@@ -1,4 +1,4 @@
-use super::{TextureDepth, TransBlend};
+use super::{TexelDepth, TransBlend};
 use crate::util::BitExtract;
 
 /// A point on the screen or in VRAM.
@@ -164,7 +164,7 @@ pub struct TextureParams {
     /// The y coordinate start of texture in VRAM.
     pub texture_y: i32,
     /// The depth of the texture. Essentially how many bits each texture color consists of.
-    pub texture_depth: TextureDepth,
+    pub texel_depth: TexelDepth,
     /// How to blend with the background color.
     pub blend_mode: TransBlend,
 }
@@ -176,7 +176,7 @@ impl Default for TextureParams {
             clut_y: 0,
             texture_x: 0,
             texture_y: 0,
-            texture_depth: TextureDepth::B4,
+            texel_depth: TexelDepth::B4,
             blend_mode: TransBlend::Avg,
         }
     }

@@ -30,13 +30,21 @@ impl Fifo {
         self.head.wrapping_sub(self.tail) as usize
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.len() == FIFO_SIZE
+    }
+
     pub fn clear(&mut self) {
         self.tail = self.head;
     }
 
     pub fn push(&mut self, value: u32) {
         if log_enabled!(log::Level::Warn) {
-            if  self.len() == FIFO_SIZE {
+            if  self.is_full() {
                 warn!("Pushing to a full GPU FIFO");
             }
         }
@@ -46,7 +54,7 @@ impl Fifo {
 
     pub fn pop(&mut self) -> u32 {
         if log_enabled!(log::Level::Warn) {
-            if self.len() == 0 {
+            if self.is_empty() {
                 warn!("Poping from an empty GPU FIFO");
             }
         }
@@ -56,8 +64,12 @@ impl Fifo {
     }
 
     pub fn has_full_cmd(&self) -> bool {
-        let cmd = self[0].extract_bits(24, 31) as usize;
-        CMD_LEN[cmd] as usize == self.len()
+        if !self.is_empty() {
+            let cmd = self[0].extract_bits(24, 31) as usize;
+            CMD_LEN[cmd] as usize == self.len()
+        } else {
+            false
+        }
     }
 }
 
