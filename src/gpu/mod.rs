@@ -664,25 +664,25 @@ impl Gpu {
         self.status.0.set_bit(31, vram_line & 0x1 == 1);
     }
 
-    fn gp1_store(&mut self, value: u32) {
-        let cmd = value.extract_bits(24, 31);
+    fn gp1_store(&mut self, val: u32) {
+        let cmd = val.extract_bits(24, 31);
         match cmd {
             0x0 => self.gp1_reset(),
             0x1 => self.gp1_reset_cmd_buffer(),
             0x2 => self.gp1_acknowledge_gpu_interrupt(),
-            0x3 => self.gp1_display_enable(value),
-            0x4 => self.gp1_dma_direction(value),
-            0x5 => self.gp1_start_display_area(value),
-            0x6 => self.gp1_horizontal_display_range(value),
-            0x7 => self.gp1_vertical_display_range(value),
-            0x8 => self.gp1_display_mode(value),
-            0x4c => {},
+            0x3 => self.gp1_display_enable(val),
+            0x4 => self.gp1_dma_direction(val),
+            0x5 => self.gp1_start_display_area(val),
+            0x6 => self.gp1_horizontal_display_range(val),
+            0x7 => self.gp1_vertical_display_range(val),
+            0x8 => self.gp1_display_mode(val),
             _ => unimplemented!("Invalid GP1 command {:08x}.", cmd),
         }
     }
 
     fn gp0_exec(&mut self) {
         let cmd = self.fifo[0].extract_bits(24, 31);
+        debug!("GP0({:x})", cmd);
         match cmd {
             0x0 => {
                 self.fifo.pop();
@@ -691,6 +691,7 @@ impl Gpu {
                 self.fifo.pop();
                 // TODO: clear cache.
             }
+            0x2 => self.gp0_fill_rect(),
             0xe1 => self.gp0_draw_mode_setting(),
             0xe2 => self.gp0_texture_window_setting(),
             0xe3 => self.gp0_draw_area_top_left(),
@@ -715,17 +716,18 @@ impl Gpu {
         let mut verts = [Vertex::default(); 3];
         let mut params = TextureParams::default();
         let color = if !S::is_shaded() {
-            Color::from_u32(self.fifo.pop())
+            Color::from_cmd(self.fifo.pop())
         } else {
             Color::from_rgb(0, 0, 0)
         };
         for (i, vertex) in verts.iter_mut().enumerate() {
             if S::is_shaded() {
-                vertex.color = Color::from_u32(self.fifo.pop());
+                vertex.color = Color::from_cmd(self.fifo.pop());
             }
-            vertex.point = Point::from_u32(self.fifo.pop());
-            vertex.point.x += self.draw_x_offset as i32;
-            vertex.point.y += self.draw_y_offset as i32;
+            vertex.point = Point::from_cmd(self.fifo.pop()).with_offset(
+                self.draw_x_offset as i32,
+                self.draw_y_offset as i32,
+            );
             if Tex::is_textured() {
                 let value = self.fifo.pop();
                 match i {
@@ -760,18 +762,19 @@ impl Gpu {
         let mut verts = [Vertex::default(); 4];
         let mut params = TextureParams::default();
         let color = if !S::is_shaded() {
-            Color::from_u32(self.fifo.pop())
+            Color::from_cmd(self.fifo.pop())
         } else {
             Color::from_rgb(0, 0, 0)
         };
         for (i, vertex) in verts.iter_mut().enumerate() {
             // If it's shaded the color is always the first attribute.
             if S::is_shaded() {
-                vertex.color = Color::from_u32(self.fifo.pop());
+                vertex.color = Color::from_cmd(self.fifo.pop());
             }
-            vertex.point = Point::from_u32(self.fifo.pop());
-            vertex.point.x += self.draw_x_offset as i32;
-            vertex.point.y += self.draw_y_offset as i32;
+            vertex.point = Point::from_cmd(self.fifo.pop()).with_offset(
+                self.draw_x_offset as i32,
+                self.draw_y_offset as i32,
+            );
             if Tex::is_textured() {
                 let value = self.fifo.pop();
                 match i {
@@ -806,13 +809,34 @@ impl Gpu {
     fn gp0_line(&mut self) {
         warn!("Drawing line");
         self.fifo.pop();
-        let mut start = Point::from_u32(self.fifo.pop());
-        start.x += self.draw_x_offset as i32;
-        start.y += self.draw_y_offset as i32;
-        let mut end = Point::from_u32(self.fifo.pop());
-        end.x += self.draw_x_offset as i32;
-        end.y += self.draw_y_offset as i32;
+        let start = Point::from_cmd(self.fifo.pop()).with_offset(
+            self.draw_x_offset as i32,
+            self.draw_y_offset as i32,
+        );
+        let end = Point::from_cmd(self.fifo.pop()).with_offset(
+            self.draw_x_offset as i32,
+            self.draw_y_offset as i32,
+        );
         self.draw_line(start, end);
+    }
+
+    /// GP0(02) - Fill rectanlge in VRAM.
+    fn gp0_fill_rect(&mut self) {
+        let color = Color::from_cmd(self.fifo.pop());
+
+        let val = self.fifo.pop() as i32;
+        let start = Point {
+            x: val & 0x3f0,
+            y: (val >> 16) & 0x3ff,
+        };
+
+        let val = self.fifo.pop() as i32;
+        let dim = Point {
+            x: ((val & 0x3ff) + 0xf) & !0xf,
+            y: (val >> 16) & 0x1ff,
+        };
+
+        self.fill_rect(color, start, dim); 
     }
 
     /// GP0(e1) - Draw Mode Setting.

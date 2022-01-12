@@ -196,6 +196,7 @@ impl Gpu {
                 if res.x < 0.0 || res.y < 0.0 || res.z < 0.0 {
                     continue;
                 }
+
                 // If the triangle is shaded, we interpolate between the colors of each vertex.
                 // Otherwise the shade is just the base color/shade.
                 let shade = if Shade::is_shaded() {
@@ -212,6 +213,7 @@ impl Gpu {
                 } else {
                     shade
                 };
+
                 let color = if Tex::is_textured() {
                     let uv = TexCoord {
                         u: (v1.texcoord.u as f32 * res.x
@@ -250,6 +252,7 @@ impl Gpu {
                         shade
                     }
                 };
+
                 self.draw_pixel(p, if self.status.dithering_enabled() {
                     color.dither(p)
                 } else {
@@ -260,4 +263,13 @@ impl Gpu {
     }
 
     pub fn draw_line(&mut self, _start: Point, _end: Point) {}
+
+    pub fn fill_rect(&mut self, color: Color, start: Point, dim: Point) {
+        let color = color.as_u16();
+        for y in 0..dim.y {
+            for x in 0..dim.x {
+                self.vram.store_16(start.x + x, start.y + y, color);
+            }
+        }
+    }
 }

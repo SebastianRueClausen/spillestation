@@ -13,14 +13,19 @@ impl Point {
         Self { x, y }
     }
 
-    pub fn from_u32(val: u32) -> Self {
-        fn to_i11(val: u32) -> i32 {
+    pub fn from_cmd(val: u32) -> Self {
+        fn sign_extend(val: u32) -> i32 {
             ((val << 21) as i32) >> 21
         }
+
         Self {
-            x: to_i11(val), 
-            y: to_i11(val >> 16),
+            x: sign_extend(val), 
+            y: sign_extend(val >> 16),
         }
+    }
+
+    pub fn with_offset(self, x: i32, y: i32) -> Self {
+        Self::new(self.x + x, self.y + y)
     }
 }
 
@@ -78,11 +83,11 @@ impl Color {
         }
     }
 
-    pub fn from_u32(value: u32) -> Self {
+    pub fn from_cmd(cmd: u32) -> Self {
         Self {
-            r: value.extract_bits(0, 7) as u8,
-            g: value.extract_bits(8, 15) as u8,
-            b: value.extract_bits(16, 23) as u8,
+            r: cmd.extract_bits(0, 7) as u8,
+            g: cmd.extract_bits(8, 15) as u8,
+            b: cmd.extract_bits(16, 23) as u8,
         }
     }
 

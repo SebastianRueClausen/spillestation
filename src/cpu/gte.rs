@@ -81,14 +81,22 @@ impl Gte {
     pub fn ctrl_store(&mut self, reg: u32, val: u32) {
         trace!("GTE Control store to reg {:x}", reg);
         match reg {
-            0x18 => self.ofx = val as i32,
-            0x19 => self.ofy = val as i32,
-            0x1a => self.h = val as u16,
-            0x1b => self.dqa = val as i16,
-            0x1c => self.dqb = val as i32,
-            0x1d => self.zsf3 = val as i16,
-            0x1e => self.zsf4 = val as i16,
-            _ => todo!("GTE Control store: {:08x}", reg),
+            13..=15 => {
+                let vec = TransVec::BackgroundColor as usize;
+                self.trans_vecs[vec][reg as usize - 13] = val as i32;
+            }
+            21..=23 => {
+                let vec = TransVec::FarColor as usize;
+                self.trans_vecs[vec][reg as usize - 21] = val as i32;
+            }
+            24 => self.ofx = val as i32,
+            25 => self.ofy = val as i32,
+            26 => self.h = val as u16,
+            27 => self.dqa = val as i16,
+            28 => self.dqb = val as i32,
+            29 => self.zsf3 = val as i16,
+            30 => self.zsf4 = val as i16,
+            _ => todo!("GTE Control store: {}", reg),
         }
     }
 }
