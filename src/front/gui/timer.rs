@@ -1,6 +1,9 @@
 use super::App;
-use crate::{timer::Timers, system::System};
-use std::{fmt::Write, time::Duration};
+use crate::timer::{Timers, TimerId};
+use crate::system::System;
+
+use std::fmt::Write;
+use std::time::Duration;
 
 #[derive(Default)]
 pub struct TimerView {
@@ -9,21 +12,24 @@ pub struct TimerView {
 
 impl TimerView {
     pub fn write_fields(&mut self, timers: &Timers) -> Result<(), std::fmt::Error> {
-        Ok(for (timer, fields) in timers.timers.iter().zip(self.fields.iter_mut()) {
-            write!(fields[0], "{}", timer.counter)?;
-            write!(fields[1], "{}", timer.target)?;
-            write!(fields[2], "{}", timer.mode.sync_enabled())?;
-            write!(fields[3], "{}", timer.mode.sync_mode(timer.id))?;
-            write!(fields[4], "{}", timer.mode.reset_on_target())?;
-            write!(fields[5], "{}", timer.mode.irq_on_target())?;
-            write!(fields[6], "{}", timer.mode.irq_on_overflow())?;
-            write!(fields[7], "{}", timer.mode.irq_repeat())?;
-            write!(fields[8], "{}", timer.mode.irq_toggle_mode())?;
-            write!(fields[9], "{}", timer.mode.clock_source(timer.id))?;
-            write!(fields[10], "{}", timer.mode.master_irq_flag())?;
-            write!(fields[11], "{}", timer.mode.target_reached())?;
-            write!(fields[12], "{}", timer.mode.overflow_reached())?;
-        })
+        let timer_ids = [TimerId::Tmr0, TimerId::Tmr1, TimerId::Tmr2];
+        for (id, fields) in timer_ids.iter().zip(self.fields.iter_mut()) {
+            let tmr = timers.timer(*id);
+            write!(fields[0], "{}", tmr.counter)?;
+            write!(fields[1], "{}", tmr.target)?;
+            write!(fields[2], "{}", tmr.mode.sync_enabled())?;
+            write!(fields[3], "{}", tmr.mode.sync_mode(*id))?;
+            write!(fields[4], "{}", tmr.mode.reset_on_target())?;
+            write!(fields[5], "{}", tmr.mode.irq_on_target())?;
+            write!(fields[6], "{}", tmr.mode.irq_on_overflow())?;
+            write!(fields[7], "{}", tmr.mode.irq_repeat())?;
+            write!(fields[8], "{}", tmr.mode.irq_toggle_mode())?;
+            write!(fields[9], "{}", tmr.mode.clock_source(*id))?;
+            write!(fields[10], "{}", tmr.mode.master_irq_flag())?;
+            write!(fields[11], "{}", tmr.mode.target_reached())?;
+            write!(fields[12], "{}", tmr.mode.overflow_reached())?;
+        }
+        Ok(())
     }
 }
 

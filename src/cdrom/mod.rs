@@ -1,8 +1,11 @@
 
 mod fifo;
 
+use crate::util::BitExtract;
+use crate::cpu::Irq;
+use crate::bus::{Schedule, Event, AddrUnit, BusMap};
+
 use fifo::Fifo;
-use crate::{util::BitExtract, cpu::{IrqState, Irq}, bus::{AddrUnit, BusMap}};
 
 /// Interrupt types used internally by the Playstations CDROM.
 #[derive(Clone, Copy)]
@@ -21,9 +24,6 @@ pub struct CdRom {
     irq_flags: u8,
     /// The CDROM may or may not have a command waiting to be executed.
     cmd: Option<u8>,
-    /// Sometimes the response or part of the response from commands may take some time to be
-    /// available. This is uesd to emulate that. The Option contains the command number.
-    cmd_response: Option<u8>,
     /// Responses from commands.
     response_fifo: Fifo,
     /// Arguments to commands.
@@ -38,14 +38,13 @@ impl CdRom {
             irq_mask: 0x0,
             irq_flags: 0x0,
             cmd: None,
-            cmd_response: None,
             response_fifo: Fifo::new(),
             arg_fifo: Fifo::new(),
             data_fifo: Fifo::new(), 
         }
     }
 
-    pub fn store<T: AddrUnit>(&mut self, irq: &mut IrqState, addr: u32, val: u32) {
+    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
         match addr {
             0 => self.index = val.extract_bits(0, 1) as u8,
             1 => match self.index {
@@ -54,7 +53,7 @@ impl CdRom {
                         warn!("CDROM beginning command while command is pending")
                     }
                     self.cmd = Some(val as u8);
-                    self.exec_cmd(irq);
+                    self.exec_cmd(schedule);
                 },
                 _ => todo!(),
             }
@@ -64,7 +63,7 @@ impl CdRom {
                     let was_active = self.irq_active();
                     self.irq_mask = val as u8 & 0x1f;
                     if !was_active && self.irq_active() {
-                        irq.trigger(Irq::CdRom); 
+                        schedule.schedule_now(Event::IrqTrigger(Irq::CdRom));
                     }
                 }
                 2 => todo!(),
@@ -109,30 +108,70 @@ impl CdRom {
         }
     }
 
+    pub fn run(&mut self, schedule: &mut Schedule) {
+        self.exec_cmd(schedule);
+        schedule.schedule_in(10_000, Event::RunCdRom);
+    }
 
-    pub fn exec_cmd(&mut self, irq: &mut IrqState) {
-        if let Some(cmd) = self.cmd_response.take() {
-            match cmd {
-                0x1e => self.cmd_read_toc_response(),
-                _ => unreachable!(),
+    pub fn reponse(&mut self, cmd: u8) {
+        debug!("CDROM reponse for command {:x}", cmd);
+        match cmd {
+            // Init.
+            0xa => {
+                self.response_fifo.push(self.drive_stat());
             }
+            // Read Table of Content.
+            0x1e => {
+                self.response_fifo.push(self.drive_stat());
+            }
+            _ => todo!(),
         }
+    }
+
+    fn exec_cmd(&mut self, schedule: &mut Schedule) {
         if let Some(cmd) = self.cmd.take() {
+            debug!("CDROM command {:x}", cmd);
             match cmd {
-                0x01 => self.cmd_stat(irq),
-                0x19 => self.cmd_test(irq),
-                0x1a => self.cmd_get_id(irq),
-                0x1e => self.cmd_read_toc(),
+                // Status.
+                0x01 => {
+                    self.response_fifo.push(self.drive_stat());
+                    self.set_interrupt(schedule, Interrupt::Ack);
+                }
+                // Init.
+                0x0a => {
+                    self.response_fifo.push(self.drive_stat());
+                    schedule.schedule_in(900_000, Event::CdRomReponse(0x0a));
+                }
+                // Test command. It's behavior depent on the first argument.
+                0x19 => match self.arg_fifo.pop() {
+                    0x20 => {
+                        // These represent year, month, day and version respectively.
+                        self.response_fifo.push_slice(&[0x98, 0x06, 0x10, 0xc3]);
+                        self.set_interrupt(schedule, Interrupt::Ack);
+                    }
+                    _ => todo!(),
+                }
+                // Get ID.
+                0x1a => {
+                    self.response_fifo.push_slice(&[0x11, 0x80]);
+                    self.set_interrupt(schedule, Interrupt::Error);
+                }
+                // Read Table of Content.
+                0x1e => {
+                    self.response_fifo.push(self.drive_stat());
+                    // This might not take as long without a disc.
+                    schedule.schedule_in(30_000_000, Event::CdRomReponse(0x1e));
+                }
                 _ => todo!("CDROM Command: {:08x}", cmd),
             }
             self.arg_fifo.clear();
         }
     }
 
-    fn set_interrupt(&mut self, irq: &mut IrqState, int: Interrupt) {
+    fn set_interrupt(&mut self, schedule: &mut Schedule, int: Interrupt) {
         self.irq_flags = int as u8;
         if self.irq_active() {
-            irq.trigger(Irq::CdRom);
+            schedule.schedule_now(Event::IrqTrigger(Irq::CdRom));
         }
     }
 
@@ -143,36 +182,6 @@ impl CdRom {
     fn drive_stat(&self) -> u8 {
         // This means that the drive cover is open.
         0x10
-    }
-
-    fn cmd_stat(&mut self, irq: &mut IrqState) {
-        self.response_fifo.push(self.drive_stat());
-        self.set_interrupt(irq, Interrupt::Ack);
-    }
-
-    fn cmd_test(&mut self, irq: &mut IrqState) {
-        match self.arg_fifo.pop() {
-            0x20 => {
-                // These represent year, month, day and version respectively.
-                self.response_fifo.push_slice(&[0x98, 0x06, 0x10, 0xc3]);
-                self.set_interrupt(irq, Interrupt::Ack);
-            }
-            _ => todo!(),
-        }
-    }
-
-    fn cmd_get_id(&mut self, irq: &mut IrqState) {
-        self.response_fifo.push_slice(&[0x11, 0x80]);
-        self.set_interrupt(irq, Interrupt::Error);
-    }
-
-    fn cmd_read_toc(&mut self) {
-        self.response_fifo.push(self.drive_stat());
-        self.cmd_response = Some(0x1e);
-    }
-
-    fn cmd_read_toc_response(&mut self) {
-        self.response_fifo.push(self.drive_stat());
     }
 }
 

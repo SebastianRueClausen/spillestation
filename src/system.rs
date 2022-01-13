@@ -1,5 +1,12 @@
-use crate::{cpu::Cpu, bus::bios::Bios, timing};
+use crate::cpu::Cpu;
+use crate::bus::bios::Bios;
+use crate::timing;
+
 use std::time::Duration;
+
+/// Used to represent an absolute CPU cycle number. This will never overflow, unless the emulator runs
+/// for 17,725 years.
+pub type Cycle = u64;
 
 #[derive(PartialEq, Eq)]
 pub enum DebugStop {
@@ -28,16 +35,6 @@ impl System {
     /// Take a single CPU step, which can be multiple cycles.
     fn cpu_step(&mut self) {
         self.cpu.step();
-        let cycle = self.cpu.bus().cycle_count;
-        if cycle % CDROM_FREQ == 0 {
-            self.cpu.bus_mut().run_cdrom();
-        }
-        if cycle % TIMER_FREQ == 0 {
-            self.cpu.bus_mut().run_timers();
-        }
-        if cycle % GPU_FREQ == 0 {
-            self.cpu.bus_mut().run_gpu();
-        }
     }
 
     /// Run at full speed.
@@ -79,7 +76,3 @@ impl System {
         DebugStop::Time
     }
 }
-
-const CDROM_FREQ: u64 = 2_u64.pow(12);
-const TIMER_FREQ: u64 = 2_u64.pow(11);
-const GPU_FREQ: u64 = 2_u64.pow(11);

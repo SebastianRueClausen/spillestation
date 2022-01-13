@@ -7,20 +7,23 @@ pub mod ram;
 use crate::gpu::{Gpu, Vram};
 use crate::util::BitExtract;
 use crate::cdrom::CdRom;
-use crate::cpu::{IrqState, cop0::Exception};
-use crate::timer::Timers;
+use crate::cpu::{Irq, IrqState, cop0::Exception};
+use crate::timer::{Timers, TimerId};
 use crate::spu::Spu;
 use crate::io_port::IoPort;
+use crate::system::Cycle;
+
+use std::collections::BinaryHeap;
+use std::cmp::Ordering;
 
 use bios::Bios;
 use dma::{BlockTransfer, Port, Direction, Dma, LinkedTransfer, Transfers};
 use ram::Ram;
 
 pub struct Bus {
-    /// The amount of CPU cycles since boot.
-    pub cycle_count: u64,
     pub cache_ctrl: CacheCtrl,
     pub irq_state: IrqState,
+    pub schedule: Schedule,
     bios: Bios,
     ram: Ram,
     dma: Dma,
@@ -36,9 +39,12 @@ pub struct Bus {
 
 impl Bus {
     pub fn new(bios: Bios) -> Self {
+        let mut schedule = Schedule::new();
+        schedule.schedule_in(5_000, Event::RunGpu);
+        schedule.schedule_in(7_000, Event::RunCdRom);
         Self {
-            cycle_count: 0,
             bios,
+            schedule,
             irq_state: IrqState::new(),
             ram: Ram::new(),
             dma: Dma::new(),
@@ -95,8 +101,7 @@ impl Bus {
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
                 Ok(self.timers.load(
-                    &mut self.irq_state,
-                    self.cycle_count,
+                    &mut self.schedule,
                     addr - Timers::BUS_BEGIN,
                 ))
             }
@@ -145,8 +150,7 @@ impl Bus {
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
                 Ok(self.timers.store(
-                    &mut self.irq_state,
-                    self.cycle_count,
+                    &mut self.schedule,
                     addr - Timers::BUS_BEGIN,
                     val
                 ))
@@ -154,7 +158,7 @@ impl Bus {
             Dma::BUS_BEGIN..=Dma::BUS_END => {
                 self.dma.store(
                     &mut self.transfers,
-                    &mut self.irq_state,
+                    &mut self.schedule,
                     addr - Dma::BUS_BEGIN,
                     val,
                 );
@@ -162,7 +166,7 @@ impl Bus {
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
                 Ok(self.cdrom.store::<T>(
-                    &mut self.irq_state,
+                    &mut self.schedule,
                     addr - CdRom::BUS_BEGIN,
                     val,
                 ))
@@ -171,7 +175,7 @@ impl Bus {
                 Ok(self.gpu.store::<T>(addr - Gpu::BUS_BEGIN, val))
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
-                Ok(self.io_port.store(addr - IoPort::BUS_BEGIN, val))
+                Ok(self.io_port.store(&mut self.irq_state, addr - IoPort::BUS_BEGIN, val))
             }
             _ => {
                 warn!("BUS data error when storing");
@@ -192,21 +196,29 @@ impl Bus {
         &self.timers
     }
 
-    pub fn run_cdrom(&mut self) {
-        self.cdrom.exec_cmd(&mut self.irq_state);
-    }
-
-    pub fn run_timers(&mut self) {
-        self.timers.run(&mut self.irq_state, self.cycle_count);
-    }
-
-    pub fn run_gpu(&mut self) {
-        self.gpu.run(&mut self.irq_state, &mut self.timers, self.cycle_count);
+    pub fn handle_event(&mut self, event: Event) {
+        match event {
+            Event::RunCdRom => {
+                self.cdrom.run(&mut self.schedule);
+            }
+            Event::CdRomReponse(cmd) => {
+                self.cdrom.reponse(cmd);
+            }
+            Event::RunGpu => {
+                self.gpu.run(&mut self.schedule, &mut self.timers);
+            }
+            Event::TimerIrqEnable(id) => {
+                self.timers.enable_irq_master_flag(id);
+            }
+            Event::RunTimer(id) => {
+                self.timers.run_timer(&mut self.schedule, id);
+            }
+            Event::IrqTrigger(..) => unreachable!(),
+        }
     }
 
     /// This executes waiting DAM transfers.
     fn exec_transfers(&mut self) {
-        // Execute block transfers.
         while let Some(transfer) = self.transfers.block.pop() {
             trace!("DMA block transfer: {:?}", transfer);
             match transfer.direction {
@@ -217,13 +229,12 @@ impl Bus {
                     self.trans_block_to_ram(&transfer);
                 }
             }
-            self.dma.channel_done(transfer.port, &mut self.irq_state);
+            self.dma.channel_done(transfer.port, &mut self.schedule);
         }
-        // Execute linked list transfers.
         while let Some(transfer) = self.transfers.linked.pop() {
             trace!("DMA linked transfer: {:?}", transfer);
             self.trans_linked_to_port(&transfer);
-            self.dma.channel_done(Port::Gpu, &mut self.irq_state);
+            self.dma.channel_done(Port::Gpu, &mut self.schedule);
         }
     }
 
@@ -244,7 +255,7 @@ impl Bus {
         (0..transfer.size).rev().fold(transfer.start, |addr, remain| {
             self.ram.store::<Word>(addr & 0x1_ffffc, match transfer.port {
                 Port::Otc => match remain {
-                    0 => 0xff_ffff,
+                    1 => 0xff_ffff,
                     _ => addr.wrapping_sub(4).extract_bits(0, 21),
                 }
                 Port::Gpu => self.gpu.dma_load(),
@@ -269,6 +280,105 @@ impl Bus {
                 break;
             }
         }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+pub enum Event {
+    RunCdRom,
+    RunGpu,
+    CdRomReponse(u8),
+    TimerIrqEnable(TimerId),
+    RunTimer(TimerId),
+    IrqTrigger(Irq),
+}
+
+struct EventEntry(Cycle, Event);
+
+impl PartialEq for EventEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for EventEntry {}
+
+impl PartialOrd for EventEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(&other))  
+    }
+}
+
+impl Ord for EventEntry {
+    /// Sort smallest to largest cycle.
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.0.cmp(&self.0)
+    }
+}
+
+/// This is reponsible to handling events and timing of the system in general.
+pub struct Schedule {
+    /// The absolute cycle number, which is the amount of cycles the system has run since startup.
+    /// It's used for timing event and allow the devices on ['Bus'] to pick an absolute
+    /// cycle to run an event.
+    cycle: Cycle,
+    /// Event queue. This allows for a fast way to check if any events should run at any given cycle.
+    /// Events are sorted in the binary queue such that the next event to run is the root item.
+    events: BinaryHeap<EventEntry>,
+}
+
+impl Schedule {
+    fn new() -> Self {
+        Self {
+            cycle: 0,
+            events: BinaryHeap::with_capacity(16),
+        }
+    }
+
+    /// Schedule an ['Event'] at a given absolute cycle.
+    pub fn schedule_at(&mut self, cycle: Cycle, event: Event) {
+        self.events.push(EventEntry(cycle, event));
+    }
+
+    /// Schedule an ['Event'] in a given number of cycles.
+    pub fn schedule_in(&mut self, cycles: Cycle, event: Event) {
+        self.schedule_at(self.cycle + cycles, event);
+    }
+
+    /// Schedule an ['Event'] to be executed as soon as possible.
+    pub fn schedule_now(&mut self, event: Event) {
+        self.schedule_at(0, event);
+    }
+
+    /// Returns an event if any is ready.
+    pub fn pop_event(&mut self) -> Option<Event> {
+        match self.events.peek() {
+            Some(entry) if entry.0 <= self.cycle => {
+                Some(self.events.pop().unwrap().1)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn unschedule(&mut self, event: Event) {
+        self.events.retain(|entry| {
+            entry.1 != event 
+        });
+    }
+
+    pub fn cycle(&self) -> Cycle {
+        self.cycle
+    }
+
+    /// Move a given amount of cycles forward.
+    pub fn tick(&mut self, cycles: Cycle) {
+        self.cycle += cycles;
+    }
+
+    /// Skip to a cycle. It can only skip forward, so if a cycle given is less than the current cycle,
+    /// nothing happens.
+    pub fn skip_to(&mut self, cycle: Cycle) {
+        self.cycle = self.cycle.max(cycle);
     }
 }
 

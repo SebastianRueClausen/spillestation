@@ -31,6 +31,10 @@ pub const NTSC_VERTICAL_RANGE: std::ops::Range<u64> = NTSC_VBEGIN..NTSC_VEND;
 pub const PAL_FPS: u64 = GPU_HZ / PAL_SCLN_PER_FRAME / PAL_CYCLES_PER_SCLN;
 pub const NTSC_FPS: u64 = GPU_HZ / NTSC_SCLN_PER_FRAME / NTSC_CYCLES_PER_SCLN;
 
-pub const fn cpu_to_gpu_cycles(cycles: u64) -> u64 {
-    cycles * (11 / 7)
+pub fn cpu_to_gpu_cycles(cycles: u64) -> u64 {
+    (cycles as f64 * (11.0 / 7.0)) as u64
+}
+
+pub fn gpu_to_cpu_cycles(cycles: u64) -> u64 {
+    (cycles as f64 / (11.0 / 7.0)) as u64
 }

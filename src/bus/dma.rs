@@ -4,8 +4,8 @@
 #![allow(dead_code)]
 
 use crate::util::{BitExtract, BitSet};
-use crate::cpu::{IrqState, Irq};
-use crate::bus::BusMap;
+use crate::cpu::Irq;
+use crate::bus::{BusMap, Schedule, Event};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Port {
@@ -110,16 +110,6 @@ impl Step {
     }
 }
 
-/// Keeps track of size information for channels.
-/// - 0 - Transfer direction - to/from RAM.
-/// - 1 - Address increment/decrement.
-/// - 2 - Chopping mode. Allowing the CPU the run at times.
-/// - 9..10 - Sync mode - Manual/Request/Linked List.
-/// - 16..18 - Chopping DMA window. How long the CPU are allowed to run when chopping.
-/// - 20..22 - Chopping CPU window. How often the CPU is allowed to run.
-/// - 24 - Enable flag.
-/// - 28 - Manual trigger.
-/// - 29..30 - Uknown. Maybe for pausing tranfers.
 #[derive(Clone, Copy)]
 struct ChannelCtrl(u32);
 
@@ -175,6 +165,9 @@ impl ChannelCtrl {
             self.0 |= 2;
         }
         self.0 = val;
+        if self.chopping_enabled() {
+            warn!("Chopping enabled for port {:?}", port);
+        }
     }
 }
 
@@ -283,7 +276,7 @@ impl IrqReg {
     }
 
     /// If this ever get's set, an interrupt is triggered.
-    fn update_master_irq_flag(&mut self, irq: &mut IrqState) {
+    fn update_master_irq_flag(&mut self, schedule: &mut Schedule) {
         // If this is true, then the DMA should trigger an interrupt if 'master_irq_flag' isn't
         // already on. If the force_irq flag is set, then it will always trigger an interrupt.
         // Otherwise it will trigger if any of the flags are set and 'master_irq_enabled' is on.
@@ -293,19 +286,19 @@ impl IrqReg {
         if result {
             if !self.master_irq_flag() {
                 self.0.set_bit(31, true);
-                irq.trigger(Irq::Dma);
+                schedule.schedule_now(Event::IrqTrigger(Irq::Dma));
             }
         } else {
             self.0.set_bit(31, false);
         }
     }
 
-    fn store(&mut self, irq: &mut IrqState, val: u32) {
+    fn store(&mut self, schedule: &mut Schedule, val: u32) {
         let mask = 0x00ff_803f;
         self.0 &= !mask;
         self.0 |= val & mask;
         self.0 &= !(val & 0x7f00_0000);
-        self.update_master_irq_flag(irq);
+        self.update_master_irq_flag(schedule);
     }
 }
 
@@ -394,7 +387,7 @@ impl Dma {
     pub fn store(
         &mut self,
         transfers: &mut Transfers,
-        irq: &mut IrqState,
+        schedule: &mut Schedule,
         offset: u32,
         value: u32,
     ) {
@@ -404,7 +397,7 @@ impl Dma {
             0..=6 => self.channels[channel as usize].store(reg, value),
             7 => match reg {
                 0 => self.ctrl.0 = value,
-                4 => self.irq.store(irq, value),
+                4 => self.irq.store(schedule, value),
                 _ => unreachable!(),
             },
             _ => unreachable!(),
@@ -413,12 +406,12 @@ impl Dma {
     }
 
     /// Mark channel as done.
-    pub fn channel_done(&mut self, port: Port, irq: &mut IrqState) {
+    pub fn channel_done(&mut self, port: Port, schedule: &mut Schedule) {
         self.channels[port as usize].ctrl.mark_as_finished();
         if self.irq.channel_irq_enabled(port) {
             self.irq.set_channel_irq_flag(port);
         }
-        self.irq.update_master_irq_flag(irq);
+        self.irq.update_master_irq_flag(schedule);
     }
 
     /// Build transfer command for the BUS to execute.

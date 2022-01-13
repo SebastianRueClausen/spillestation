@@ -1,3 +1,4 @@
+#![feature(let_else, binary_heap_retain)]
 
 #[macro_use]
 extern crate log;

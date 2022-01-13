@@ -5,7 +5,7 @@
 
 use crate::util::{BitExtract, BitSet};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Exception {
     /// An interrupt has occured.
     Interrupt = 0x0,

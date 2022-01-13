@@ -1,11 +1,13 @@
 use crate::util::{BitExtract, BitSet};
-use crate::cpu::{IrqState, Irq};
+use crate::cpu::Irq;
 use crate::timing;
-use crate::bus::BusMap;
+use crate::bus::{Schedule, Event, BusMap};
+use crate::system::Cycle;
+
 use std::fmt;
 
 /// The Playstation has three different timers, which all have different uses.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TimerId {
     Tmr0,
     Tmr1,
@@ -18,6 +20,15 @@ impl TimerId {
             TimerId::Tmr0 => Irq::Tmr0,
             TimerId::Tmr1 => Irq::Tmr1,
             TimerId::Tmr2 => Irq::Tmr2,
+        }
+    }
+
+    fn from_value(val: u32) -> TimerId {
+        match val {
+            0 => TimerId::Tmr0,
+            1 => TimerId::Tmr1,
+            2 => TimerId::Tmr2,
+            _ => unreachable!(),
         }
     }
 }
@@ -34,6 +45,7 @@ impl fmt::Display for TimerId {
 
 /// All the possible sync mode for all the timers. The kind of sync modes vary from counter to
 /// counter.
+#[derive(PartialEq, Eq)]
 pub enum SyncMode {
     /// Pause the counter during Hblank.
     HblankPause,
@@ -75,7 +87,7 @@ impl fmt::Display for SyncMode {
 }
 
 /// The timers can take several differnt inputs, which effects the speed of the timers.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ClockSource {
     /// The CPU's clock speed, approx 33MHz.
     SystemClock,
@@ -85,6 +97,26 @@ pub enum ClockSource {
     Hblank,
     /// The CPU's clock speed divided by 8.
     SystemClockDiv8,
+}
+
+impl ClockSource {
+    fn cycles_to_ticks(self, cycles: Cycle) -> u64 {
+        match self {
+            ClockSource::SystemClock => cycles,
+            ClockSource::SystemClockDiv8 => cycles / 8,
+            ClockSource::DotClock => timing::cpu_to_gpu_cycles(cycles),
+            ClockSource::Hblank => 0,
+        }
+    }
+
+    fn ticks_to_cycles(self, ticks: u64) -> Cycle {
+        match self {
+            ClockSource::SystemClock => ticks,
+            ClockSource::SystemClockDiv8 => ticks * 8,
+            ClockSource::DotClock => timing::gpu_to_cpu_cycles(ticks),
+            ClockSource::Hblank => 0,
+        }
+    }
 }
 
 impl fmt::Display for ClockSource {
@@ -268,37 +300,40 @@ impl Timer {
         }
     }
 
-    fn trigger_irq(&mut self, irq: &mut IrqState) {
+    fn trigger_irq(&mut self, schedule: &mut Schedule) {
         if self.mode.irq_repeat() || !self.has_triggered {
             self.has_triggered = true;
             if self.mode.master_irq_flag() {
-                // TODO: In repeat mode, the master irq flag should be off when entering entering an
-                // Interrupt.
-                irq.trigger(self.id.irq_kind());
+                schedule.schedule_now(Event::IrqTrigger(self.id.irq_kind()));
             }
             if self.mode.irq_toggle_mode() {
                 // In toggle mode, the irq master flag is toggled each IRQ.
                 self.mode.set_master_irq_flag(!self.mode.master_irq_flag());   
+            } else {
+                // Nocash says that the master IRQ flag is always on when not in toggle mode except
+                // for a few cycles when the IRQ is triggered. This is to emulate that.
+                self.mode.set_master_irq_flag(false);
+                schedule.schedule_in(20, Event::TimerIrqEnable(self.id));
             }
         }
     }
 
-    fn target_reached(&mut self, irq: &mut IrqState) {
+    fn target_reached(&mut self, schedule: &mut Schedule) {
         self.mode.set_target_reached(true);
         if self.mode.reset_on_target() {
             self.counter = 0;
         }
         if self.mode.irq_on_target() {
-            self.trigger_irq(irq);
+            self.trigger_irq(schedule);
         }
     }
 
-    fn add_to_counter(&mut self, irq: &mut IrqState, add: u16) {
+    fn add_to_counter(&mut self, schedule: &mut Schedule, add: u16) {
         match self.counter.overflowing_add(add) {
             (value, false) => {
                 self.counter = value;
                 if value >= self.target {
-                    self.target_reached(irq);
+                    self.target_reached(schedule);
                 }
             }
             (value, true) => {
@@ -307,73 +342,134 @@ impl Timer {
                 // If the target is between the counter before the overflow and the counter has
                 // overflown, then the clock must have overflown.
                 if self.target > prev_counter {
-                    self.target_reached(irq);
+                    self.target_reached(schedule);
                 }
                 if self.mode.irq_on_overflow() {
-                    self.trigger_irq(irq);
+                    self.trigger_irq(schedule);
                 }
                 self.mode.set_overflow_reached(true);
             }
         }
     }
 
-    fn run(&mut self, irq: &mut IrqState, hblanks: u64, cycles: u64) {
-        // Translate CPU cycles to whatever the current clocksource. This is not very accurate.
-        let mut ticks = match self.mode.clock_source(self.id) {
-            ClockSource::SystemClock => cycles,
-            ClockSource::SystemClockDiv8 => cycles / 8,
-            ClockSource::Hblank => hblanks,
-            ClockSource::DotClock => timing::cpu_to_gpu_cycles(cycles),
+    /// Choose the amount of cycles until this timer should run again.
+    fn predict_next_irq(&self) -> Option<Cycle> {
+        if !self.mode.irq_on_overflow() && !self.mode.irq_on_target() {
+            return None;
+        }
+        if !self.mode.master_irq_flag() {
+            return None;
+        }
+        if !self.mode.irq_repeat() && self.has_triggered {
+            return None;
+        }
+        if self.mode.clock_source(self.id) == ClockSource::Hblank {
+            return None;
+        }
+        if self.mode.sync_mode(self.id) == SyncMode::Stop {
+            return None;
+        }
+        // Find some kind of target to aim at. It would be possible to calculate the exact cycle
+        // and account for overflow and such, but that would likely be more costly than just
+        // predicting the next overflow or target and run at that.
+        let target = if self.mode.irq_on_target() {
+            if self.counter >= self.target {
+                u16::MAX 
+            } else {
+                self.target
+            }
+        } else {
+            u16::MAX
         };
+        let ticks_left = target - self.counter;
+        Some(self.clock_source().ticks_to_cycles(ticks_left.into()))
+    }
+
+    fn run(&mut self, schedule: &mut Schedule, mut ticks: u64) {
         // If ticks is more than 0xffff, it has to be added in several steps.
-        while let (value, false) = ticks.overflowing_sub(0xffff) {
-            warn!("More than a single overflow in a timer run");
-            self.add_to_counter(irq, 0xffff);
+        while let (value, false) = ticks.overflowing_sub(u16::MAX.into()) {
+            self.add_to_counter(schedule, u16::MAX);
             ticks = value;
         };
-        self.add_to_counter(irq, ticks as u16);
+        self.add_to_counter(schedule, ticks as u16);
+    }
+
+    fn clock_source(&self) -> ClockSource {
+        self.mode.clock_source(self.id)
     }
 }
 
 pub struct Timers {
-    pub timers: [Timer; 3],
-    last_run: u64,
-    hblanks: u64,
+    pub timers: [(Timer, Cycle); 3],
 }
 
 impl Timers {
     pub fn new() -> Self {
         Self {
             timers: [
-                Timer::new(TimerId::Tmr0),
-                Timer::new(TimerId::Tmr1),
-                Timer::new(TimerId::Tmr2),
+                (Timer::new(TimerId::Tmr0), 0),
+                (Timer::new(TimerId::Tmr1), 0),
+                (Timer::new(TimerId::Tmr2), 0),
             ],
-            last_run: 0,
-            hblanks: 0,
         }
     }
 
-    pub fn load(&mut self, irq: &mut IrqState, cycle: u64, offset: u32) -> u32 {
-        self.run(irq, cycle);
-        self.timers[offset.extract_bits(4, 5) as usize].load(offset)
-    }
-
-    pub fn store(&mut self, irq: &mut IrqState, cycle: u64, offset: u32, value: u32) {
-        self.run(irq, cycle);
-        self.timers[offset.extract_bits(4, 5) as usize].store(offset, value);
-    }
-
-    pub fn run(&mut self, irq: &mut IrqState, cycle: u64) {
-        for timer in self.timers.iter_mut() {
-            timer.run(irq, self.hblanks, cycle - self.last_run);
+    pub fn load(&mut self, schedule: &mut Schedule, offset: u32) -> u32 {
+        let id = TimerId::from_value(offset.extract_bits(4, 5));
+        self.update_timer(schedule, id);
+        let (tmr, _) = &mut self.timers[id as usize];
+        let val = tmr.load(offset);
+        if let Some(cycles) = tmr.predict_next_irq() {
+            schedule.schedule_in(cycles, Event::RunTimer(id));
         }
-        self.last_run = cycle;
-        self.hblanks = 0;
+        val
     }
 
-    pub fn hblank(&mut self, count: u64) {
-        self.hblanks += count;
+    pub fn store(&mut self, schedule: &mut Schedule, offset: u32, val: u32) {
+        let id = TimerId::from_value(offset.extract_bits(4, 5));
+        self.update_timer(schedule, id);
+        let (tmr, _) = &mut self.timers[id as usize];
+        tmr.store(offset, val);
+        if let Some(cycles) = tmr.predict_next_irq() {
+            schedule.unschedule(Event::RunTimer(id));
+            schedule.schedule_in(cycles, Event::RunTimer(id));
+        }
+    }
+
+    /// Update the timer. If the clock source is derivable from clock cycles ie. not Hblanks, then
+    /// the timer gets run.
+    fn update_timer(&mut self, schedule: &mut Schedule, id: TimerId) {
+        let (tmr, last_update) = &mut self.timers[id as usize];
+        let cycles = schedule.cycle() - *last_update;
+        *last_update = schedule.cycle();
+        if tmr.clock_source() != ClockSource::Hblank {
+            tmr.run(schedule, tmr.clock_source().cycles_to_ticks(cycles));
+        }
+    }
+
+    pub fn timer(&self, id: TimerId) -> &Timer {
+        &self.timers[id as usize].0
+    }
+
+    pub fn run_timer(&mut self, schedule: &mut Schedule, id: TimerId) {
+        self.update_timer(schedule, id);
+        let (tmr, _) = &mut self.timers[id as usize];
+        if let Some(cycles) = tmr.predict_next_irq() {
+            schedule.unschedule(Event::RunTimer(id));
+            schedule.schedule_in(cycles, Event::RunTimer(id));
+        }
+    }
+
+    pub fn enable_irq_master_flag(&mut self, id: TimerId) {
+        let (tmr, _) = &mut self.timers[id as usize];
+        tmr.mode.set_master_irq_flag(true);
+    }
+
+    pub fn hblank(&mut self, schedule: &mut Schedule, count: u64) {
+        let (tmr1, _) = &mut self.timers[1];
+        if let ClockSource::Hblank = tmr1.clock_source() {
+            tmr1.run(schedule, count);
+        }
     }
 }
 

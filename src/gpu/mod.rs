@@ -8,10 +8,11 @@ pub mod vram;
 
 use crate::front::DrawInfo;
 use crate::util::{BitExtract, BitSet};
-use crate::cpu::{IrqState, Irq};
-use crate::bus::{BusMap, AddrUnit};
+use crate::cpu::Irq;
+use crate::bus::{Schedule, Event, BusMap, AddrUnit};
 use crate::timing;
 use crate::timer::Timers;
+use crate::system::Cycle;
 
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
@@ -350,7 +351,7 @@ struct Timing {
     scanline_prog: u64,
     in_hblank: bool,
     in_vblank: bool,
-    last_run: u64,
+    last_run: Cycle,
     last_draw: std::time::Instant,
 }
 
@@ -576,9 +577,10 @@ impl Gpu {
         self.timing.in_vblank
     }
 
-    pub fn run(&mut self, irq: &mut IrqState, timers: &mut Timers, cycles: u64) {
-        self.timing.scanline_prog += timing::cpu_to_gpu_cycles(cycles - self.timing.last_run);
-        self.timing.last_run = cycles;
+    pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
+        trace!("Run GPU");
+        self.timing.scanline_prog += timing::cpu_to_gpu_cycles(schedule.cycle() - self.timing.last_run);
+        self.timing.last_run = schedule.cycle();
 
         // If the progress is less than a single scanline.
         if self.timing.scanline_prog < timing::NTSC_CYCLES_PER_SCLN {
@@ -586,7 +588,7 @@ impl Gpu {
 
             // If we have entered Hblank.
             if in_hblank && !self.timing.in_hblank {
-                timers.hblank(1);
+                timers.hblank(schedule, 1);
             }
 
             self.timing.in_hblank = in_hblank;
@@ -605,7 +607,7 @@ impl Gpu {
                 + u64::from(in_hblank)
                 + lines - 1;
 
-            timers.hblank(hblank_count);
+            timers.hblank(schedule, hblank_count);
             self.timing.in_hblank = in_hblank;
 
             while lines > 0 {
@@ -628,7 +630,7 @@ impl Gpu {
                 // If we are either leaving or entering Vblank.
                 if self.timing.in_vblank != in_vblank {
                     if in_vblank {
-                        irq.trigger(Irq::VBlank);
+                        schedule.schedule_now(Event::IrqTrigger(Irq::VBlank));
                         self.timing.last_draw = std::time::Instant::now();
                     }
                     self.timing.in_vblank = in_vblank;
@@ -638,8 +640,7 @@ impl Gpu {
                 // Prepare new frame if we are at the end of Vblank.
                 if self.timing.scanline == timing::NTSC_SCLN_COUNT {
                     self.timing.scanline = 0;
-                    // The interlace field is toggled every frame if vertical interlace is turned
-                    // on.
+                    // The interlace field is toggled every frame if vertical interlace is turned on.
                     if self.status.interlaced480() {
                         self.status.0 ^= 1 << 13;
                     } else {
@@ -662,6 +663,8 @@ impl Gpu {
         };
         let vram_line = self.display_vram_y_start + line_offset;
         self.status.0.set_bit(31, vram_line & 0x1 == 1);
+
+        schedule.schedule_in(10_000, Event::RunGpu);
     }
 
     fn gp1_store(&mut self, val: u32) {
@@ -682,7 +685,7 @@ impl Gpu {
 
     fn gp0_exec(&mut self) {
         let cmd = self.fifo[0].extract_bits(24, 31);
-        debug!("GP0({:x})", cmd);
+        // debug!("GP0({:x})", cmd);
         match cmd {
             0x0 => {
                 self.fifo.pop();
@@ -712,16 +715,21 @@ impl Gpu {
         }
     }
 
-    fn gp0_tri_poly<S: Shading, Tex: Textureing, Trans: Transparency>(&mut self) {
+    fn gp0_tri_poly<Shade, Tex, Trans>(&mut self)
+    where
+        Shade: Shading,
+        Tex: Textureing,
+        Trans: Transparency,
+    {
         let mut verts = [Vertex::default(); 3];
         let mut params = TextureParams::default();
-        let color = if !S::is_shaded() {
+        let color = if !Shade::is_shaded() {
             Color::from_cmd(self.fifo.pop())
         } else {
             Color::from_rgb(0, 0, 0)
         };
         for (i, vertex) in verts.iter_mut().enumerate() {
-            if S::is_shaded() {
+            if Shade::is_shaded() {
                 vertex.color = Color::from_cmd(self.fifo.pop());
             }
             vertex.point = Point::from_cmd(self.fifo.pop()).with_offset(
@@ -755,20 +763,25 @@ impl Gpu {
                 };
             }
         }
-        self.draw_triangle::<S, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
+        self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
     }
 
-    fn gp0_quad_poly<S: Shading, Tex: Textureing, Trans: Transparency>(&mut self) {
+    fn gp0_quad_poly<Shade, Tex, Trans>(&mut self)
+    where
+        Shade: Shading,
+        Tex: Textureing,
+        Trans: Transparency,
+    {
         let mut verts = [Vertex::default(); 4];
         let mut params = TextureParams::default();
-        let color = if !S::is_shaded() {
+        let color = if !Shade::is_shaded() {
             Color::from_cmd(self.fifo.pop())
         } else {
             Color::from_rgb(0, 0, 0)
         };
         for (i, vertex) in verts.iter_mut().enumerate() {
             // If it's shaded the color is always the first attribute.
-            if S::is_shaded() {
+            if Shade::is_shaded() {
                 vertex.color = Color::from_cmd(self.fifo.pop());
             }
             vertex.point = Point::from_cmd(self.fifo.pop()).with_offset(
@@ -802,8 +815,8 @@ impl Gpu {
                 };
             }
         }
-        self.draw_triangle::<S, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
-        self.draw_triangle::<S, Tex, Trans>(color, &params, &verts[1], &verts[2], &verts[3]);
+        self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
+        self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[1], &verts[2], &verts[3]);
     }
 
     fn gp0_line(&mut self) {

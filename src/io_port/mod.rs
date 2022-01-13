@@ -4,6 +4,7 @@ mod dualshock;
 
 use crate::util::BitExtract;
 use crate::bus::BusMap;
+use crate::cpu::{Irq, IrqState};
 
 #[derive(Clone, Copy)]
 enum SlotNum {
@@ -15,12 +16,12 @@ enum SlotNum {
 struct CtrlReg(u16);
 
 impl CtrlReg {
-    fn new() -> Self {
-        Self(0)
-    }
-
     fn tx_enabled(self) -> bool {
         self.0.extract_bit(0) == 1
+    }
+
+    fn select(self) -> bool {
+        self.0.extract_bit(1) == 1
     }
 
     fn rx_enabled(self) -> bool {
@@ -71,8 +72,10 @@ impl CtrlReg {
 /// Controller and memory card I/O ports.
 pub struct IoPort {
     mode: u8,
-    /// Baudrate reload value.
     baud: u16,
+    response: u16,
+    is_idle: bool,
+    tx_pending: Option<u8>,
     ctrl: CtrlReg,
 }
 
@@ -81,25 +84,55 @@ impl IoPort {
         Self {
             mode: 0,
             baud: 0,
-            ctrl: CtrlReg::new(),
+            response: 0xff,
+            is_idle: true,
+            tx_pending: None,
+            ctrl: CtrlReg(0),
         }
     }
 
-    pub fn store(&mut self, addr: u32, val: u32) {
+    pub fn store(&mut self, irq: &mut IrqState, addr: u32, val: u32) {
         trace!("IO Port store");
         match addr {
             0 => todo!(),
             8 => self.mode = val as u8,
             10 => {
                 self.ctrl = CtrlReg(val as u16);
+                if self.ctrl.reset() {
+                    trace!("IoPort control reset");
+                    self.baud = 0;
+                    self.mode = 0;
+                    self.ctrl = CtrlReg(0);
+                }
+                if !self.ctrl.acknowledge() && self.ctrl.ack_irq_enabled() {
+                   irq.trigger(Irq::CtrlAndMemCard); 
+                }
             },
             14 => self.baud = val as u16,
             _ => todo!("{}", addr),
         }
     }
 
-    pub fn load(&mut self, _addr: u32) -> u32 {
-        todo!();
+    pub fn load(&mut self, addr: u32) -> u32 {
+        match addr {
+            0 => self.response as u32,
+            _ => todo!("IoPort load at offset {}", addr),
+        }
+    }
+
+    fn _maybe_transfer_byte(&mut self) {
+        let Some(_val) = self.tx_pending.take() else {
+            return;
+        };
+        if !self.ctrl.tx_enabled() || !self.is_idle {
+            return;
+        }
+        if !self.ctrl.select() {
+            warn!("Select off for IO Port");
+        }
+        let _tx_start = self.baud - 40;
+        let _tx_amount = (self.baud - 11) * 11;
+         
     }
 }
 

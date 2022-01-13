@@ -8,10 +8,11 @@ impl Spu {
     }
 
     pub fn store(&mut self, _addr: u32, _val: u32) {
-        
+        trace!("Spu store"); 
     }
 
     pub fn load(&mut self, _addr: u32) -> u32 {
+        trace!("Spu load");
         0x0
     }
 }

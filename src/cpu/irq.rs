@@ -1,8 +1,9 @@
 use std::fmt;
 use crate::bus::BusMap;
+use crate::util::BitExtract;
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Irq {
     VBlank = 0,
     Gpu = 1,
@@ -46,7 +47,6 @@ impl IrqState {
         }
     }
 
-    /// Trigger an interrupt.
     pub fn trigger(&mut self, irq: Irq) {
         self.status |= 1 << irq as u32;
         if log_enabled!(log::Level::Trace) {
@@ -61,11 +61,11 @@ impl IrqState {
     }
 
     pub fn is_triggered(&self, irq: Irq) -> bool {
-        self.status & (1 << irq as u32) == 1
+        self.status.extract_bit(irq as u32) == 1
     }
 
     pub fn is_masked(&self, irq: Irq) -> bool {
-        self.mask & (1 << irq as u32) == 1
+        self.mask.extract_bit(irq as u32) == 1
     }
 
     pub fn store(&mut self, offset: u32, val: u32) {

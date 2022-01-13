@@ -7,7 +7,8 @@ pub mod irq;
 pub mod opcode;
 
 use crate::util::BitExtract;
-use super::bus::{AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
+use crate::system::Cycle;
+use super::bus::{Event, AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
 use cop0::{Cop0, Exception};
 use gte::Gte;
 
@@ -63,7 +64,7 @@ pub struct Cpu {
     /// ready since they take more than a single cycle to complete. The CPU can run while the
     /// result is being calculated, but if the result is being read before it's ready, the CPU will
     /// wait before continuing.
-    hi_lo_ready: u64,
+    hi_lo_ready: Cycle,
     /// # General Purpose Registers
     ///
     /// All registers of the MIPS R3000 are essentially general purpose besides $r0 which always
@@ -103,7 +104,7 @@ pub struct Cpu {
     load_delay: DelaySlot,
     /// Memory sections KUSEG and KSEG0 are cached for instructions.
     icache: Box<[CacheLine; 1024]>,
-    bus: Bus,
+    pub bus: Bus,
     gte: Gte,
     cop0: Cop0,
 }
@@ -166,15 +167,15 @@ impl Cpu {
     }
 
     /// Add result to hi and lo register.
-    fn add_pending_hi_lo(&mut self, cycles: u64, hi: u32, lo: u32) {
-        self.hi_lo_ready = self.bus.cycle_count + cycles;
+    fn add_pending_hi_lo(&mut self, cycles: Cycle, hi: u32, lo: u32) {
+        self.hi_lo_ready = self.bus.schedule.cycle() + cycles;
         self.hi = hi;
         self.lo = lo;
     }
 
     /// Wait for hi lo results.
     fn fetch_pending_hi_lo(&mut self) {
-        self.bus.cycle_count = u64::max(self.bus.cycle_count, self.hi_lo_ready);
+        self.bus.schedule.skip_to(self.hi_lo_ready);
     }
 
     /// Branch to relative offset.
@@ -227,52 +228,68 @@ impl Cpu {
         Opcode::new(self.load::<Word>(self.pc).unwrap())
     }
 
-    /// Fetch and execute next instruction.
-    pub fn step(&mut self) {
-        let addr = self.pc;
-
+    /// Move the program counter to the next instruction. Returns the address of the next
+    /// instruction to be executed.
+    fn next_pc(&mut self) -> u32 {
         self.last_pc = self.pc;
         self.pc = self.next_pc;
         self.next_pc = self.next_pc.wrapping_add(4);
         self.in_branch_delay = self.branched;
         self.branched = false;
+        self.last_pc  
+    }
 
-        // This is somewhat expensive. It seems to slow down the CPU with atleast 5-10%, but i don't
-        // think it's a good idea to check it less often. It's not likely to be the branch that
-        // slows it down, since it's very rarely true, so maybe it would be better the calculate it
-        // whenever it possibly could change.
-        if self.irq_pending() {
-            self.fetch_load_slot();
-            self.throw_exception(Exception::Interrupt); 
-        }
-
-        if addr < 0xa0000000 && self.bus.cache_ctrl.icache_enabled() {
-            let tag = ((addr & 0xfffff000) >> 12) | 0x80000000;
-            let index = ((addr & 0xffc) >> 2) as usize;
-            let cache = self.icache[index];
-            if cache.tag == tag {
-                self.exec(Opcode::new(cache.data));
+    /// Fetch and execute next instruction.
+    pub fn step(&mut self) {
+        if let Some(event) = self.bus.schedule.pop_event() {
+            if let Event::IrqTrigger(irq) = event {
+                if self.irq_pending() {
+                    warn!("IRQ pending when triggering IRQ of type: {}", irq);
+                }
+                self.bus.irq_state.trigger(irq);
+                if self.irq_pending() {
+                    self.next_pc();
+                    self.fetch_load_slot();
+                    self.throw_exception(Exception::Interrupt);
+                }
             } else {
-                if let Ok(data) = self.load::<Word>(addr) {
-                    self.icache[index] = CacheLine { tag, data };
-                    self.exec(Opcode::new(data));
+                self.bus.handle_event(event);
+            }
+        } else {
+            let addr = self.next_pc();
+            if addr < 0xa0000000 && self.bus.cache_ctrl.icache_enabled() {
+                let tag = ((addr & 0xfffff000) >> 12) | 0x80000000;
+                let index = ((addr & 0xffc) >> 2) as usize;
+                let cache = self.icache[index];
+                if cache.tag == tag {
+                    self.exec(Opcode::new(cache.data));
                 } else {
-                    // Not sure if this is correct. If loading fails because of an invalid
-                    // address then instruction error seems correct. If it fails because of
-                    // misalignment then perhaps it sould be an address load error.
+                    match self.load::<Word>(addr) {
+                        Ok(data) => {
+                            self.icache[index] = CacheLine { tag, data };
+                            self.exec(Opcode::new(data));
+                        }
+                        Err(exp) if exp == Exception::AddressLoadError => {
+                            // This might not be correct. Accessing at an unaligned address when loading
+                            // an instruction could throw a BUS instruction error instead.
+                            self.throw_exception(exp);
+                        }
+                        Err(..) => {
+                            self.throw_exception(Exception::BusInstructionError);
+                        }
+                    }
+                }
+            } else {
+                // Cache misses take about 4 cycles.
+                self.bus.schedule.tick(4);
+                if let Ok(val) = self.load::<Word>(addr) {
+                    self.exec(Opcode::new(val));
+                } else {
                     self.throw_exception(Exception::BusInstructionError);
                 }
             }
-        } else {
-            // Cache misses take about 4 cycles.
-            self.bus.cycle_count += 4;
-            if let Ok(val) = self.load::<Word>(addr) {
-                self.exec(Opcode::new(val));
-            } else {
-                self.throw_exception(Exception::BusInstructionError);
-            }
+            self.bus.schedule.tick(1);
         }
-        self.bus.cycle_count += 1;
     }
 
     /// Execute opcode.
