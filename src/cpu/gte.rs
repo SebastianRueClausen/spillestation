@@ -73,9 +73,7 @@ impl Gte {
 
     pub fn cmd(&mut self, cmd: u32) {
         let op = Opcode(cmd);
-        match op.cmd() {
-            _ => todo!("GTE Command: {:08x}", op.cmd()),
-        }
+        todo!("GTE Command: {:08x}", op.cmd());
     }
 
     pub fn ctrl_store(&mut self, reg: u32, val: u32) {

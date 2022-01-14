@@ -137,11 +137,10 @@ impl Frontend {
                         // Handle keyboard input.
                         WindowEvent::KeyboardInput { input, .. } => {
                             if let Stage::Running { ref mut app_menu, .. } = self.stage {
-                                match (input.virtual_keycode, input.state) {
-                                    (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
-                                        app_menu.toggle_open();
-                                    }
-                                    _ => {}
+                                if let (Some(VirtualKeyCode::Escape), ElementState::Pressed)
+                                    = (input.virtual_keycode, input.state)
+                                {
+                                    app_menu.toggle_open(); 
                                 }
                             }
                             self.gui_ctx.handle_window_event(event);

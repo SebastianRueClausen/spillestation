@@ -43,20 +43,16 @@ impl Fifo {
     }
 
     pub fn push(&mut self, value: u32) {
-        if log_enabled!(log::Level::Warn) {
-            if  self.is_full() {
-                warn!("Pushing to a full GPU FIFO");
-            }
+        if  self.is_full() {
+            warn!("Pushing to a full GPU FIFO");
         }
         self.data[self.head as usize & (FIFO_SIZE - 1)] = value;
         self.head = self.head.wrapping_add(1);
     }
 
     pub fn pop(&mut self) -> u32 {
-        if log_enabled!(log::Level::Warn) {
-            if self.is_empty() {
-                warn!("Poping from an empty GPU FIFO");
-            }
+        if self.is_empty() {
+            warn!("Poping from an empty GPU FIFO");
         }
         let value = self[0];
         self.tail = self.tail.wrapping_add(1);

@@ -395,7 +395,7 @@ impl Cpu {
 
     /// SLLV - Shift left logical variable.
     fn op_sllv(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rt()) << (self.read_reg(op.rs() & 0x1f));
+        let val = self.read_reg(op.rt()) << (self.read_reg(op.rs()) & 0x1f);
         self.fetch_load_slot();
         self.set_reg(op.rd(), val);
     }
@@ -444,8 +444,7 @@ impl Cpu {
     fn op_mfhi(&mut self, op: Opcode) {
         self.fetch_pending_hi_lo();
         self.fetch_load_slot();
-        let val = self.hi;
-        self.set_reg(op.rd(), val);
+        self.set_reg(op.rd(), self.hi);
     }
 
     /// MTHI - Move to high.
@@ -458,8 +457,7 @@ impl Cpu {
     fn op_mflo(&mut self, op: Opcode) {
         self.fetch_pending_hi_lo();
         self.fetch_load_slot();
-        let val = self.lo;
-        self.set_reg(op.rd(), val);
+        self.set_reg(op.rd(), self.lo);
     }
 
     /// MTLO - Move to low.
@@ -480,7 +478,8 @@ impl Cpu {
             12..=20 => 9,
             _ => 7,
         };
-        let val = (lhs as i64) * (rhs as i64);
+        let val = i64::from(lhs) * i64::from(rhs);
+        let val = val as u64;
         self.fetch_load_slot();
         self.add_pending_hi_lo(cycles, (val >> 32) as u32, val as u32);
     }
@@ -494,7 +493,7 @@ impl Cpu {
             0x00000800..=0x000fffff => 9,
             _ => 7,
         };
-        let val = (lhs as u64) * (rhs as u64);
+        let val = u64::from(lhs) * u64::from(rhs);
         self.fetch_load_slot();
         self.add_pending_hi_lo(cycles, (val >> 32) as u32, val as u32);
     }
@@ -508,10 +507,10 @@ impl Cpu {
         let rhs = self.read_reg(op.rt()) as i32;
         self.fetch_load_slot();
         if rhs == 0 {
-            let lo: u32 = if lhs < 0 { 1 } else { 0xffffffff };
+            let lo: u32 = if lhs < 0 { 1 } else { 0xffff_ffff };
             self.add_pending_hi_lo(36, lhs as u32, lo);
-        } else if rhs == -1 && lhs as u32 == 0x80000000 {
-            self.add_pending_hi_lo(36, 0, 0x80000000);
+        } else if rhs == -1 && lhs as u32 == 0x8000_0000 {
+            self.add_pending_hi_lo(36, 0, 0x8000_0000);
         } else {
             self.add_pending_hi_lo(36, (lhs % rhs) as u32, (lhs / rhs) as u32);
         }
@@ -523,7 +522,7 @@ impl Cpu {
         let rhs = self.read_reg(op.rt());
         self.fetch_load_slot();
         if rhs == 0 {
-            self.add_pending_hi_lo(36, lhs, 0xffffffff);
+            self.add_pending_hi_lo(36, lhs, 0xffff_ffff);
         } else {
             self.add_pending_hi_lo(36, lhs % rhs, lhs / rhs);
         }
@@ -543,16 +542,18 @@ impl Cpu {
 
     /// ADDU - Add unsigned.
     fn op_addu(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()).wrapping_add(self.read_reg(op.rt()));
+        let lhs = self.read_reg(op.rs());
+        let rhs = self.read_reg(op.rt());
+        let val = lhs.wrapping_add(rhs);
         self.fetch_load_slot();
         self.set_reg(op.rd(), val);
     }
 
     /// SUB - Signed subtraction.
     fn op_sub(&mut self, op: Opcode) {
-        let rhs = self.read_reg(op.rs()) as i32;
-        let lhs = self.read_reg(op.rt()) as i32;
-        if let Some(val) = rhs.checked_sub(lhs) {
+        let lhs = self.read_reg(op.rs()) as i32;
+        let rhs = self.read_reg(op.rt()) as i32;
+        if let Some(val) = lhs.checked_sub(rhs) {
             self.set_reg(op.rd(), val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
@@ -561,7 +562,9 @@ impl Cpu {
 
     /// SUBU - Subtract unsigned.
     fn op_subu(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()).wrapping_sub(self.read_reg(op.rt()));
+        let lhs = self.read_reg(op.rs());
+        let rhs = self.read_reg(op.rt());
+        let val = lhs.wrapping_sub(rhs);
         self.fetch_load_slot();
         self.set_reg(op.rd(), val);
     }
@@ -596,7 +599,9 @@ impl Cpu {
 
     /// SLT - Set if less than.
     fn op_slt(&mut self, op: Opcode) {
-        let val = (self.read_reg(op.rs()) as i32) < (self.read_reg(op.rt()) as i32);
+        let lhs = self.read_reg(op.rs()) as i32;
+        let rhs = self.read_reg(op.rt()) as i32;
+        let val = lhs < rhs;
         self.fetch_load_slot();
         self.set_reg(op.rd(), val as u32);
     }
@@ -637,7 +642,7 @@ impl Cpu {
 
     /// J - Jump.
     fn op_j(&mut self, op: Opcode) {
-        self.jump((self.pc & 0xf0000000) | (op.target() << 2));
+        self.jump((self.pc & 0xf000_0000) | ((op.target() & 0x3ff_ffff) << 2));
         self.fetch_load_slot();
     }
 
@@ -740,8 +745,9 @@ impl Cpu {
 
     /// LUI - Load upper immediate.
     fn op_lui(&mut self, op: Opcode) {
-        self.set_reg(op.rt(), op.imm() << 16);
+        let val = op.imm() << 16;
         self.fetch_load_slot();
+        self.set_reg(op.rt(), val);
     }
 
     /// COP0 - Coprocessor0 instruction.
@@ -854,9 +860,9 @@ impl Cpu {
             Ok(word) => {
                 // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
                 let val = match addr & 0x3 {
-                    0 => (val & 0x00ffffff) | (word << 24),
-                    1 => (val & 0x0000ffff) | (word << 16),
-                    2 => (val & 0x000000ff) | (word << 8),
+                    0 => (val & 0x00ff_ffff) | (word << 24),
+                    1 => (val & 0x0000_ffff) | (word << 16),
+                    2 => (val & 0x0000_00ff) | (word << 8),
                     3 => word,
                     _ => unreachable!(),
                 };
@@ -921,9 +927,9 @@ impl Cpu {
             Ok(word) => {
                 let val = match addr & 0x3 {
                     0 => word,
-                    1 => (val & 0xff000000) | (word >> 8),
-                    2 => (val & 0xffff0000) | (word >> 16),
-                    3 => (val & 0xffffff00) | (word >> 24),
+                    1 => (val & 0xff00_0000) | (word >> 8),
+                    2 => (val & 0xffff_0000) | (word >> 16),
+                    3 => (val & 0xffff_ff00) | (word >> 24),
                     _ => unreachable!(),
                 };
                 self.add_load_slot(op.rt(), val);
@@ -967,9 +973,9 @@ impl Cpu {
         match self.load::<Word>(aligned) {
             Ok(word) => {
                 let val = match addr & 3 {
-                    0 => (word & 0xffffff00) | (val >> 24),
-                    1 => (word & 0xffff0000) | (val >> 16),
-                    2 => (word & 0xffffff00) | (val >> 8),
+                    0 => (word & 0xffff_ff00) | (val >> 24),
+                    1 => (word & 0xffff_0000) | (val >> 16),
+                    2 => (word & 0xff00_0000) | (val >> 8),
                     3 => word,
                     _ => unreachable!(),
                 };
@@ -1010,9 +1016,9 @@ impl Cpu {
             Ok(word) => {
                 let val = match addr & 3 {
                     0 => word,
-                    1 => (word & 0x000000ff) | (val << 8),
-                    2 => (word & 0x0000ffff) | (val << 16),
-                    3 => (word & 0x00ffffff) | (val << 24),
+                    1 => (word & 0x0000_00ff) | (val << 8),
+                    2 => (word & 0x0000_ffff) | (val << 16),
+                    3 => (word & 0x00ff_ffff) | (val << 24),
                     _ => unreachable!(),
                 };
                 self.fetch_load_slot();

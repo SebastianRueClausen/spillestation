@@ -376,17 +376,11 @@ enum State {
 
 impl State {
     fn is_vram_load(&self) -> bool {
-        match self {
-            State::VramLoad(..) => true,
-            _ => false,
-        }
+        matches!(self, State::VramLoad(..))
     }
 
     fn is_idle(&self) -> bool {
-        match self {
-            State::Idle => true,
-            _ => false,
-        }
+        matches!(self, State::Idle)
     }
 }
 

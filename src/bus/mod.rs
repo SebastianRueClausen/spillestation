@@ -125,35 +125,31 @@ impl Bus {
         let addr = to_region(addr);
         match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
-                Ok(self.ram.store::<T>(addr, val))
+                self.ram.store::<T>(addr, val)
             }
             MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
-                Ok(self.mem_ctrl.store(addr - MemCtrl::BUS_BEGIN, val))
+                self.mem_ctrl.store(addr - MemCtrl::BUS_BEGIN, val)
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
-                Ok(self.ram_size.0 = val)
+                self.ram_size.0 = val
             }
             CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
-                Ok(self.cache_ctrl.0 = val)
+                self.cache_ctrl.0 = val
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
-                Ok(self.spu.store(addr - Spu::BUS_BEGIN, val))
+                self.spu.store(addr - Spu::BUS_BEGIN, val)
             }
-            EXP1_BEGIN..=EXP1_END => {
-                Ok(())
-            }
-            EXP2_BEGIN..=EXP2_END => {
-                Ok(())
-            }
+            EXP1_BEGIN..=EXP1_END => {}
+            EXP2_BEGIN..=EXP2_END => {}
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
-                Ok(self.irq_state.store(addr - IrqState::BUS_BEGIN, val))
+                self.irq_state.store(addr - IrqState::BUS_BEGIN, val)
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
-                Ok(self.timers.store(
+                self.timers.store(
                     &mut self.schedule,
                     addr - Timers::BUS_BEGIN,
                     val
-                ))
+                );
             }
             Dma::BUS_BEGIN..=Dma::BUS_END => {
                 self.dma.store(
@@ -162,26 +158,27 @@ impl Bus {
                     addr - Dma::BUS_BEGIN,
                     val,
                 );
-                Ok(self.exec_transfers())
+                self.exec_transfers();
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
-                Ok(self.cdrom.store::<T>(
+                self.cdrom.store::<T>(
                     &mut self.schedule,
                     addr - CdRom::BUS_BEGIN,
                     val,
-                ))
+                );
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
-                Ok(self.gpu.store::<T>(addr - Gpu::BUS_BEGIN, val))
+                self.gpu.store::<T>(addr - Gpu::BUS_BEGIN, val);
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
-                Ok(self.io_port.store(&mut self.irq_state, addr - IoPort::BUS_BEGIN, val))
+                self.io_port.store(&mut self.irq_state, addr - IoPort::BUS_BEGIN, val);
             }
             _ => {
-                warn!("BUS data error when storing");
-                Err(Exception::BusDataError)
+                warn!("BUS data error when storing at address {:?}", addr);
+                return Err(Exception::BusDataError);
             }
         }
+        Ok(()) 
     }
 
     pub fn vram(&self) -> &Vram {
@@ -241,7 +238,7 @@ impl Bus {
     /// Execute transfers to a port.
     fn trans_block_to_port(&mut self, transfer: &BlockTransfer) {
         (0..transfer.size).fold(transfer.start, |address, _| {
-            let value = self.ram.load::<Word>(address & 0x1f_fffc);
+            let value = self.ram.load::<Word>(address & 0x001f_fffc);
             match transfer.port {
                 Port::Gpu => self.gpu.dma_store(value),
                 _ => todo!(),
@@ -253,9 +250,9 @@ impl Bus {
     /// Execute transfers to RAM from a port.
     fn trans_block_to_ram(&mut self, transfer: &BlockTransfer) {
         (0..transfer.size).rev().fold(transfer.start, |addr, remain| {
-            self.ram.store::<Word>(addr & 0x1_ffffc, match transfer.port {
+            self.ram.store::<Word>(addr & 0x001f_fffc, match transfer.port {
                 Port::Otc => match remain {
-                    1 => 0xff_ffff,
+                    1 => 0x00ff_ffff,
                     _ => addr.wrapping_sub(4).extract_bits(0, 21),
                 }
                 Port::Gpu => self.gpu.dma_load(),
@@ -268,7 +265,7 @@ impl Bus {
     fn trans_linked_to_port(&mut self, transfer: &LinkedTransfer) {
         let mut addr = transfer.start;
         loop {
-            let header = self.ram.load::<Word>(addr & 0x1f_fffc);
+            let header = self.ram.load::<Word>(addr & 0x001f_fffc);
             // Bit 24..31 in the header represents the size of the node, which get's transfered to
             // the port.
             for _ in 0..header.extract_bits(24, 31) {
@@ -276,7 +273,7 @@ impl Bus {
                 self.gpu.dma_store(self.ram.load::<Word>(addr));
             }
             addr = header.extract_bits(0, 23);
-            if addr == 0xff_ffff {
+            if addr == 0x00ff_ffff {
                 break;
             }
         }
@@ -305,7 +302,7 @@ impl Eq for EventEntry {}
 
 impl PartialOrd for EventEntry {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(&other))  
+        Some(self.cmp(other))  
     }
 }
 
@@ -392,7 +389,7 @@ pub trait BusMap {
 struct RamSize(u32);
 
 impl BusMap for RamSize {
-    const BUS_BEGIN: u32 = 0x1f801060;
+    const BUS_BEGIN: u32 = 0x1f80_1060;
     const BUS_END: u32 = Self::BUS_BEGIN + 4 - 1;
 }
 
@@ -405,7 +402,7 @@ impl CacheCtrl {
 }
 
 impl BusMap for CacheCtrl {
-    const BUS_BEGIN: u32 = 0xfffe0130;
+    const BUS_BEGIN: u32 = 0xfffe_0130;
     const BUS_END: u32 = Self::BUS_BEGIN + 4 - 1;
 }
 
@@ -420,10 +417,10 @@ impl MemCtrl {
 
     pub fn store(&mut self, addr: u32, val: u32) {
         match addr {
-            0 if val != 0x1f000000 => {
+            0 if val != 0x1f00_0000 => {
                 todo!("Expansion 1 base address"); 
             }
-            4 if val != 0x1f802000 => {
+            4 if val != 0x1f80_2000 => {
                 todo!("Expansion 2 base address"); 
             }
             _ => {},
@@ -437,7 +434,7 @@ impl MemCtrl {
 }
 
 impl BusMap for MemCtrl {
-    const BUS_BEGIN: u32 = 0x1f801000;
+    const BUS_BEGIN: u32 = 0x1f80_1000;
     const BUS_END: u32 = Self::BUS_BEGIN + 36 - 1;
 }
 
@@ -479,14 +476,14 @@ impl AddrUnit for Word {
 
 pub fn to_region(address: u32) -> u32 {
     const REGION_MAP: [u32; 8] = [
-        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x7fffffff, 0x1fffffff, 0xffffffff,
-        0xffffffff,
+        0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x7fff_ffff, 0x1fff_ffff, 0xffff_ffff,
+        0xffff_ffff,
     ];
     address & REGION_MAP[(address >> 29) as usize]
 }
 
-const EXP1_BEGIN: u32 = 0x1f000000;
+const EXP1_BEGIN: u32 = 0x1f00_0000;
 const EXP1_END: u32 = EXP1_BEGIN + 512 * 1024 - 1;
 
-const EXP2_BEGIN: u32 = 0x1f802000;
+const EXP2_BEGIN: u32 = 0x1f80_2000;
 const EXP2_END: u32 = EXP2_BEGIN + 66 - 1;

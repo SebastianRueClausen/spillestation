@@ -357,16 +357,18 @@ impl Timer {
         if !self.mode.irq_on_overflow() && !self.mode.irq_on_target() {
             return None;
         }
+        /*
         if !self.mode.master_irq_flag() {
             return None;
         }
+        */
         if !self.mode.irq_repeat() && self.has_triggered {
             return None;
         }
         if self.mode.clock_source(self.id) == ClockSource::Hblank {
             return None;
         }
-        if self.mode.sync_mode(self.id) == SyncMode::Stop {
+        if self.mode.sync_enabled() && self.mode.sync_mode(self.id) == SyncMode::Stop {
             return None;
         }
         // Find some kind of target to aim at. It would be possible to calculate the exact cycle
@@ -386,7 +388,6 @@ impl Timer {
     }
 
     fn run(&mut self, schedule: &mut Schedule, mut ticks: u64) {
-        // If ticks is more than 0xffff, it has to be added in several steps.
         while let (value, false) = ticks.overflowing_sub(u16::MAX.into()) {
             self.add_to_counter(schedule, u16::MAX);
             ticks = value;

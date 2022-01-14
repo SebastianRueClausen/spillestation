@@ -82,7 +82,7 @@ impl GuiCtx {
     {
         let input = self.win_state.take_egui_input(window);
         let (output, shapes) = self.egui_ctx.run(input, |ctx| {
-            func(&ctx);
+            func(ctx);
         });
         self.render_pass.update_texture(
             &render_ctx.device,
