@@ -1,11 +1,13 @@
 //! Emulating Direct Memory Access chip. Used to transfer data between devices. The CPU halts when
 //! this is running, but the CPU can be allowed to run in intervals called chopping.
 
-#![allow(dead_code)]
-
 use crate::util::{BitExtract, BitSet};
 use crate::cpu::Irq;
-use crate::bus::{BusMap, Schedule, Event};
+use crate::system::Cycle;
+
+use super::{Ram, Word, Bus, BusMap, Schedule, Event};
+
+use std::ops::{Index, IndexMut};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Port {
@@ -15,70 +17,55 @@ pub enum Port {
     CdRom = 3,
     Spu = 4,
     Pio = 5,
+    /// Depth ordering table. It's only used to initialize/reset it.
     Otc = 6,
 }
 
-impl Port {
-    fn from_value(value: u32) -> Self {
-        match value {
-            0 => Port::MdecIn,
-            1 => Port::MdecOut,
-            2 => Port::Gpu,
-            3 => Port::CdRom,
-            4 => Port::Spu,
-            5 => Port::Pio,
-            6 => Port::Otc,
-            _ => unreachable!("Invalid MDA Port"),
-        }
-    }
-}
-
-/// Keeps track of size information for channels.
+/// Register holding the size information for manual and request transfers.
 #[derive(Clone, Copy)]
-struct BlockCtrl(u32);
+struct BlockCtrl {
+    size: u16,
+    count: u16,
+}
 
 impl BlockCtrl {
-    fn new(value: u32) -> Self {
-        Self { 0: value }
+    fn new(val: u32) -> Self {
+        Self {
+            size: val.extract_bits(0, 15) as u16,
+            count: val.extract_bits(16, 31) as u16,
+        }
     }
 
-    /// This is only used in request mode.
-    fn block_size(self) -> u32 {
-        self.0.extract_bits(0, 15)
-    }
-
-    /// In request mode, this is used to determine the amount the amount of blocks. In Manual mode
-    /// this is number of words to transfer. Not used for linked list mode.
-    fn block_count(self) -> u32 {
-        self.0.extract_bits(16, 31)
+    fn load(self) -> u32 {
+        self.size as u32 | (self.count as u32) << 16
     }
 }
 
-/// DMA can transfer either from or to CPU.
+/// DMA can transfer either from or to RAM.
 #[derive(Debug, Copy, Clone)]
-pub enum Direction {
+pub enum ChanDir {
     ToRam,
     ToPort,
 }
 
-impl Direction {
+impl ChanDir {
     fn from_value(value: u32) -> Self {
         match value {
-            0 => Direction::ToRam,
-            1 => Direction::ToPort,
+            0 => ChanDir::ToRam,
+            1 => ChanDir::ToPort,
             _ => unreachable!("Invalid direction"),
         }
     }
 }
 
-/// How to sync the transfer with the rest of the CPU.
 #[derive(PartialEq, Eq, Copy, Clone)]
 pub enum SyncMode {
-    /// Start immediately ad transfer all at once.
+    /// Start immediately and transfer all at once. Used to send textures to the VRAM and
+    /// initializing the ordering table.
     Manual = 0,
-    /// Transfer blocks at intervals.
+    /// Transfer blocks when the signaled by the devices.
     Request = 1,
-    /// Linked list, only used by GPU commands.
+    /// A linked list of (generally) smaller blocks. It's only used to send commands to GP0.
     LinkedList = 2,
 }
 
@@ -93,19 +80,28 @@ impl SyncMode {
     }
 }
 
-/// Where to move from the base value.
+/// Which way to step from the base address. Either increment or decrement one word.
 #[derive(Copy, Clone)]
 pub enum Step {
-    Increment,
-    Decrement,
+    Inc,
+    Dec,
 }
 
 impl Step {
     fn from_value(value: u32) -> Self {
         match value {
-            0 => Step::Increment,
-            1 => Step::Decrement,
+            0 => Step::Inc,
+            1 => Step::Dec,
             _ => unreachable!("Invalid step"),
+        }
+    }
+
+    /// The step amount. This is the amount to add to the base address each word and uses
+    /// wrap around to avoid branching each word transfered.
+    fn step_amount(self) -> u32 {
+        match self {
+            Step::Inc => 4,
+            Step::Dec => (-4_i32) as u32,
         }
     }
 }
@@ -119,14 +115,15 @@ impl ChannelCtrl {
     }
 
     /// Check if Channel is either from or to CPU.
-    fn direction(self) -> Direction {
-        Direction::from_value(self.0.extract_bit(0))
+    fn direction(self) -> ChanDir {
+        ChanDir::from_value(self.0.extract_bit(0))
     }
 
     fn step(self) -> Step {
         Step::from_value(self.0.extract_bit(1))
     }
 
+    /// Chopping means that the CPU get's to run at intervals while transfering.
     fn chopping_enabled(self) -> bool {
         self.0.extract_bit(8) == 1
     }
@@ -135,20 +132,22 @@ impl ChannelCtrl {
         SyncMode::from_value(self.0.extract_bits(9, 10))
     }
 
+    /// If the channel itself is enabled. If it's not, then the channel doesn't run.
     fn enabled(self) -> bool {
         self.0.extract_bit(24) == 1
     }
 
-    /// DMA Chopping Window. How long the CPU is allowed to run when chopping.
-    fn dma_chopping_window(self) -> u32 {
+    /// How many cycles to run in the interval between CPU chop.
+    fn dma_chop_size(self) -> u32 {
         self.0.extract_bits(16, 18) << 1
     }
 
-    /// CPU Chopping Window. How often the CPU is allowed to run.
-    fn cpu_chopping_window(self) -> u32 {
-        self.0.extract_bits(20, 22) << 1
+    /// How many cycles the CPU get's to run when chopping.
+    fn cpu_chop_size(self) -> Cycle {
+        (self.0.extract_bits(20, 22) << 1) as Cycle
     }
 
+    /// This is only used when in manual sync mode. It must be set for the transfer to start.
     fn start(self) -> bool {
         self.0.extract_bit(28) == 1
     }
@@ -171,22 +170,31 @@ impl ChannelCtrl {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Channel {
+#[derive(Debug)]
+struct Transfer {
+    cursor: u32,
+    size: u32,
+    /// The increment each step. This is required since the start address may be both the highest
+    /// or lowest address.
+    inc: u32,
+}
+
+pub struct ChanStat {
     port: Port,
-    /// The base address. Address of the first words the be read/written.
     base: u32,
     block_ctrl: BlockCtrl,
     ctrl: ChannelCtrl,
+    transfer: Option<Transfer>,
 }
 
-impl Channel {
+impl ChanStat {
     fn new(port: Port) -> Self {
         Self {
             port,
             base: 0x0,
             block_ctrl: BlockCtrl::new(0x0),
             ctrl: ChannelCtrl::new(0x0),
+            transfer: None,
         }
     }
 
@@ -194,7 +202,7 @@ impl Channel {
     fn load(&self, offset: u32) -> u32 {
         match offset {
             0 => self.base,
-            4 => self.block_ctrl.0,
+            4 => self.block_ctrl.load(),
             8 => self.ctrl.0,
             _ => unreachable!("Invalid load in channel at offset {:08x}", offset),
         }
@@ -216,19 +224,24 @@ impl Channel {
     }
 }
 
+// TODO: Add support for this.
 #[derive(Copy, Clone)]
 struct CtrlReg(u32);
 
-impl CtrlReg {
-    fn new(value: u32) -> Self {
-        Self { 0: value }
+impl Default for CtrlReg {
+    fn default() -> Self {
+        Self(0x07654321)
     }
+}
 
+impl CtrlReg {
+    #[allow(dead_code)]
     pub fn channel_priority(self, channel: Port) -> u32 {
         let base = (channel as u32) << 2;
         self.0.extract_bits(base, base + 2)
     }
 
+    #[allow(dead_code)]
     pub fn channel_enabled(self, channel: Port) -> bool {
         let base = (channel as u32) << 2;
         self.0.extract_bit(base + 3) == 1
@@ -239,11 +252,13 @@ impl CtrlReg {
 #[derive(Copy, Clone)]
 pub struct IrqReg(u32);
 
-impl IrqReg {
-    fn new(value: u32) -> Self {
-        Self { 0: value }
+impl Default for IrqReg {
+    fn default() -> Self {
+        Self(0)
     }
+}
 
+impl IrqReg {
     /// If this is set, a interrupt will always be triggered when a channel is done or this
     /// register is written to.
     fn force_irq(self) -> bool {
@@ -261,7 +276,8 @@ impl IrqReg {
     }
 
     /// This is set when a channel is done with a transfer, if interrupts are enabled for the
-    /// channel.
+    /// channed.
+    #[allow(dead_code)]
     fn channel_irq_flag(self, channel: Port) -> bool {
         self.0.extract_bit((channel as u32) + 24) == 1
     }
@@ -302,73 +318,39 @@ impl IrqReg {
     }
 }
 
-/// Block transfers are large blocks of memory transferred between RAM and BUS mapped devices.
-/// These tranfers could technically be done via CPU load operations, but these transfers are much
-/// faster, and therefore widely used, especially when large blocks of data has to be
-/// transferred to or from something like VRAM or CDROM.
-#[derive(Debug, Copy, Clone)]
-pub struct BlockTransfer {
-    pub port: Port,
-    pub direction: Direction,
-    /// The starting address of the transfer.
-    pub start: u32,
-    /// The size of the transfer.
-    pub size: u32,
-    /// The increment each step. This is required since the start address may be both the highest
-    /// or lowest address.
-    pub increment: u32,
-}
-
-/// Linked list transfers are only used for GPU commands. It basically continues to transfer data
-/// until the end of a linked list is reached.
-#[derive(Debug, Copy, Clone)]
-pub struct LinkedTransfer {
-    pub start: u32,
-}
-
-pub struct Transfers {
-    pub block: Vec<BlockTransfer>,
-    pub linked: Vec<LinkedTransfer>,
-}
-
-impl Transfers {
-    pub fn new() -> Self {
-        Self {
-            block: vec![],
-            linked: vec![],
-        }
-    }
-}
-
-/// The DMA is a chip used by the Playstation to transfer data between BUS mapped devices. It can
-/// be a lot faster than CPU loads, even though the CPU is stopped during transfers. It also allows
-/// for breaking up large transfers, to give the CPU time during transfers.
+/// The DMA is a chip used by the Playstation to transfer data between RAM and some BUS mapped devices.
+/// It can be a lot faster than CPU loads, even though the CPU is stopped during transfers.
+///
+/// # Chopping
+/// Because the CPU doesn't get to run during transfers, the DMA allows for chopping. Chopping
+/// is a feature allowing the CPU to run for a given amount of cycles at a given interval while
+/// transfering. It's likely to allow games to handle input and rendering and such while handling
+/// a large and slow transfer from something like the CDROM.
 pub struct Dma {
     /// Control register. 
     ctrl: CtrlReg,
     /// Interrupt register.
     pub irq: IrqReg,
-    channels: [Channel; 7],
+    channels: [ChanStat; 7],
 }
 
 impl Dma {
     pub fn new() -> Self {
         Self {
-            ctrl: CtrlReg::new(0x0),
-            irq: IrqReg::new(0x0),
+            ctrl: CtrlReg::default(),
+            irq: IrqReg::default(),
             channels: [
-                Channel::new(Port::MdecIn),
-                Channel::new(Port::MdecOut),
-                Channel::new(Port::Gpu),
-                Channel::new(Port::CdRom),
-                Channel::new(Port::Spu),
-                Channel::new(Port::Pio),
-                Channel::new(Port::Otc),
+                ChanStat::new(Port::MdecIn),
+                ChanStat::new(Port::MdecOut),
+                ChanStat::new(Port::Gpu),
+                ChanStat::new(Port::CdRom),
+                ChanStat::new(Port::Spu),
+                ChanStat::new(Port::Pio),
+                ChanStat::new(Port::Otc),
             ],
         }
     }
 
-    /// Read a register from DMA.
     pub fn load(&self, offset: u32) -> u32 {
         let channel = offset.extract_bits(4, 6);
         let reg = offset.extract_bits(0, 3);
@@ -383,14 +365,7 @@ impl Dma {
         }
     }
 
-    /// Store value in DMA register.
-    pub fn store(
-        &mut self,
-        transfers: &mut Transfers,
-        schedule: &mut Schedule,
-        offset: u32,
-        value: u32,
-    ) {
+    pub fn store(&mut self, schedule: &mut Schedule, offset: u32, value: u32) {
         let channel = offset.extract_bits(4, 6);
         let reg = offset.extract_bits(0, 3);
         match channel {
@@ -402,11 +377,10 @@ impl Dma {
             },
             _ => unreachable!(),
         }
-        self.build_transfers(transfers);
     }
 
     /// Mark channel as done.
-    pub fn channel_done(&mut self, port: Port, schedule: &mut Schedule) {
+    fn channel_done(&mut self, port: Port, schedule: &mut Schedule) {
         self.channels[port as usize].ctrl.mark_as_finished();
         if self.irq.channel_irq_enabled(port) {
             self.irq.set_channel_irq_flag(port);
@@ -414,46 +388,208 @@ impl Dma {
         self.irq.update_master_irq_flag(schedule);
     }
 
-    /// Build transfer command for the BUS to execute.
-    fn build_transfers(&mut self, trans: &mut Transfers) {
-        fn increment(step: Step) -> u32 {
-            match step {
-                Step::Increment => 4,
-                Step::Decrement => (-4_i32) as u32,
-            }
-        }
-        for (i, ch) in self.channels.iter().enumerate() {
-            match ch.ctrl.sync_mode() {
-                SyncMode::Manual if ch.ctrl.start() && ch.ctrl.enabled() => {
-                    let size = ch.block_ctrl.block_size();
-                    trans.block.push(BlockTransfer {
-                        port: ch.port,
-                        size,
-                        direction: ch.ctrl.direction(),
-                        increment: increment(ch.ctrl.step()),
-                        start: ch.base,
-                    });
+    /// Run DMA channel. This performs any transfers ready to be executed for a channel.
+    /// If chopping is disabled for the channel, then the whole transfer get's executed
+    /// at once. If chopping is enabled, then the Transfer runs for a given number of cycles,
+    /// and if the transfer isn't done in time, the rest get's transfered after the CPU is allowed
+    /// to run for a given number of cycles.
+    fn run_chan<T: DmaChan>(
+        &mut self,
+        port: Port,
+        chan: &mut T,
+        schedule: &mut Schedule,
+        ram: &mut Ram
+    ) {
+        let ctrl = self[port].ctrl;
+        let done = if ctrl.chopping_enabled() {
+            ctrl.dma_chop_size() as Cycle + schedule.cycle()
+        } else {
+            Cycle::MAX
+        };
+        let mut manual_done = false;
+        while schedule.cycle() != done
+            && self[port].ctrl.enabled()
+            && chan.dma_ready(self[port].ctrl.direction())
+        {
+            let stat = &mut self[port];
+            let mut tran = match stat.transfer.take() {
+                Some(trans) => trans,
+                None => match stat.ctrl.sync_mode() {
+                    SyncMode::Manual => {
+                        if manual_done {
+                            self.channel_done(port, schedule);
+                            return;
+                        }
+                        // For manual transfers the start flag must be set as opposed to the other
+                        // sync modes.
+                        if !stat.ctrl.start() {
+                            return;
+                        }
+                        manual_done = true;
+                        Transfer {
+                            inc: stat.ctrl.step().step_amount(),
+                            size: stat.block_ctrl.size as u32,
+                            cursor: stat.base
+                        }
+                    }
+                    SyncMode::Request => {
+                        if let Some(blocks) = stat.block_ctrl.count.checked_sub(1) {
+                            stat.block_ctrl.count = blocks;
+                            Transfer {
+                                inc: stat.ctrl.step().step_amount(),
+                                size: stat.block_ctrl.size as u32,
+                                cursor: stat.base,
+                            }
+                        } else {
+                            self.channel_done(port, schedule);
+                            return;
+                        }
+                    },
+                    SyncMode::LinkedList => {
+                        if stat.base != 0x00ff_ffff {
+                            let header = ram.load::<Word>(stat.base & 0x001f_fffc);
+                            let tran = Transfer {
+                                inc: stat.ctrl.step().step_amount(),
+                                size: header.extract_bits(24, 31),
+                                cursor: (stat.base + 4).extract_bits(0, 23),
+                            };
+                            stat.base = header.extract_bits(0, 23);
+                            if tran.size == 0 {
+                                continue;
+                            }
+                            tran
+                        } else {
+                            self.channel_done(port, schedule);
+                            return;
+                        }
+                    }
                 }
-                SyncMode::Request if ch.ctrl.enabled() => {
-                    let size = ch.block_ctrl.block_size() * ch.block_ctrl.block_count();
-                    trans.block.push(BlockTransfer {
-                        port: ch.port,
-                        size,
-                        direction: ch.ctrl.direction(),
-                        increment: increment(ch.ctrl.step()),
-                        start: ch.base,
-                    });
+            };
+            self[port].transfer = match stat.ctrl.direction() {
+                ChanDir::ToRam => {
+                    loop {
+                        if schedule.cycle() == done {
+                            schedule.schedule_in(
+                                self[port].ctrl.cpu_chop_size(),
+                                Event::RunDmaChan(port)
+                            );
+                            break Some(tran); 
+                        }
+                        if let Some(size) = tran.size.checked_sub(1) {
+                            let addr = tran.cursor & 0x001f_fffc;
+                            let val = chan.dma_load(schedule, (tran.size as u16, tran.cursor));
+                            ram.store::<Word>(addr, val);
+                            tran.cursor = tran.cursor.wrapping_add(tran.inc) & 0x00ff_ffff;
+                            tran.size = size;
+                        } else {
+                            break None;
+                        }
+                        schedule.tick(1);
+                    }
                 }
-                SyncMode::LinkedList if ch.ctrl.enabled() => {
-                    debug_assert!(Port::from_value(i as u32) == Port::Gpu);
-                    trans.linked.push(LinkedTransfer {
-                        start: ch.base,
-                    });
+                ChanDir::ToPort => {
+                    loop {
+                        if schedule.cycle() == done {
+                            schedule.schedule_in(
+                                self[port].ctrl.cpu_chop_size(),
+                                Event::RunDmaChan(port)
+                            );
+                            break Some(tran); 
+                        }
+                        if let Some(size) = tran.size.checked_sub(1) {
+                            let addr = tran.cursor & 0x001f_fffc;
+                            chan.dma_store(schedule, ram.load::<Word>(addr));
+                            tran.cursor = tran.cursor.wrapping_add(tran.inc) & 0x00ff_ffff;
+                            tran.size = size;
+                        } else {
+                            break None;
+                        }
+                        schedule.tick(1);
+                    }
                 }
-                _ => {}
-            }
+            };
         }
     }
+}
+
+impl Bus {
+    pub fn run_dma(&mut self) {
+        self.dma.run_chan(Port::Gpu, &mut self.gpu, &mut self.schedule, &mut self.ram);
+        self.dma.run_chan(Port::Otc, &mut OrderingTable, &mut self.schedule, &mut self.ram);
+    }
+
+    pub fn run_dma_chan(&mut self, port: Port) {
+        match port {
+            Port::Gpu => {
+               self.dma.run_chan(Port::Gpu, &mut self.gpu, &mut self.schedule, &mut self.ram);
+            }
+            Port::Otc => {
+                self.dma.run_chan(Port::Otc, &mut OrderingTable, &mut self.schedule, &mut self.ram);
+            }
+            _ => todo!(),
+        }
+    }
+}
+
+
+/// The ordering table. This is used by the Playstation to order draw calls. The playstation stores
+/// all draw calls in a scene in a compact buffer somewhere in RAM. The playstation however,
+/// doesn't have a Z-buffer or anything like that, so it can't just execute the drawcalls in an
+/// arbitrary order. It must send them to the GPU in a correct order to render scenes correctly.
+/// This has to be done every frame, since objects and the camera could have moved. To do this
+/// effeciently, the Playstation uses a depth ordering table. Each element in the table is 32 bit
+/// wide and contains two elements; An 8 bit offset into the drawcall buffer, and a 24 bit pointer
+/// to the next element.
+///
+/// The DMA is used to create an empty table of a given size. Here each element starts out by with
+/// an empty offset and the pointer pointing to the previous element in the table, and the last one
+/// with the value ffffffh.
+///
+/// When the Playstation wants to draw a line or polygon it calculates its distance to the camera
+/// and uses that value to determine a slot in the ordering table. It then inserts the drawcall at
+/// that slot. Since the Playstation doesn't have a lot of RAM to work with, there is often a lot
+/// more objects to draw than slots in the ordering table, so many drawcalls share the same cell in
+/// the ordering table. When that happens the Playstation draws the elements from newest to oldest.
+/// This is likely random and causes visual glitches.
+struct OrderingTable;
+
+impl DmaChan for OrderingTable {
+    fn dma_load(&mut self, _: &mut Schedule, stats: (u16, u32)) -> u32 {
+        let (words_left, addr) = stats;
+        if words_left == 1 {
+            0x00ff_ffff
+        } else {
+            addr.wrapping_sub(4).extract_bits(0, 21)
+        }
+    }
+
+    fn dma_store(&mut self, _: &mut Schedule, _: u32) {
+        panic!("Ordering table DMA store");
+    }
+
+    fn dma_ready(&self, _: ChanDir) -> bool {
+        true
+    }
+}
+
+impl Index<Port> for Dma {
+    type Output = ChanStat;
+
+    fn index(&self, port: Port) -> &Self::Output {
+        &self.channels[port as usize]
+    }
+}
+
+impl IndexMut<Port> for Dma {
+    fn index_mut(&mut self, port: Port) -> &mut Self::Output {
+        &mut self.channels[port as usize]
+    }
+}
+
+pub trait DmaChan {
+    fn dma_load(&mut self, schedule: &mut Schedule, stats: (u16, u32)) -> u32;
+    fn dma_store(&mut self, schedule: &mut Schedule, val: u32);
+    fn dma_ready(&self, dir: ChanDir) -> bool;
 }
 
 impl BusMap for Dma {

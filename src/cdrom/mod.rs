@@ -7,12 +7,7 @@ use crate::bus::{Schedule, Event, AddrUnit, BusMap};
 
 use fifo::Fifo;
 
-/// Interrupt types used internally by the Playstations CDROM.
-#[derive(Clone, Copy)]
-enum Interrupt {
-    Ack = 0x3,
-    Error = 0x5,
-}
+use std::fmt;
 
 pub struct CdRom {
     /// The index register. This decides what happens when the CPU writes to and
@@ -113,11 +108,11 @@ impl CdRom {
         schedule.schedule_in(10_000, Event::RunCdRom);
     }
 
-    pub fn reponse(&mut self, cmd: u8) {
-        debug!("CDROM reponse for command {:x}", cmd);
-        match cmd {
+    pub fn reponse(&mut self, cmd: CdRomCmd) {
+        debug!("CDROM reponse for command: {}", cmd);
+        match cmd.0 {
             // Init.
-            0xa => {
+            0x0a => {
                 self.response_fifo.push(self.drive_stat());
             }
             // Read Table of Content.
@@ -140,7 +135,7 @@ impl CdRom {
                 // Init.
                 0x0a => {
                     self.response_fifo.push(self.drive_stat());
-                    schedule.schedule_in(900_000, Event::CdRomReponse(0x0a));
+                    schedule.schedule_in(900_000, Event::CdRomResponse(CdRomCmd(0x0a)));
                 }
                 // Test command. It's behavior depent on the first argument.
                 0x19 => match self.arg_fifo.pop() {
@@ -160,7 +155,7 @@ impl CdRom {
                 0x1e => {
                     self.response_fifo.push(self.drive_stat());
                     // This might not take as long without a disc.
-                    schedule.schedule_in(30_000_000, Event::CdRomReponse(0x1e));
+                    schedule.schedule_in(30_000_000, Event::CdRomResponse(CdRomCmd(0x1e)));
                 }
                 _ => todo!("CDROM Command: {:08x}", cmd),
             }
@@ -183,6 +178,28 @@ impl CdRom {
         // This means that the drive cover is open.
         0x10
     }
+}
+
+#[derive(PartialEq, Eq)]
+pub struct CdRomCmd(u8);
+
+impl fmt::Display for CdRomCmd {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            0x1 => write!(f, "status"),
+            0xa => write!(f, "init"),
+            0x19 => write!(f, "test"),
+            0x1a => write!(f, "get_id"),
+            0x1e => write!(f, "read_toc"),
+            _ => unreachable!(),
+        }
+    }
+}
+/// Interrupt types used internally by the Playstations CDROM.
+#[derive(Clone, Copy)]
+enum Interrupt {
+    Ack = 0x3,
+    Error = 0x5,
 }
 
 impl BusMap for CdRom {

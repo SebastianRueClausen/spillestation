@@ -103,8 +103,6 @@ impl Frontend {
                         },
                         Stage::Config { .. } if dt >= self.frame_time => redraw(),
                         _ => {
-                            // This can be reached in config and startup. This just makes the window
-                            // wait until the next frame should be drawn.
                             *ctrl_flow = ControlFlow::WaitUntil(
                                 Instant::now() + self.frame_time - dt,
                             );

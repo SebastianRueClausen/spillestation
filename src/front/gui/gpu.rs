@@ -38,7 +38,7 @@ impl GpuStatus {
         write!(self.fields[20], "{}", gpu.status.video_mode())?;
         write!(self.fields[21], "{}", gpu.status.color_depth())?;
         write!(self.fields[22], "{}", gpu.status.vertical_interlace())?;
-        write!(self.fields[23], "{}", gpu.status.display_enabled())?;
+        write!(self.fields[23], "{}", gpu.status.draw_to_displayed())?;
         write!(self.fields[24], "{}", gpu.status.irq_enabled())?;
         write!(self.fields[25], "{}", gpu.status.cmd_ready())?;
         write!(self.fields[26], "{}", gpu.status.vram_to_cpu_ready())?;
@@ -112,7 +112,7 @@ const FIELD_LABELS: [&str; FIELD_COUNT] = [
     "video mode",
     "color depth",
     "vertical interlace enabled",
-    "display enabled",
+    "draw to displayed",
     "interrupt request enabled",
     "command ready",
     "VRAM to CPU ready",

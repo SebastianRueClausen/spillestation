@@ -4,12 +4,9 @@ use crate::util::BitExtract;
 
 /// Each element is 16 bits. 1 bit sign, 3 bit integer, 12 bit fraction.
 type Mat3 = [[i16; 3]; 3];
-
-/// 32 bit vector.
 type Vec32 = [i32; 3];
-
-/// 16 bit vector.
 type Vec16 = [i16; 3];
+type Rgbx = [u8; 4];
 
 pub struct Gte {
     /// ['MulMat'] matrices.
@@ -32,20 +29,24 @@ pub struct Gte {
     zsf3: i16,
     /// Z4 average scale factor.
     zsf4: i16,
-    /// Average Z(depth ordering) value.
+    /// Average Z (depth ordering) value.
     otz: u16,
     /// Screen XY FIFO.
     sxy_fifo: [i16; 4],
     /// Screen Z FIFO.
     sz_fifo: [i16; 4],
     /// Color FIFO. RGB0, RGB1 and RGB2.
-    rgb_fifo: [[u8; 4]; 3],
+    rgb_fifo: [Rgbx; 3],
     /// Color register.
     rgb: [u8; 4],
     /// Interpolation factor.
     ir0: i16,
     /// Intermediate results.
     mac: [i32; 4],
+    /// Count leading zeros or ones. This is the input value.
+    lzcs: u32,
+    /// The amount of leading zeroes or ones (depending on sign) in 'lzcs'.
+    lzcr: u8,
 }
 
 impl Gte {
@@ -68,6 +69,8 @@ impl Gte {
             rgb: [0x0; 4],
             ir0: 0x0,
             mac: [0x0; 4],
+            lzcs: 0,
+            lzcr: 32,
         }
     }
 
@@ -77,15 +80,16 @@ impl Gte {
     }
 
     pub fn ctrl_store(&mut self, reg: u32, val: u32) {
+        let reg = reg as usize;
         trace!("GTE Control store to reg {:x}", reg);
         match reg {
             13..=15 => {
                 let vec = TransVec::BackgroundColor as usize;
-                self.trans_vecs[vec][reg as usize - 13] = val as i32;
+                self.trans_vecs[vec][reg - 13] = val as i32;
             }
             21..=23 => {
                 let vec = TransVec::FarColor as usize;
-                self.trans_vecs[vec][reg as usize - 21] = val as i32;
+                self.trans_vecs[vec][reg - 21] = val as i32;
             }
             24 => self.ofx = val as i32,
             25 => self.ofy = val as i32,
@@ -95,6 +99,31 @@ impl Gte {
             29 => self.zsf3 = val as i16,
             30 => self.zsf4 = val as i16,
             _ => todo!("GTE Control store: {}", reg),
+        }
+    }
+
+    pub fn data_store(&mut self, reg: u32, val: u32) {
+        match reg {
+            30 => {
+                self.lzcs = val;
+                // 'val' is in this case a signed 32 bit int. If bit 31 is set, it's a negative
+                // value, in which case the 'lzcr' counts the leading ones instead of leading
+                // zeroes.
+                self.lzcr = if val.extract_bit(31) == 1 {
+                    val.leading_ones() as u8
+                } else {
+                    val.leading_zeros() as u8
+                };
+            }
+            _ => todo!("GTE data store in reg: {}", reg),
+        }
+    }
+
+    pub fn data_load(&mut self, reg: u32) -> u32 {
+        match reg {
+            30 => self.lzcs,
+            31 => self.lzcr.into(),
+            _ => todo!("GTE data load in reg: {}", reg),
         }
     }
 }
@@ -171,4 +200,12 @@ impl Opcode {
             _ => unreachable!(),
         }
     }
+}
+
+fn u32_to_rgbx(val: u32) -> Rgbx {
+    let r = val.extract_bits(0, 7) as u8;
+    let g = val.extract_bits(8, 15) as u8;
+    let b = val.extract_bits(16, 23) as u8;
+    let x = val.extract_bits(24, 31) as u8;
+    [r, g, b, x]
 }

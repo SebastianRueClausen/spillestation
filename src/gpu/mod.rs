@@ -9,7 +9,7 @@ pub mod vram;
 use crate::front::DrawInfo;
 use crate::util::{BitExtract, BitSet};
 use crate::cpu::Irq;
-use crate::bus::{Schedule, Event, BusMap, AddrUnit};
+use crate::bus::{DmaChan, ChanDir, Schedule, Event, BusMap, AddrUnit};
 use crate::timing;
 use crate::timer::Timers;
 use crate::system::Cycle;
@@ -65,11 +65,42 @@ impl fmt::Display for TransBlend {
 /// Video mode mainly determines the output framerate. It depends on the region of the console,
 /// North American consoles uses NTSC for instance, while European consoles uses PAL. Every console
 /// can output both modes, so it purely determined by bios.
+#[derive(Clone, Copy)]
 pub enum VideoMode {
     /// ~60 Hz.
     Ntsc = 60,
     /// ~50 Hz.
     Pal = 50,
+}
+
+impl VideoMode {
+    fn cycles_per_scln(self) -> Cycle {
+        match self {
+            VideoMode::Ntsc => timing::NTSC_CYCLES_PER_SCLN,
+            VideoMode::Pal => timing::PAL_CYCLES_PER_SCLN,
+        }
+    }
+
+    fn scln_count(self) -> Cycle {
+        match self {
+            VideoMode::Ntsc => timing::NTSC_SCLN_COUNT,
+            VideoMode::Pal => timing::PAL_SCLN_COUNT,
+        }
+    }
+
+    fn vbegin(self) -> Cycle {
+        match self {
+            VideoMode::Ntsc => timing::NTSC_VBEGIN,
+            VideoMode::Pal => timing::PAL_VBEGIN,
+        }
+    }
+
+    fn vend(self) -> Cycle {
+        match self {
+            VideoMode::Ntsc => timing::NTSC_VEND,
+            VideoMode::Pal => timing::PAL_VEND,
+        }
+    }
 }
 
 impl fmt::Display for VideoMode {
@@ -100,6 +131,7 @@ impl fmt::Display for DmaDirection {
     }
 }
 
+/// Which lines to show.
 #[derive(PartialEq, Eq)]
 pub enum InterlaceField {
     Bottom = 0,
@@ -291,13 +323,19 @@ impl Status {
         }
     }
 
-    /// Draw interlaced instead of progressive.
+    /// # Vertical interlacing
+    ///
+    /// PAL and NTSC Tv's are normally able to display between 25-30 frames per second. To allow
+    /// for higher framerates, the Playstation has the ability to use vertical interlacing.
+    /// Vertical interlacing sends only half the scanlines at a time, which effectively halfs the
+    /// bandwidth for each frame. It switches between even and odd lines each frame, creating an
+    /// illusion of showing the full image at double the native speed.
     pub fn vertical_interlace(self) -> bool {
         self.0.extract_bit(22) == 1
     }
 
-    // Nocash says that the display is enabled if bit 23 equals 0.
-    pub fn display_enabled(self) -> bool {
+    /// Tells if the GPU should draw to the screen currently being displayed in interlace mode.
+    pub fn draw_to_displayed(self) -> bool {
         self.0.extract_bit(23) == 1
     }
 
@@ -352,24 +390,47 @@ struct Timing {
     in_hblank: bool,
     in_vblank: bool,
     last_run: Cycle,
-    last_draw: std::time::Instant,
+    /// How many cycles it takes to draw a scanline which depend on ['VideoMode'].
+    cycles_per_scln: Cycle,
+    /// How many scanlines there are which depend on ['VideoMode'].
+    scln_count: u64,
+    /// Vertical begin.
+    vbegin: u64, 
+    /// Vertical end.
+    vend: u64,
 }
 
 impl Timing {
-    fn new() -> Self {
+    fn new(vmode: VideoMode) -> Self {
         Self {
             scanline: 0,
             scanline_prog: 0,
             in_hblank: false,
             in_vblank: false,
             last_run: 0,
-            last_draw: std::time::Instant::now(),
+            cycles_per_scln: vmode.cycles_per_scln(),
+            scln_count: vmode.scln_count(),
+            vbegin: vmode.vbegin(),
+            vend: vmode.vend(),
         }
+    }
+
+    fn update_video_mode(&mut self, vmode: VideoMode) {
+        self.cycles_per_scln = vmode.cycles_per_scln();
+        self.scln_count = vmode.scln_count();
+        self.vbegin = vmode.vbegin();
+        self.vend = vmode.vend();
+        
+        self.scanline %= self.scln_count;
+        self.scanline_prog %= self.cycles_per_scln;
+
     }
 }
 
+/// The current state of the GPU.
 enum State {
     Idle,
+    Drawing,
     VramStore(MemTransfer),
     VramLoad(MemTransfer),
 }
@@ -425,12 +486,13 @@ pub struct Gpu {
 impl Gpu {
     pub fn new() -> Self {
         // Sets the reset values.
+        let status = Status(0x14802000);
         Self {
             state: State::Idle,
             fifo: Fifo::new(),
             vram: Vram::new(),
-            timing: Timing::new(),
-            status: Status(0x14802000),
+            timing: Timing::new(status.video_mode()),
+            status,
             gpu_read: 0x0,
             rect_tex_x_flip: false,
             rect_tex_y_flip: false,
@@ -453,9 +515,9 @@ impl Gpu {
         }
     }
 
-    pub fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) {
+    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
         match addr {
-            0 => self.gp0_store(val),
+            0 => self.gp0_store(schedule, val),
             4 => self.gp1_store(val),
             _ => unreachable!("Invalid GPU store at offset {:08x}.", addr),
         }
@@ -469,25 +531,12 @@ impl Gpu {
         }
     }
 
-    pub fn dma_store(&mut self, value: u32) {
-        self.gp0_store(value);
-    }
-
-    pub fn dma_load(&mut self) -> u32 {
-        if self.status.dma_direction() != DmaDirection::VramToCpu {
-            warn!("Invalid DMA load from GPU");
-            u32::MAX
-        } else {
-            self.gpu_read()
-        }
-    }
-
     fn gpu_read(&mut self) -> u32 {
         if let State::VramLoad(ref mut tran) = self.state {
             self.gpu_read = [0, 16].iter().fold(0, |state, shift| {
                 let value = self.vram.load_16(tran.x, tran.y) as u32;
                 tran.next();
-                state | value << shift
+                state | (value << shift)
             });
             if tran.is_done() {
                 self.state = State::Idle;
@@ -497,11 +546,24 @@ impl Gpu {
     }
 
     /// Calculate if the GPU is ready to recieve data from the DMA.
-    fn dma_block_ready(&self) -> bool {
+    pub fn dma_block_ready(&self) -> bool {
         match self.state {
-            State::VramLoad(..) => false,
             State::VramStore(..) => !self.fifo.is_full(),
-            State::Idle => !self.fifo.has_full_cmd(),
+            State::Idle => {
+                if let Some(cmd) = self.fifo.next_cmd() {
+                    // If the command is a line or polygon command, the dma ready flag get's
+                    // clearead after the first word ie. the command itself rather than when the
+                    // GPU is busy executing the command.
+                    if (0x20..=0x5a).contains(&cmd) {
+                        false
+                    } else {
+                        !self.fifo.has_full_cmd()
+                    }
+                } else {
+                    true
+                }
+            }
+            State::Drawing | State::VramLoad(..) => false,
         }
     }
 
@@ -513,7 +575,7 @@ impl Gpu {
 
         self.status.0.set_bit(25, match self.status.dma_direction() {
             DmaDirection::Off => false,
-            DmaDirection::Fifo => self.status.dma_block_ready(),
+            DmaDirection::Fifo => !self.fifo.is_full(),
             DmaDirection::CpuToGp0 => self.status.dma_block_ready(),
             DmaDirection::VramToCpu => self.status.vram_to_cpu_ready(),
         });
@@ -522,21 +584,16 @@ impl Gpu {
         self.status.0
     }
 
-    fn gp0_store(&mut self, value: u32) {
-        self.fifo.push(value);
-        self.try_run_cmd();
+    fn gp0_store(&mut self, schedule: &mut Schedule, val: u32) {
+        self.fifo.push(val);
+        self.try_run_cmd(schedule);
     }
 
-    fn try_run_cmd(&mut self) {
+    fn try_run_cmd(&mut self, schedule: &mut Schedule) {
         match self.state {
             State::Idle => {
                 if self.fifo.has_full_cmd() {
-                    let cmd = self.fifo[0].extract_bits(24, 31);
-                    self.gp0_exec();
-                    if !self.fifo.is_empty() {
-                        warn!("GPU FIFO not empty after GP0({:08x})", cmd);
-                    }
-                    self.fifo.clear();
+                    self.gp0_exec(schedule);
                 }
             }
             State::VramStore(ref mut tran) => {
@@ -551,8 +608,9 @@ impl Gpu {
                 }
             }
             State::VramLoad(..) => {
-                warn!("VRAM load while running command");
+                warn!("GPU state is VramLoad when trying to execute command");
             }
+            State::Drawing => (),
         }
     }
 
@@ -571,13 +629,18 @@ impl Gpu {
         self.timing.in_vblank
     }
 
+    pub fn cmd_done(&mut self) {
+        self.state = State::Idle;
+    }
+
     pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
-        trace!("Run GPU");
+        self.try_run_cmd(schedule);
+
         self.timing.scanline_prog += timing::cpu_to_gpu_cycles(schedule.cycle() - self.timing.last_run);
         self.timing.last_run = schedule.cycle();
 
         // If the progress is less than a single scanline.
-        if self.timing.scanline_prog < timing::NTSC_CYCLES_PER_SCLN {
+        if self.timing.scanline_prog < self.timing.cycles_per_scln {
             let in_hblank = self.timing.scanline_prog >= timing::HSYNC_CYCLES;
 
             // If we have entered Hblank.
@@ -588,8 +651,8 @@ impl Gpu {
             self.timing.in_hblank = in_hblank;
         } else {
             // Calculate the number of lines to be drawn.
-            let mut lines = self.timing.scanline_prog / timing::NTSC_CYCLES_PER_SCLN;
-            self.timing.scanline_prog %= timing::NTSC_CYCLES_PER_SCLN;
+            let mut lines = self.timing.scanline_prog / self.timing.cycles_per_scln;
+            self.timing.scanline_prog %= self.timing.cycles_per_scln;
 
             // At there must have been atleast a single Hblank, this calculates the amount.
             //
@@ -605,14 +668,14 @@ impl Gpu {
             self.timing.in_hblank = in_hblank;
 
             while lines > 0 {
-                let line_count = u64::min(lines, timing::NTSC_SCLN_COUNT - self.timing.scanline);
+                let line_count = u64::min(lines, self.timing.scln_count - self.timing.scanline);
                 lines -= line_count;
 
                 let scanline = self.timing.scanline + line_count;
 
                 // Calculate if the scanlines being drawn enters the display area, and clear the
                 // Vblank flag if not.
-                if self.timing.scanline < timing::NTSC_VBEGIN && scanline >= timing::NTSC_VEND {
+                if self.timing.scanline < self.timing.vbegin && scanline >= self.timing.vend {
                     // TODO: Timer sync.
                     self.timing.in_vblank = false;
                 }
@@ -625,14 +688,13 @@ impl Gpu {
                 if self.timing.in_vblank != in_vblank {
                     if in_vblank {
                         schedule.schedule_now(Event::IrqTrigger(Irq::VBlank));
-                        self.timing.last_draw = std::time::Instant::now();
                     }
                     self.timing.in_vblank = in_vblank;
                     // TODO: Timer sync.
                 }
 
                 // Prepare new frame if we are at the end of Vblank.
-                if self.timing.scanline == timing::NTSC_SCLN_COUNT {
+                if self.timing.scanline == self.timing.scln_count {
                     self.timing.scanline = 0;
                     // The interlace field is toggled every frame if vertical interlace is turned on.
                     if self.status.interlaced480() {
@@ -656,7 +718,7 @@ impl Gpu {
             self.timing.scanline as u16
         };
         let vram_line = self.display_vram_y_start + line_offset;
-        self.status.0.set_bit(31, vram_line & 0x1 == 1);
+        self.status.0.set_bit(31, vram_line.extract_bit(0) == 1);
 
         schedule.schedule_in(10_000, Event::RunGpu);
     }
@@ -677,39 +739,73 @@ impl Gpu {
         }
     }
 
-    fn gp0_exec(&mut self) {
+    fn gp0_exec(&mut self, schedule: &mut Schedule) {
         let cmd = self.fifo[0].extract_bits(24, 31);
-        // debug!("GP0({:x})", cmd);
-        match cmd {
+        let cycles = match cmd {
             0x0 => {
                 self.fifo.pop();
+                0
             }
             0x1 => {
                 self.fifo.pop();
                 // TODO: clear cache.
+                0
             }
-            0x2 => self.gp0_fill_rect(),
-            0xe1 => self.gp0_draw_mode_setting(),
-            0xe2 => self.gp0_texture_window_setting(),
-            0xe3 => self.gp0_draw_area_top_left(),
-            0xe4 => self.gp0_draw_area_bottom_right(),
-            0xe5 => self.gp0_draw_offset(),
-            0xe6 => self.gp0_mask_bit_setting(),
-            // Draw commands.
+            0x2 => {
+                self.gp0_fill_rect();
+                0    
+            }
+            0xe1 => {
+                self.gp0_draw_mode_setting();
+                0
+            }
+            0xe2 => {
+                self.gp0_texture_window_setting();
+                0
+            }
+            0xe3 => {
+                self.gp0_draw_area_top_left();
+                0
+            }
+            0xe4 => {
+                self.gp0_draw_area_bottom_right();
+                0
+            }
+            0xe5 => {
+                self.gp0_draw_offset();
+                0
+            }
+            0xe6 => {
+                self.gp0_mask_bit_setting();
+                0
+            }
             0x28 => self.gp0_quad_poly::<UnShaded, UnTextured, Opaque>(),
             0x2c => self.gp0_quad_poly::<UnShaded, Textured, Opaque>(),
             0x30 => self.gp0_tri_poly::<Shaded, UnTextured, Opaque>(),
             0x38 => self.gp0_quad_poly::<Shaded, UnTextured, Opaque>(),
             // Opaque no shading.
-            0x44 => self.gp0_line(),
+            0x44 => {
+                self.gp0_line();
+                0
+            }
             // Copy react command.
-            0xa0 => self.gp0_copy_rect_cpu_to_vram(),
-            0xc0 => self.gp0_copy_rect_vram_to_cpu(),
+            0xa0 => {
+                self.gp0_copy_rect_cpu_to_vram();
+                0
+            }
+            0xc0 => {
+                self.gp0_copy_rect_vram_to_cpu();
+                0
+            }
             _ => unimplemented!("Invalid GP0 command {:08x}.", cmd),
+        };
+        if cycles != 0 {
+            self.state = State::Drawing;
+            schedule.schedule_in(cycles, Event::GpuCmdDone);
         }
     }
 
-    fn gp0_tri_poly<Shade, Tex, Trans>(&mut self)
+    fn gp0_tri_poly<Shade, Tex, Trans>(&mut self) -> Cycle
     where
         Shade: Shading,
         Tex: Textureing,
@@ -757,10 +853,11 @@ impl Gpu {
                 };
             }
         }
-        self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
+        let cycles = self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
+        timing::gpu_to_cpu_cycles(cycles)
     }
 
-    fn gp0_quad_poly<Shade, Tex, Trans>(&mut self)
+    fn gp0_quad_poly<Shade, Tex, Trans>(&mut self) -> Cycle
     where
         Shade: Shading,
         Tex: Textureing,
@@ -809,8 +906,10 @@ impl Gpu {
                 };
             }
         }
-        self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
-        self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[1], &verts[2], &verts[3]);
+        let cycles =
+            self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2])
+            + self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[1], &verts[2], &verts[3]);
+        timing::gpu_to_cpu_cycles(cycles)
     }
 
     fn gp0_line(&mut self) {
@@ -998,6 +1097,29 @@ impl Gpu {
         self.status.0.set_bit_range(17, 22, value.extract_bits(0, 5));
         self.status.0.set_bit(16, value.extract_bit(6) == 1);
         self.status.0.set_bit(14, value.extract_bit(7) == 1);
+        self.timing.update_video_mode(self.status.video_mode());
+    }
+}
+
+impl DmaChan for Gpu {
+    fn dma_store(&mut self, schedule: &mut Schedule, val: u32) {
+        self.gp0_store(schedule, val);
+    }
+
+    fn dma_load(&mut self, _: &mut Schedule, _: (u16, u32)) -> u32 {
+        if self.status.dma_direction() != DmaDirection::VramToCpu {
+            warn!("Invalid DMA load from GPU");
+            u32::MAX
+        } else {
+            self.gpu_read()
+        }
+    }
+
+    fn dma_ready(&self, dir: ChanDir) -> bool {
+        match dir {
+            ChanDir::ToRam => true,
+            ChanDir::ToPort => self.dma_block_ready(),
+        }
     }
 }
 

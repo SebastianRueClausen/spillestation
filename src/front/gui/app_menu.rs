@@ -1,15 +1,15 @@
 //! The main controller and menu of all the GUI apps.
 
-use super::{
-    App,
-    cpu::{CpuCtrl, CpuStatus},
-    fps::FrameCounter,
-    gpu::GpuStatus,
-    mem::MemView,
-    vram::VramView,
-    timer::TimerView,
-    irq::IrqView,
-};
+use super::App;
+use super::cpu::{CpuCtrl, CpuStatus};
+use super::fps::FrameCounter;
+use super::gpu::GpuStatus;
+use super::mem::MemView;
+use super::vram::VramView;
+use super::timer::TimerView;
+use super::irq::IrqView;
+use super::schedule::ScheduleView;
+
 use crate::{system::System, front::RunMode};
 use std::time::Duration;
 
@@ -34,6 +34,7 @@ impl AppMenu {
                 (Box::new(VramView::default()), false),
                 (Box::new(TimerView::default()), false),
                 (Box::new(IrqView::default()), false),
+                (Box::new(ScheduleView::default()), false),
             ],
         }
     }

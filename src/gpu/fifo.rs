@@ -3,8 +3,12 @@
 use crate::util::BitExtract;
 use std::ops::Index;
 
-/// Power of 2 for fast modulo.
-const FIFO_SIZE: usize = 32;
+/// The FIFO on the real Playstation is 16 words long.
+pub const FIFO_REAL_SIZE: usize = 16;
+
+/// It's very hard to emulate the GPU accurately enough the use the real FIFO size, so increasing the
+/// size allows for a larger margin of error.
+const FIFO_SIZE: usize = FIFO_REAL_SIZE * 4;
 
 /// Since the commands of the Playstations GPU aren't one word like the CPU, a buffer
 /// is used to store the words until it has a full command. This is done using a queue/fifo. The
@@ -31,7 +35,7 @@ impl Fifo {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.head == self.tail
     }
 
     pub fn is_full(&self) -> bool {
@@ -45,6 +49,7 @@ impl Fifo {
     pub fn push(&mut self, value: u32) {
         if  self.is_full() {
             warn!("Pushing to a full GPU FIFO");
+            panic!();
         }
         self.data[self.head as usize & (FIFO_SIZE - 1)] = value;
         self.head = self.head.wrapping_add(1);
@@ -59,13 +64,20 @@ impl Fifo {
         value
     }
 
-    pub fn has_full_cmd(&self) -> bool {
+    pub fn next_cmd(&self) -> Option<u32> {
         if !self.is_empty() {
-            let cmd = self[0].extract_bits(24, 31) as usize;
-            CMD_LEN[cmd] as usize == self.len()
+            Some(self[0].extract_bits(24, 31))
         } else {
-            false
+            None
         }
+    }
+
+    pub fn next_cmd_len(&self) -> Option<usize> {
+        self.next_cmd().map(|cmd| usize::from(CMD_LEN[cmd as usize]))
+    }
+
+    pub fn has_full_cmd(&self) -> bool {
+        self.next_cmd_len().map_or(false, |len| len <= self.len())
     }
 }
 

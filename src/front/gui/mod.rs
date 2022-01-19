@@ -11,6 +11,7 @@ pub mod irq;
 pub mod mem;
 pub mod timer;
 pub mod vram;
+pub mod schedule;
 
 use super::{RenderCtx, SurfaceSize};
 use egui::{ClippedMesh, CtxRef};

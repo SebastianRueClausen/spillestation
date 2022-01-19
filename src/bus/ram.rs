@@ -10,7 +10,7 @@ pub struct Ram {
 impl Ram {
     pub fn new() -> Self {
         Self {
-            data: Box::new([0x44; RAM_SIZE]),
+            data: Box::new([0xff; RAM_SIZE]),
         }
     }
 
@@ -22,10 +22,10 @@ impl Ram {
         })
     }
 
-    pub fn store<T: AddrUnit>(&mut self, offset: u32, value: u32) {
+    pub fn store<T: AddrUnit>(&mut self, offset: u32, val: u32) {
         let offset = offset.extract_bits(0, 20) as usize;
         for i in 0..T::WIDTH {
-            self.data[offset + i] = (value >> (8 * i)) as u8;
+            self.data[offset + i] = (val >> (8 * i)) as u8;
         }
     }
 }

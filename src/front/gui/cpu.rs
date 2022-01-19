@@ -148,9 +148,8 @@ impl CpuCtrl {
     fn show_breakpoint(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("breakpoint_grid").show(ui, |ui| {
-                let text_edit = egui::TextEdit::singleline(&mut self.bp_add);
-                ui.add_sized([120.0, 20.0], text_edit);
-
+                let input = egui::TextEdit::singleline(&mut self.bp_add);
+                ui.add_sized([120.0, 20.0], input);
                 let add = ui.button("Add").clicked();
                 if ui.input().key_pressed(egui::Key::Enter) || add {
                     // Parse the string as address in hex.
@@ -190,8 +189,9 @@ impl App for CpuCtrl {
 
     fn update_tick(&mut self, dt: Duration, sys: &mut System) {
         let stop = match self.mode {
-            RunMode::Step { amount, stepped } => {
-                if stepped {
+            RunMode::Step { ref mut stepped, amount } => {
+                if *stepped {
+                    *stepped = false;
                     self.break_message = None;
                     sys.step_debug(amount, Breaks {
                         code: self.code_bps.addrs.as_slice(),
@@ -216,7 +216,6 @@ impl App for CpuCtrl {
                 stop
             }
         };
-
         if let DebugStop::Breakpoint(addr) = stop {
             self.mode = RunMode::default_step();
             self.break_message = Some(
@@ -226,24 +225,19 @@ impl App for CpuCtrl {
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
-        let mut step_mode = match self.mode {
-            RunMode::Step { .. } => true,
-            RunMode::Run { .. } => false,
-        };
+        let was_step = matches!(self.mode, RunMode::Step { .. });
+        let mut is_step = was_step;
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut step_mode, true, "Step");
-            ui.selectable_value(&mut step_mode, false, "Run");
+            ui.selectable_value(&mut is_step, true, "Step");
+            ui.selectable_value(&mut is_step, false, "Run");
         });
-        match self.mode {
-            RunMode::Step { .. } if !step_mode => {
+        if was_step != is_step {
+            if is_step {
+                self.mode = RunMode::default_step();
+            } else {
                 self.mode = RunMode::default_run();
             }
-            RunMode::Run { .. } if step_mode => {
-                self.mode = RunMode::default_step();
-            }
-            _ => (),
         }
-
         ui.separator();
         match self.mode {
             RunMode::Step { ref mut amount, ref mut stepped } => {

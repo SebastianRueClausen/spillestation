@@ -9,13 +9,31 @@ type Cell = [u8; 2];
 /// vales read from the BUS of the Playstation. Instruction Mode show a list of instruction from
 /// the BUS. It obivously doesn't know if something is an instruction, so it might show junk.
 enum Mode {
-    Value([[Cell; COLUMNS]; ROWS]),
+    Value {
+        mat: [[Cell; 4]; ROWS],
+        txt: [String; ROWS],
+    },
     Instruction([String; ROWS]),
+}
+
+impl Mode {
+    fn new_value() -> Self {
+        Mode::Value {
+            mat: [[[0x0; 2]; 4]; ROWS],
+            txt: Default::default(),
+        }
+    }
+
+    fn new_instruction() -> Self {
+        Mode::Instruction(Default::default())
+    }
 }
 
 /// An ['App'] used to view/display the memory of the Playstation.
 pub struct MemView {
     start_addr: u32,
+    addr_input: String,
+    addr_input_msg: Option<String>,
     addresses: [String; ROWS],
     mode: Mode,
 }
@@ -24,8 +42,10 @@ impl Default for MemView {
     fn default() -> Self {
         Self {
             start_addr: 0x0,
+            addr_input: String::new(),
+            addr_input_msg: None,
             addresses: Default::default(),
-            mode: Mode::Value([[[0x0; 2]; COLUMNS]; ROWS]),
+            mode: Mode::new_value(),
         }
     }
 }
@@ -36,50 +56,43 @@ impl App for MemView {
     }
 
     fn update_tick(&mut self, _: Duration, system: &mut System) {
-        // The address get's aligned if it's in instruction mode, since instructions must start on
-        // 4-byte aligned address.
-        let (start_addr, delta) = match self.mode {
-            Mode::Instruction(..) => ((self.start_addr + 4 - 1) / 4 * 4, 4),
-            Mode::Value(..) => (self.start_addr, ROWS),
-        };
-        for (i, address) in self.addresses.iter_mut().enumerate() {
-            address.clear();
-            write!(address, "{:06x}:\t", start_addr + (delta * i) as u32).unwrap();
+        // The start address must be 4-byte aligned. This is a hacky way to round down to next
+        // multiple of 4.
+        let start_addr = ((self.start_addr + 4) & !3) - 4;
+        for (i, addr) in self.addresses.iter_mut().enumerate() {
+            addr.clear();
+            write!(addr, "{:06x}:\t", start_addr + 4 * i as u32).unwrap();
         }
         match self.mode {
             Mode::Instruction(ref mut ins) => {
                 for (i, ins) in ins.iter_mut().enumerate() {
                     ins.clear();
-                    match system.cpu
-                        .bus_mut()
-                        .load::<Word>(start_addr + (i * 4) as u32)
-                    {
-                        Ok(val) => {
-                            write!(ins, "{}", Opcode::new(val)).unwrap();
-                        }
-                        Err(..) => {
-                            write!(ins, "??").unwrap();
-                        }
+                    let addr = start_addr + (i * 4) as u32;
+                    match system.cpu.bus_mut().load::<Word>(addr) {
+                        Ok(val) => write!(ins, "{}", Opcode::new(val)).unwrap(),
+                        Err(..) => write!(ins, "??").unwrap(),
                     }
                 }
             }
-            Mode::Value(ref mut matrix) => {
-                for (i, row) in matrix.iter_mut().enumerate() {
+            Mode::Value { ref mut mat, ref mut txt } => {
+                for (i, row) in mat.iter_mut().enumerate() {
+                    let mut as_text = [0; 4];
                     for (j, col) in row.iter_mut().enumerate() {
-                        match system.cpu
-                            .bus_mut()
-                            .load::<Byte>((i * COLUMNS + j) as u32 + start_addr)
-                        {
+                        let addr = (i * 4 + j) as u32 + start_addr;
+                        match system.cpu.bus_mut().load::<Byte>(addr) {
                             Ok(val) => {
+                                as_text[j] = val as u8;
                                 col[0] = HEX_ASCII[((val >> 4) & 0xf) as usize];
                                 col[1] = HEX_ASCII[(val & 0xf) as usize];
                             }
                             Err(..) => {
+                                as_text[j] = b'?';
                                 col[0] = b'?';
                                 col[1] = b'?';
                             }
                         }
                     }
+                    txt[i] = String::from_utf8_lossy(&as_text).to_string();
                 }
             }
         }
@@ -87,21 +100,35 @@ impl App for MemView {
     
     fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.add(egui::DragValue::new(&mut self.start_addr).speed(1.0));
-            let mut ins_mode = match self.mode {
-                Mode::Instruction(..) => true,
-                Mode::Value(..) => false,
-            };
-            ui.selectable_value(&mut ins_mode, false, "Value");
-            ui.selectable_value(&mut ins_mode, true, "Instruction");
-            match self.mode {
-                Mode::Instruction(..) if !ins_mode => {
-                    self.mode = Mode::Value([[[0x0; 2]; COLUMNS]; ROWS]);
-                }
-                Mode::Value { .. } if ins_mode => {
-                    self.mode = Mode::Instruction(Default::default());
-                }
-                _ => ()
+            let mut was_ins = matches!(self.mode, Mode::Instruction(..));
+            if ui.selectable_value(&mut was_ins, false, "Value").clicked() {
+                self.mode = Mode::new_value();
+            }
+            if ui.selectable_value(&mut was_ins, true, "Instruction").clicked() {
+                self.mode = Mode::new_instruction();
+            }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            let input = egui::TextEdit::singleline(&mut self.addr_input);
+            ui.add_sized([120.0, 20.0], input);
+            let find = ui.button("Find").clicked();
+            if ui.button("⬆").clicked() || ui.input().key_pressed(egui::Key::ArrowUp) {
+                self.start_addr = self.start_addr.saturating_sub(4);
+            }
+            if ui.button("⬇").clicked() || ui.input().key_pressed(egui::Key::ArrowDown) {
+                self.start_addr = self.start_addr.saturating_add(4);
+            }
+            if ui.input().key_pressed(egui::Key::Enter) || find {
+                if let Ok(addr) = u32::from_str_radix(&self.addr_input, 16) {
+                    self.start_addr = addr;     
+                    self.addr_input_msg = None;
+                } else {
+                    self.addr_input_msg = Some(format!("Invalid Address"))
+                };
+            }
+            if let Some(ref msg) = self.addr_input_msg {
+                ui.label(msg);
             }
         });
         ui.separator();
@@ -115,18 +142,32 @@ impl App for MemView {
                     }
                 });
             }
-            Mode::Value(ref matrix) => {
-                egui::Grid::new("mem_value_grid")
-                    .striped(true)
-                    .spacing([0.0, 0.0])
-                    .show(ui, |ui| {
-                        for (row, addr) in matrix.iter().zip(self.addresses.iter()) {
-                            ui.label(addr);
-                            for col in row {
-                                ui.label(unsafe { str::from_utf8_unchecked(col) });
+            Mode::Value { ref mat, ref txt } => {
+                ui.horizontal(|ui| {
+                    egui::Grid::new("value_grid")
+                        .striped(true)
+                        .spacing([0.0, 0.0])
+                        .show(ui, |ui| {
+                            for (row, addr) in mat.iter().zip(self.addresses.iter()) {
+                                ui.label(addr);
+                                for col in row {
+                                    // It is guarenteed to be an utf8 string, since it only contains
+                                    // chars from 'HEX_ASCII'.
+                                    ui.label(unsafe { str::from_utf8_unchecked(col) });
+                                }
+                                ui.end_row();
                             }
-                            ui.end_row();
-                        }
+                        });
+                    ui.separator();
+                    egui::Grid::new("text_grid")
+                        .striped(true)
+                        .spacing([0.0, 0.0])
+                        .show(ui, |ui| {
+                            for row in txt {
+                                ui.label(row); 
+                                ui.end_row();
+                            }
+                        });
                 });
             }
         }
@@ -143,6 +184,5 @@ impl App for MemView {
     }
 }
 
-const COLUMNS: usize = 8;
 const ROWS: usize = 8;
 const HEX_ASCII: &[u8] = "0123456789abcdef".as_bytes();

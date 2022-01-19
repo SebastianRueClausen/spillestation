@@ -6,7 +6,7 @@ pub mod ram;
 
 use crate::gpu::{Gpu, Vram};
 use crate::util::BitExtract;
-use crate::cdrom::CdRom;
+use crate::cdrom::{CdRom, CdRomCmd};
 use crate::cpu::{Irq, IrqState, cop0::Exception};
 use crate::timer::{Timers, TimerId};
 use crate::spu::Spu;
@@ -14,11 +14,15 @@ use crate::io_port::IoPort;
 use crate::system::Cycle;
 
 use std::collections::BinaryHeap;
+use std::collections::binary_heap::Iter as BinaryHeapIter;
 use std::cmp::Ordering;
+use std::fmt;
 
 use bios::Bios;
-use dma::{BlockTransfer, Port, Direction, Dma, LinkedTransfer, Transfers};
+use dma::{Dma, Port};
 use ram::Ram;
+
+pub use dma::{DmaChan, ChanStat, ChanDir};
 
 pub struct Bus {
     pub cache_ctrl: CacheCtrl,
@@ -27,7 +31,6 @@ pub struct Bus {
     bios: Bios,
     ram: Ram,
     dma: Dma,
-    transfers: Transfers,
     gpu: Gpu,
     cdrom: CdRom,
     timers: Timers,
@@ -48,7 +51,6 @@ impl Bus {
             irq_state: IrqState::new(),
             ram: Ram::new(),
             dma: Dma::new(),
-            transfers: Transfers::new(),
             gpu: Gpu::new(),
             cdrom: CdRom::new(),
             timers: Timers::new(),
@@ -91,6 +93,7 @@ impl Bus {
                 Ok(self.irq_state.load(addr - IrqState::BUS_BEGIN))
             }
             Dma::BUS_BEGIN..=Dma::BUS_END => {
+                self.run_dma();
                 Ok(self.dma.load(addr - Dma::BUS_BEGIN))
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
@@ -153,12 +156,11 @@ impl Bus {
             }
             Dma::BUS_BEGIN..=Dma::BUS_END => {
                 self.dma.store(
-                    &mut self.transfers,
                     &mut self.schedule,
                     addr - Dma::BUS_BEGIN,
                     val,
                 );
-                self.exec_transfers();
+                self.run_dma();
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
                 self.cdrom.store::<T>(
@@ -168,7 +170,7 @@ impl Bus {
                 );
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
-                self.gpu.store::<T>(addr - Gpu::BUS_BEGIN, val);
+                self.gpu.store::<T>(&mut self.schedule, addr - Gpu::BUS_BEGIN, val);
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
                 self.io_port.store(&mut self.irq_state, addr - IoPort::BUS_BEGIN, val);
@@ -195,87 +197,14 @@ impl Bus {
 
     pub fn handle_event(&mut self, event: Event) {
         match event {
-            Event::RunCdRom => {
-                self.cdrom.run(&mut self.schedule);
-            }
-            Event::CdRomReponse(cmd) => {
-                self.cdrom.reponse(cmd);
-            }
-            Event::RunGpu => {
-                self.gpu.run(&mut self.schedule, &mut self.timers);
-            }
-            Event::TimerIrqEnable(id) => {
-                self.timers.enable_irq_master_flag(id);
-            }
-            Event::RunTimer(id) => {
-                self.timers.run_timer(&mut self.schedule, id);
-            }
+            Event::RunCdRom => self.cdrom.run(&mut self.schedule),
+            Event::CdRomResponse(cmd) => self.cdrom.reponse(cmd),
+            Event::RunGpu => self.gpu.run(&mut self.schedule, &mut self.timers),
+            Event::GpuCmdDone => self.gpu.cmd_done(),
+            Event::RunDmaChan(port) => self.run_dma_chan(port),
+            Event::TimerIrqEnable(id) => self.timers.enable_irq_master_flag(id),
+            Event::RunTimer(id) => self.timers.run_timer(&mut self.schedule, id),
             Event::IrqTrigger(..) => unreachable!(),
-        }
-    }
-
-    /// This executes waiting DAM transfers.
-    fn exec_transfers(&mut self) {
-        while let Some(transfer) = self.transfers.block.pop() {
-            trace!("DMA block transfer: {:?}", transfer);
-            match transfer.direction {
-                Direction::ToPort => {
-                    self.trans_block_to_port(&transfer);
-                }
-                Direction::ToRam => {
-                    self.trans_block_to_ram(&transfer);
-                }
-            }
-            self.dma.channel_done(transfer.port, &mut self.schedule);
-        }
-        while let Some(transfer) = self.transfers.linked.pop() {
-            trace!("DMA linked transfer: {:?}", transfer);
-            self.trans_linked_to_port(&transfer);
-            self.dma.channel_done(Port::Gpu, &mut self.schedule);
-        }
-    }
-
-    /// Execute transfers to a port.
-    fn trans_block_to_port(&mut self, transfer: &BlockTransfer) {
-        (0..transfer.size).fold(transfer.start, |address, _| {
-            let value = self.ram.load::<Word>(address & 0x001f_fffc);
-            match transfer.port {
-                Port::Gpu => self.gpu.dma_store(value),
-                _ => todo!(),
-            }
-            address.wrapping_add(transfer.increment)
-        });
-    }
-   
-    /// Execute transfers to RAM from a port.
-    fn trans_block_to_ram(&mut self, transfer: &BlockTransfer) {
-        (0..transfer.size).rev().fold(transfer.start, |addr, remain| {
-            self.ram.store::<Word>(addr & 0x001f_fffc, match transfer.port {
-                Port::Otc => match remain {
-                    1 => 0x00ff_ffff,
-                    _ => addr.wrapping_sub(4).extract_bits(0, 21),
-                }
-                Port::Gpu => self.gpu.dma_load(),
-                _ => todo!(),
-            });
-            addr.wrapping_add(transfer.increment)
-        });
-    }
-
-    fn trans_linked_to_port(&mut self, transfer: &LinkedTransfer) {
-        let mut addr = transfer.start;
-        loop {
-            let header = self.ram.load::<Word>(addr & 0x001f_fffc);
-            // Bit 24..31 in the header represents the size of the node, which get's transfered to
-            // the port.
-            for _ in 0..header.extract_bits(24, 31) {
-                addr = addr.wrapping_add(4).extract_bits(0, 23);
-                self.gpu.dma_store(self.ram.load::<Word>(addr));
-            }
-            addr = header.extract_bits(0, 23);
-            if addr == 0x00ff_ffff {
-                break;
-            }
         }
     }
 }
@@ -284,13 +213,30 @@ impl Bus {
 pub enum Event {
     RunCdRom,
     RunGpu,
-    CdRomReponse(u8),
+    GpuCmdDone,
+    RunDmaChan(Port),
+    CdRomResponse(CdRomCmd),
     TimerIrqEnable(TimerId),
     RunTimer(TimerId),
     IrqTrigger(Irq),
 }
 
-struct EventEntry(Cycle, Event);
+impl fmt::Display for Event {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Event::RunCdRom => write!(f, "Run CDROM"),
+            Event::RunGpu => write!(f, "Run GPU"),
+            Event::GpuCmdDone => write!(f, "GPU command done"),
+            Event::RunDmaChan(port) => write!(f, "Run DMA Channel: {:?}", port),
+            Event::CdRomResponse(cmd) => write!(f, "CDROM reponse for command: {}", cmd),
+            Event::TimerIrqEnable(id) => write!(f, "Enable IRQ for timer: {}", id),
+            Event::RunTimer(id) => write!(f, "Run timer: {}", id),
+            Event::IrqTrigger(irq) => write!(f, "Trigger IRQ of type: {}", irq),
+        }
+    }
+}
+
+pub struct EventEntry(pub Cycle, pub Event);
 
 impl PartialEq for EventEntry {
     fn eq(&self, other: &Self) -> bool {
@@ -330,6 +276,11 @@ impl Schedule {
             cycle: 0,
             events: BinaryHeap::with_capacity(16),
         }
+    }
+
+    /// Returns iter of all event entries in the event heap in arbitary order.
+    pub fn iter<'a>(&'a self) -> BinaryHeapIter<'a, EventEntry> {
+        self.events.iter()
     }
 
     /// Schedule an ['Event'] at a given absolute cycle.

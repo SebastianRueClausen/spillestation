@@ -791,7 +791,8 @@ impl Cpu {
             match cop {
                 // Load from COP2 data register.
                 0x0 => {
-                   todo!() 
+                    let val = self.gte.data_load(op.rd());
+                    self.add_load_slot(op.rt(), val);
                 }
                 // Load from COP2 control register.
                 0x2 => {
@@ -799,7 +800,9 @@ impl Cpu {
                 }
                 // Store to COP2 data register.
                 0x4 => {
-                    todo!()
+                    let val = self.read_reg(op.rt());
+                    self.fetch_load_slot();
+                    self.gte.data_store(op.rd(), val);
                 }
                 // Store to COP2 control register.
                 0x6 => {
