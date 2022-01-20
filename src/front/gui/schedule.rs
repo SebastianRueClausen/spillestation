@@ -1,6 +1,10 @@
 use super::App;
+
 use crate::system::System;
-use std::{fmt::Write, time::Duration};
+use crate::render::Renderer;
+
+use std::fmt::Write;
+use std::time::Duration;
 
 #[derive(Default)]
 pub struct ScheduleView {
@@ -12,7 +16,7 @@ impl App for ScheduleView {
         "Schedule View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
+    fn update_tick(&mut self, _: Duration, system: &mut System, _: &Renderer) {
         let now = system.cpu.bus().schedule.cycle();
 
         self.cycle.clear();

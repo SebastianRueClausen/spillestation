@@ -1,6 +1,8 @@
 use super::App;
+
 use crate::timer::{Timers, TimerId};
 use crate::system::System;
+use crate::render::Renderer;
 
 use std::fmt::Write;
 use std::time::Duration;
@@ -38,7 +40,7 @@ impl App for TimerView {
         "Timer View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
+    fn update_tick(&mut self, _: Duration, system: &mut System, _: &Renderer) {
         self.fields.iter_mut().for_each(|fields|
             fields.iter_mut().for_each(|field| field.clear())
         );

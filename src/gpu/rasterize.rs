@@ -145,12 +145,23 @@ impl Gpu {
         // colors, which could depend on the texture cache, which seems pretty easy to emulate when
         // that get's implemented.
         //
-        // TODO: How much time does transparency take.
-        match (Shade::is_shaded(), Tex::is_textured()) {
+        // TODO: How much time does transparency take?
+        let cycles = match (Shade::is_shaded(), Tex::is_textured()) {
             (true, true) => 500 + pixels_drawn * 2,
             (false, true) => 300 + pixels_drawn * 2,
             (true, false) => 180 + pixels_drawn * 2,
-            (false, false) => pixels_drawn,
+            (false, false) => {
+                if Trans::is_transparent() {
+                    (pixels_drawn * 3) / 2
+                } else {
+                    pixels_drawn
+                }
+            }
+        };
+        if !self.status.draw_to_displayed() && self.status.interlaced480() {
+            cycles / 2
+        } else {
+            cycles
         }
     }
 

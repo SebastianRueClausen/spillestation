@@ -1,8 +1,13 @@
 //! GUI app that displays information about the GPU.
 
 use super::App;
-use crate::{gpu::Gpu, system::System};
-use std::{fmt::Write, time::Duration};
+
+use crate::gpu::Gpu;
+use crate::system::System;
+use crate::render::Renderer;
+
+use std::fmt::Write;
+use std::time::Duration;
 
 /// ['App'] which shows the current status of the ['Gpu'].
 #[derive(Default)]
@@ -53,7 +58,7 @@ impl App for GpuStatus {
         "GPU Status"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
+    fn update_tick(&mut self, _: Duration, system: &mut System, _: &Renderer) {
         self.fields.iter_mut().for_each(|field| field.clear());
         if let Err(err) = self.write_fields(system.cpu.bus().gpu()) {
             eprintln!("{}", err);

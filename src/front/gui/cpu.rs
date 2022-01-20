@@ -2,6 +2,7 @@ use super::App;
 
 use crate::cpu::{Cpu, REGISTER_NAMES};
 use crate::system::{System, DebugStop, Breaks};
+use crate::render::Renderer;
 use crate::timing::CPU_HZ;
 
 use std::fmt::Write;
@@ -35,7 +36,7 @@ impl App for CpuStatus {
         "CPU Status"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
+    fn update_tick(&mut self, _: Duration, system: &mut System, _: &Renderer) {
         self.fields
             .iter_mut()
             .for_each(|field| field.clear());
@@ -187,13 +188,13 @@ impl App for CpuCtrl {
         "CPU Control"
     }
 
-    fn update_tick(&mut self, dt: Duration, sys: &mut System) {
+    fn update_tick(&mut self, dt: Duration, sys: &mut System, renderer: &Renderer) {
         let stop = match self.mode {
             RunMode::Step { ref mut stepped, amount } => {
                 if *stepped {
                     *stepped = false;
                     self.break_message = None;
-                    sys.step_debug(amount, Breaks {
+                    sys.step_debug(amount, renderer, Breaks {
                         code: self.code_bps.addrs.as_slice(),
                         store: &[],
                         load: &[],
@@ -205,7 +206,7 @@ impl App for CpuCtrl {
             RunMode::Run { speed, ref mut remainder } => {
                 self.break_message = None;
                 let time = *remainder + dt;
-                let (rem, stop) = sys.run_debug(speed, time, Breaks {
+                let (rem, stop) = sys.run_debug(speed, time, renderer, Breaks {
                     code: self.code_bps.addrs.as_slice(),
                     store: &[],
                     load: &[],

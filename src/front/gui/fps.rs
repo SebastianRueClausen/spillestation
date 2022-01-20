@@ -1,6 +1,7 @@
 //! Simple FPS counter GUI app.
 
 use super::app::App;
+
 use std::fmt::Write;
 use std::time::Duration;
 

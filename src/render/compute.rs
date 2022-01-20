@@ -110,7 +110,7 @@ impl ComputeStage {
     /// Generate ['Canvas'] from the playstations VRAM. First it transfers the entire VRAM
     /// to the shdader, then it dispatches the compute shader for each pixel in ['Canvas'].
     pub fn compute_canvas(
-        &mut self,
+        &self,
         vram: &Vram,
         draw_info: &DrawInfo,
         encoder: &mut wgpu::CommandEncoder,

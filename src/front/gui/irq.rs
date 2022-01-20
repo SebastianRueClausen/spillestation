@@ -1,5 +1,9 @@
 use super::App;
-use crate::{cpu::Irq, system::System};
+
+use crate::cpu::Irq;
+use crate::system::System;
+use crate::render::Renderer;
+
 use std::time::Duration;
 
 #[derive(Default)]
@@ -13,7 +17,7 @@ impl App for IrqView {
         "IRQ View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
+    fn update_tick(&mut self, _: Duration, system: &mut System, _: &Renderer) {
         let state = &mut system.cpu.bus_mut().irq_state;
         self.flags.iter_mut().zip(IRQS).for_each(|(flag, irq)| {
             *flag = (state.is_triggered(irq), state.is_masked(irq));

@@ -13,7 +13,8 @@ pub mod timer;
 pub mod vram;
 pub mod schedule;
 
-use super::{RenderCtx, SurfaceSize};
+use crate::render::{Renderer, SurfaceSize};
+
 use egui::{ClippedMesh, CtxRef};
 use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
 use egui_winit::State as WinState;
@@ -30,20 +31,20 @@ pub struct GuiCtx {
 }
 
 impl GuiCtx {
-    pub fn new(scale_factor: f32, render_ctx: &RenderCtx) -> Self {
+    pub fn new(scale_factor: f32, renderer: &Renderer) -> Self {
         let egui_ctx = CtxRef::default();
         egui_ctx.set_visuals(visuals());
         let win_state = WinState::from_pixels_per_point(scale_factor);
         let SurfaceSize {
             width: physical_width,
             height: physical_height,
-        } = render_ctx.surface_size;
+        } = renderer.surface_size;
         let screen_descriptor = ScreenDescriptor {
             physical_width,
             physical_height,
             scale_factor,
         };
-        let render_pass = RenderPass::new(&render_ctx.device, render_ctx.surface_format, 1);
+        let render_pass = RenderPass::new(&renderer.device, renderer.surface_format, 1);
         Self {
             egui_ctx,
             win_state,
@@ -72,7 +73,7 @@ impl GuiCtx {
     /// Render the current frame to the screen.
     pub fn render<F>(
         &mut self,
-        render_ctx: &RenderCtx,
+        render_ctx: &Renderer,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
         window: &Window,

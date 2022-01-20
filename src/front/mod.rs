@@ -4,13 +4,11 @@
 mod config;
 mod gui;
 
-pub mod render;
-
 use crate::{system::System, bus::bios::Bios, timing};
+use crate::render::{Renderer, SurfaceSize};
 
 use config::Config;
 use gui::{App, app_menu::AppMenu, GuiCtx, config::Configurator};
-use render::{Canvas, ComputeStage, DrawStage, RenderCtx, SurfaceSize};
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -18,8 +16,6 @@ use std::time::{Duration, Instant};
 use winit::event::{ElementState, Event, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{WindowBuilder, Window};
-
-pub use render::compute::DrawInfo;
 
 /// The different ways the emulator can run.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -57,11 +53,8 @@ enum Stage {
 /// running the emulator and rendering the output of the playstation to.
 pub struct Frontend {
     stage: Stage,
-    render_ctx: RenderCtx,
     gui_ctx: GuiCtx,
-    canvas: Canvas,
-    comp_pass: ComputeStage,
-    draw_pass: DrawStage,
+    renderer: Renderer,
     event_loop: EventLoop<()>,
     window: Window,
     /// When the last frame was drawn.
@@ -120,16 +113,14 @@ impl Frontend {
                                 width: physical_size.width,
                                 height: physical_size.height,
                             };
-                            self.render_ctx.resize(size);
-                            self.draw_pass.resize(&self.render_ctx, &self.canvas);
+                            self.renderer.resize(size);
                             self.gui_ctx.resize(size);
                         }
                         WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                            self.render_ctx.resize(SurfaceSize::new(
+                            self.renderer.resize(SurfaceSize::new(
                                 new_inner_size.width,
                                 new_inner_size.height,
                             ));
-                            self.draw_pass.resize(&self.render_ctx, &self.canvas);
                             self.gui_ctx.set_scale_factor(self.window.scale_factor() as f32);
                         }
                         // Handle keyboard input.
@@ -150,20 +141,11 @@ impl Frontend {
                 }
                 Event::RedrawRequested(_) => match self.stage {
                     Stage::Running {
-                        ref mut system,
                         ref mut app_menu,
                         ref mut mode,
                         ..
                     } => {
-                        self.render_ctx.render(|encoder, view, renderer| {
-                            self.comp_pass.compute_canvas(
-                                system.cpu.bus().vram(),
-                                &system.cpu.bus().gpu().draw_info(),
-                                encoder,
-                                &renderer.queue,
-                                &self.canvas,
-                            );
-                            self.draw_pass.render_canvas(encoder, view);
+                        self.renderer.render(|encoder, view, renderer| {
                             let res = self.gui_ctx.render(renderer, encoder, view, &self.window, |gui| {
                                 app_menu.show(gui, mode);
                             });
@@ -175,8 +157,7 @@ impl Frontend {
                     }
                     Stage::Config { ref mut configurator, ref mut bios } => {
                         let mut config_open = true;
-                        self.render_ctx.render(|encoder, view, renderer| {
-                            self.draw_pass.render_canvas(encoder, view);
+                        self.renderer.render(|encoder, view, renderer| {
                             let res = self.gui_ctx.render(renderer, encoder, view, &self.window, |gui| {
                                 configurator.show_window(gui, &mut config_open);
                             });
@@ -217,10 +198,10 @@ impl Frontend {
                     } => {
                         match mode {
                             RunMode::Debug => {
-                                app_menu.update_tick(last_update.elapsed(), system);
+                                app_menu.update_tick(last_update.elapsed(), system, &self.renderer);
                             }
                             RunMode::Emulation => {
-                                system.run(last_update.elapsed());
+                                system.run(last_update.elapsed(), &self.renderer);
                             }
                         }
                         *last_update = Instant::now();
@@ -285,17 +266,13 @@ impl Frontend {
             .with_title("spillestation")
             .build(&event_loop)
             .expect("Failed to create window");
-        let render_ctx = RenderCtx::new(&window);
-        let canvas = Canvas::new(&render_ctx.device, SurfaceSize::new(640, 480));
+        let renderer = Renderer::new(&window);
         let frame_time = Duration::from_secs_f32(1.0 / timing::NTSC_FPS as f32);
         Self {
             stage: Stage::Startup,
-            gui_ctx: GuiCtx::new(window.scale_factor() as f32, &render_ctx),
-            comp_pass: ComputeStage::new(&render_ctx.device, &canvas),
-            draw_pass: DrawStage::new(&render_ctx, &canvas),
+            gui_ctx: GuiCtx::new(window.scale_factor() as f32, &renderer),
             last_draw: Instant::now(),
-            render_ctx,
-            canvas,
+            renderer,
             event_loop,
             window,
             frame_time,

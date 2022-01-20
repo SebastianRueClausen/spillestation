@@ -1,6 +1,13 @@
 use super::App;
-use crate::{bus::{Byte, Word}, cpu::Opcode, system::System};
-use std::{fmt::Write, str, time::Duration};
+
+use crate::bus::{Byte, Word};
+use crate::cpu::Opcode;
+use crate::system::System;
+use crate::render::Renderer;
+
+use std::fmt::Write;
+use std::str;
+use std::time::Duration;
 
 /// One cell in the current value matrix. This is two hex characters which represent one byte.
 type Cell = [u8; 2];
@@ -55,7 +62,7 @@ impl App for MemView {
         "Memory View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
+    fn update_tick(&mut self, _: Duration, system: &mut System, _: &Renderer) {
         // The start address must be 4-byte aligned. This is a hacky way to round down to next
         // multiple of 4.
         let start_addr = ((self.start_addr + 4) & !3) - 4;

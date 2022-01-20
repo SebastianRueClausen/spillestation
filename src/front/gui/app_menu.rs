@@ -10,7 +10,10 @@ use super::timer::TimerView;
 use super::irq::IrqView;
 use super::schedule::ScheduleView;
 
-use crate::{system::System, front::RunMode};
+use crate::system::System;
+use crate::render::Renderer;
+use crate::front::RunMode;
+
 use std::time::Duration;
 
 /// Controller/Menu for all the apps available. It's responsible for both updating, rendering and
@@ -44,10 +47,10 @@ impl AppMenu {
     }
 
     /// Update all the apps that require it. Called each update cycle.
-    pub fn update_tick(&mut self, dt: Duration, system: &mut System) {
+    pub fn update_tick(&mut self, dt: Duration, system: &mut System, renderer: &Renderer) {
         for (app, open) in &mut self.apps {
             if *open {
-                app.update_tick(dt, system); 
+                app.update_tick(dt, system, renderer); 
             }
         }
     }

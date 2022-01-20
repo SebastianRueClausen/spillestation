@@ -1,8 +1,12 @@
 //! GUI app to view the content of the playstations VRAM.
 
 use super::App;
+
 use crate::system::System;
-use std::{str, time::Duration};
+use crate::render::Renderer;
+
+use std::str;
+use std::time::Duration;
 
 /// One cell in the value matrix, which represent a 16-bit integer represented as 4 hex digits.
 type Cell = [u8; 4];
@@ -23,7 +27,7 @@ impl App for VramView {
         "VRAM View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
+    fn update_tick(&mut self, _: Duration, system: &mut System, _: &Renderer) {
         for (i, row) in self.matrix.iter_mut().enumerate() {
             for (j, col) in row.iter_mut().enumerate() {
                 let value = system.cpu

@@ -14,6 +14,7 @@ mod timing;
 mod system;
 mod spu;
 mod io_port;
+mod render;
 mod asm;
 
 use front::Frontend;

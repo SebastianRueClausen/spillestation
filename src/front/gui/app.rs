@@ -1,4 +1,6 @@
 use crate::system::System;
+use crate::render::Renderer;
+
 use std::time::Duration;
 
 /// Egui App/Window.
@@ -14,7 +16,7 @@ pub trait App {
     fn frame_tick(&mut self, _: Duration) { }
 
     /// Called every update.
-    fn update_tick(&mut self,_dt: Duration, _: &mut System) { }
+    fn update_tick(&mut self,_dt: Duration, _: &mut System, _: &Renderer) { }
 
     fn name(&self) -> &'static str;
 } 

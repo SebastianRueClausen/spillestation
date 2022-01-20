@@ -6,13 +6,13 @@ mod rasterize;
 
 pub mod vram;
 
-use crate::front::DrawInfo;
 use crate::util::{BitExtract, BitSet};
 use crate::cpu::Irq;
 use crate::bus::{DmaChan, ChanDir, Schedule, Event, BusMap, AddrUnit};
 use crate::timing;
 use crate::timer::Timers;
 use crate::system::Cycle;
+use crate::render::DrawInfo;
 
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
@@ -390,6 +390,7 @@ struct Timing {
     in_hblank: bool,
     in_vblank: bool,
     last_run: Cycle,
+    frame_count: u64,
     /// How many cycles it takes to draw a scanline which depend on ['VideoMode'].
     cycles_per_scln: Cycle,
     /// How many scanlines there are which depend on ['VideoMode'].
@@ -408,6 +409,7 @@ impl Timing {
             in_hblank: false,
             in_vblank: false,
             last_run: 0,
+            frame_count: 0,
             cycles_per_scln: vmode.cycles_per_scln(),
             scln_count: vmode.scln_count(),
             vbegin: vmode.vbegin(),
@@ -629,6 +631,10 @@ impl Gpu {
         self.timing.in_vblank
     }
 
+    pub fn frame_count(&self) -> u64 {
+        self.timing.frame_count
+    }
+
     pub fn cmd_done(&mut self) {
         self.state = State::Idle;
     }
@@ -687,6 +693,7 @@ impl Gpu {
                 // If we are either leaving or entering Vblank.
                 if self.timing.in_vblank != in_vblank {
                     if in_vblank {
+                        self.timing.frame_count += 1;
                         schedule.schedule_now(Event::IrqTrigger(Irq::VBlank));
                     }
                     self.timing.in_vblank = in_vblank;
