@@ -6,16 +6,14 @@ use ultraviolet::vec::Vec3;
 
 /// The shading mode of a draw call.
 pub trait Shading {
-    fn is_shaded() -> bool;
+    const IS_SHADED: bool;
 }
 
 /// Not shaded ie. each vertex doesn't have a color attribute.
 pub struct UnShaded;
 
 impl Shading for UnShaded {
-    fn is_shaded() -> bool {
-        false
-    }
+    const IS_SHADED: bool = false;
 }
 
 /// Shaded i.e. each vertex has a color attribute. The colors get's interpolated between each
@@ -23,60 +21,43 @@ impl Shading for UnShaded {
 pub struct Shaded;
 
 impl Shading for Shaded {
-    fn is_shaded() -> bool {
-        true
-    }
+    const IS_SHADED: bool = true;
 }
 
 /// The texture mode of a draw call.
 pub trait Textureing {
-    fn is_textured() -> bool;
-    fn is_raw() -> bool;
+    const IS_TEXTURED: bool;
+    const IS_RAW: bool;
 }
 
 /// The shap is only colored by shading.
 pub struct UnTextured;
 
 impl Textureing for UnTextured {
-    fn is_textured() -> bool {
-        false
-    }
-
-    fn is_raw() -> bool {
-        false
-    }
+    const IS_TEXTURED: bool = false;
+    const IS_RAW: bool = false;
 }
 
 /// The shape is textured and get's blended with with shading.
 pub struct Textured;
 
 impl Textureing for Textured {
-    fn is_textured() -> bool {
-        true
-    }
-
-    fn is_raw() -> bool {
-        false
-    }
+    const IS_TEXTURED: bool = true;
+    const IS_RAW: bool = false;
 }
 
 /// The shape is textured and doesn't get blended with shading.
 pub struct TexturedRaw;
 
 impl Textureing for TexturedRaw {
-    fn is_textured() -> bool {
-        true
-    }
-
-    fn is_raw() -> bool {
-        true
-    }
+    const IS_TEXTURED: bool = true;
+    const IS_RAW: bool = true;
 }
 
 /// The transparency mode of a draw call, basically how the color of a shape get's blended with the
 /// background color.
 pub trait Transparency {
-    fn is_transparent() -> bool;
+    const IS_TRANSPARENT: bool;
 }
 
 /// The shape is transparent or semi-transparent, which means the color of the shape get's blended
@@ -84,18 +65,14 @@ pub trait Transparency {
 pub struct Transparent;
 
 impl Transparency for Transparent {
-    fn is_transparent() -> bool {
-        true
-    }
+    const IS_TRANSPARENT: bool = true;
 }
 
 /// The shape is opaque and doesn't get blended with the background.
 pub struct Opaque;
 
 impl Transparency for Opaque {
-    fn is_transparent() -> bool {
-        false
-    }
+    const IS_TRANSPARENT: bool = false;
 }
 
 impl Gpu {
@@ -146,12 +123,12 @@ impl Gpu {
         // that get's implemented.
         //
         // TODO: How much time does transparency take?
-        let cycles = match (Shade::is_shaded(), Tex::is_textured()) {
+        let cycles = match (Shade::IS_SHADED, Tex::IS_TEXTURED) {
             (true, true) => 500 + pixels_drawn * 2,
             (false, true) => 300 + pixels_drawn * 2,
             (true, false) => 180 + pixels_drawn * 2,
             (false, false) => {
-                if Trans::is_transparent() {
+                if Trans::IS_TRANSPARENT {
                     (pixels_drawn * 3) / 2
                 } else {
                     pixels_drawn
@@ -215,7 +192,7 @@ impl Gpu {
                 }
                 // If the triangle is shaded, we interpolate between the colors of each vertex.
                 // Otherwise the shade is just the base color/shade.
-                let shade = if Shade::is_shaded() {
+                let shade = if Shade::IS_SHADED {
                     let r = v1.color.r as f32 * res.x
                         + v2.color.r as f32 * res.y
                         + v3.color.r as f32 * res.z;
@@ -230,7 +207,7 @@ impl Gpu {
                     shade
                 };
 
-                let color = if Tex::is_textured() {
+                let color = if Tex::IS_TEXTURED {
                     let uv = TexCoord {
                         u: (v1.texcoord.u as f32 * res.x
                             + v2.texcoord.u as f32 * res.y
@@ -242,7 +219,7 @@ impl Gpu {
                     let texel = self.load_texture_color(params, uv);
                     // If the triangle is not textured raw, the texture color get's blended with the
                     // shade. Otherwise it doesn't.
-                    let texture_color = if Tex::is_raw() {
+                    let texture_color = if Tex::IS_RAW {
                         texel.as_color()
                     } else {
                         texel.as_color().shade_blend(shade)
@@ -250,7 +227,7 @@ impl Gpu {
                     // If both the triangle and the texel is transparent, the texture color
                     // get's blended with the background using the blending function specified in
                     // the status register.
-                    if Trans::is_transparent() && texel.is_transparent() {
+                    if Trans::IS_TRANSPARENT && texel.is_transparent() {
                         let background = Color::from_u16(self.vram.load_16(p.x, p.y));
                         self.status
                             .trans_blending()
@@ -261,7 +238,7 @@ impl Gpu {
                 } else {
                     // If the triangle isn't textured, but transparent, the shade get's blended with
                     // the background color.
-                    if Trans::is_transparent() {
+                    if Trans::IS_TRANSPARENT {
                         let background = Color::from_u16(self.vram.load_16(p.x, p.y));
                         self.status.trans_blending().blend(shade, background)
                     } else {

@@ -8,7 +8,7 @@ use crate::timing::CPU_HZ;
 use std::fmt::Write;
 use std::time::Duration;
 
-/// ['App'] which shows the status of the CPU. It shows the value of all the registers and PC and
+/// ['App'] to shows the status of the CPU. It shows the value of all the registers and PC and
 /// such.
 #[derive(Default)]
 pub struct CpuStatus {
@@ -26,7 +26,7 @@ impl CpuStatus {
         write!(&mut self.fields[0], "{:08x}", cpu.hi)?;
         write!(&mut self.fields[1], "{:08x}", cpu.lo)?;
         write!(&mut self.fields[2], "{:08x}", cpu.pc)?;
-        write!(&mut self.fields[3], "{}", cpu.current_instruction())?;
+        write!(&mut self.fields[3], "{}", cpu.curr_ins())?;
         Ok(())
     }
 }

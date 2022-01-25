@@ -1,5 +1,5 @@
 use super::{TexelDepth, TransBlend};
-use crate::util::BitExtract;
+use crate::util::Bit;
 
 /// A point on the screen or in VRAM.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -56,7 +56,7 @@ impl Texel {
     }
 
     pub fn is_transparent(self) -> bool {
-        self.0.extract_bit(15) == 1
+        self.0.bit(15)
     }
 }
 
@@ -77,17 +77,17 @@ impl Color {
 
     pub fn from_u16(value: u16) -> Self {
         Self {
-            r: (value.extract_bits(0, 4) << 3) as u8,
-            g: (value.extract_bits(5, 9) << 3) as u8,
-            b: (value.extract_bits(10, 14) << 3) as u8,
+            r: (value.bit_range(0, 4) << 3) as u8,
+            g: (value.bit_range(5, 9) << 3) as u8,
+            b: (value.bit_range(10, 14) << 3) as u8,
         }
     }
 
     pub fn from_cmd(cmd: u32) -> Self {
         Self {
-            r: cmd.extract_bits(0, 7) as u8,
-            g: cmd.extract_bits(8, 15) as u8,
-            b: cmd.extract_bits(16, 23) as u8,
+            r: cmd.bit_range(0, 7) as u8,
+            g: cmd.bit_range(8, 15) as u8,
+            b: cmd.bit_range(16, 23) as u8,
         }
     }
 
@@ -148,7 +148,7 @@ impl Color {
     }
 
     pub fn dither(self, point: Point) -> Self {
-        let (x, y) = (point.x.extract_bits(0, 1), point.y.extract_bits(0, 1));
+        let (x, y) = (point.x.bit_range(0, 1), point.y.bit_range(0, 1));
         let dither = DITHER_LUT[y as usize][x as usize];
         Self {
             r: ((self.r as i32) + dither).clamp(0, 255) as u8,

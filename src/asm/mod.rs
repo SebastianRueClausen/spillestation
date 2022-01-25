@@ -1,1 +1,3 @@
-// mod assembler;
+mod assembler;
+
+pub use assembler::assemble;

@@ -1,5 +1,5 @@
 use super::{AddrUnit, BusMap};
-use crate::util::BitExtract;
+use crate::util::Bit;
 
 const RAM_SIZE: usize = 2 * 1024 * 1024;
 
@@ -16,14 +16,14 @@ impl Ram {
 
     pub fn load<T: AddrUnit>(&mut self, offset: u32) -> u32 {
         // Make sure RAM is mirrorred four time.
-        let offset = offset.extract_bits(0, 20) as usize;
+        let offset = offset.bit_range(0, 20) as usize;
         (0..T::WIDTH).fold(0, |value, byte| {
             value | (self.data[offset + byte] as u32) << (8 * byte)
         })
     }
 
     pub fn store<T: AddrUnit>(&mut self, offset: u32, val: u32) {
-        let offset = offset.extract_bits(0, 20) as usize;
+        let offset = offset.bit_range(0, 20) as usize;
         for i in 0..T::WIDTH {
             self.data[offset + i] = (val >> (8 * i)) as u8;
         }

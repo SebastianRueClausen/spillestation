@@ -1,6 +1,6 @@
 use std::fmt;
 use crate::bus::BusMap;
-use crate::util::BitExtract;
+use crate::util::Bit;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,11 +59,11 @@ impl IrqState {
     }
 
     pub fn is_triggered(&self, irq: Irq) -> bool {
-        self.status.extract_bit(irq as u32) == 1
+        self.status.bit(irq as usize)
     }
 
     pub fn is_masked(&self, irq: Irq) -> bool {
-        self.mask.extract_bit(irq as u32) == 1
+        self.mask.bit(irq as usize)
     }
 
     pub fn store(&mut self, offset: u32, val: u32) {

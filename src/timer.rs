@@ -1,4 +1,4 @@
-use crate::util::{BitExtract, BitSet};
+use crate::util::{Bit, BitSet};
 use crate::cpu::Irq;
 use crate::timing;
 use crate::bus::{Schedule, Event, BusMap};
@@ -137,11 +137,11 @@ pub struct Mode(u16);
 impl Mode {
     /// If the is false, then the timer effectively runs in ['SyncMode::FreeRun'] sync mode.
     pub fn sync_enabled(self) -> bool {
-        self.0.extract_bit(0) == 1
+        self.0.bit(0)
     }
 
     pub fn sync_mode(self, timer: TimerId) -> SyncMode {
-        match (timer, self.0.extract_bits(1, 2)) {
+        match (timer, self.0.bit_range(1, 2)) {
             (TimerId::Tmr0, 0) => SyncMode::HblankPause,
             (TimerId::Tmr0, 1) => SyncMode::HblankReset,
             (TimerId::Tmr0, 2) => SyncMode::HblankResetAndRun,
@@ -159,35 +159,35 @@ impl Mode {
     /// If this is true, the counter should reset whenever target is reached, otherwise the counter
     /// should reset when the counter overflows.
     pub fn reset_on_target(self) -> bool {
-        self.0.extract_bit(3) == 1
+        self.0.bit(3)
     }
 
     /// If this is true, the timer triggers an interrupt when the target is reached.
     pub fn irq_on_target(self) -> bool {
-        self.0.extract_bit(4) == 1
+        self.0.bit(4)
     }
 
     /// If this is true, the timer triggers an interrupt on overflow.
     pub fn irq_on_overflow(self) -> bool {
-        self.0.extract_bit(5) == 1
+        self.0.bit(5)
     }
 
     /// If this is true, the timer triggers an interrupt each time it hits the target or overflows,
     /// dependent on ['irq_on_target'] and ['irq_on_overflow']. If it's false, it won't stop the
     /// timer after first interrupt, but will just avoid triggering again.
     pub fn irq_repeat(self) -> bool {
-        self.0.extract_bit(6) == 1
+        self.0.bit(6)
     }
 
     /// If this is true, the timer toggles ['master_irq_flag'] after each interrupt. Otherwise, it
     /// will be set all the time except a few cycles after an interrupt.
     pub fn irq_toggle_mode(self) -> bool {
-        self.0.extract_bit(7) == 1
+        self.0.bit(7)
     }
 
     /// The source of the timers clock.
     pub fn clock_source(self, timer: TimerId) -> ClockSource {
-        match (timer, self.0.extract_bits(8, 9)) {
+        match (timer, self.0.bit_range(8, 9)) {
             // All the timers can run at system clock speed.
             (TimerId::Tmr0 | TimerId::Tmr1, 0 | 2) | (TimerId::Tmr2, 2 | 3) => {
                 ClockSource::SystemClock
@@ -201,17 +201,17 @@ impl Mode {
 
     /// This is updated whenever ['Mode'] is written to. 
     pub fn master_irq_flag(self) -> bool {
-        self.0.extract_bit(10) == 1
+        self.0.bit(10)
     }
 
     /// If the target has been reached. It gets reset after reading the register.
     pub fn target_reached(self) -> bool {
-        self.0.extract_bit(11) == 1
+        self.0.bit(11)
     }
 
     /// If overflow has been reached. It gets reset after reading the register.
     pub fn overflow_reached(self) -> bool {
-        self.0.extract_bit(12) == 1
+        self.0.bit(12)
     }
 
     fn store(&mut self, val: u16) {
@@ -231,15 +231,15 @@ impl Mode {
     }
 
     fn set_master_irq_flag(&mut self, val: bool) {
-        self.0.set_bit(10, val);
+        self.0 = self.0.set_bit(10, val);
     }
 
     fn set_target_reached(&mut self, val: bool) {
-        self.0.set_bit(11, val);
+        self.0 = self.0.set_bit(11, val);
     }
 
     fn set_overflow_reached(&mut self, val: bool) {
-        self.0.set_bit(12, val);
+        self.0 = self.0.set_bit(12, val);
     }
 }
 
@@ -265,7 +265,7 @@ impl Timer {
     }
 
     fn load(&mut self, offset: u32) -> u32 {
-        match offset.extract_bits(0, 3) {
+        match offset.bit_range(0, 3) {
             0 => {
                 trace!("Timer {} counter read", self.id);
                 self.counter.into()
@@ -280,7 +280,7 @@ impl Timer {
     }
 
     fn store(&mut self, offset: u32, value: u32) {
-        match offset.extract_bits(0, 3) {
+        match offset.bit_range(0, 3) {
             0 => {
                 self.has_triggered = false;
                 self.counter = value as u16;
@@ -416,7 +416,7 @@ impl Timers {
     }
 
     pub fn load(&mut self, schedule: &mut Schedule, offset: u32) -> u32 {
-        let id = TimerId::from_value(offset.extract_bits(4, 5));
+        let id = TimerId::from_value(offset.bit_range(4, 5));
         self.update_timer(schedule, id);
         let (tmr, _) = &mut self.timers[id as usize];
         let val = tmr.load(offset);
@@ -427,7 +427,7 @@ impl Timers {
     }
 
     pub fn store(&mut self, schedule: &mut Schedule, offset: u32, val: u32) {
-        let id = TimerId::from_value(offset.extract_bits(4, 5));
+        let id = TimerId::from_value(offset.bit_range(4, 5));
         self.update_timer(schedule, id);
         let (tmr, _) = &mut self.timers[id as usize];
         tmr.store(offset, val);

@@ -6,19 +6,19 @@ mod gte;
 pub mod irq;
 pub mod opcode;
 
-use crate::util::BitExtract;
+use crate::util::Bit;
 use crate::system::Cycle;
 use super::bus::{Event, AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
 use cop0::{Cop0, Exception};
 use gte::Gte;
 
-pub use opcode::Opcode;
+pub use opcode::{Opcode, RegIdx};
 pub use irq::{IrqState, Irq};
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Clone, Copy)]
 struct DelaySlot {
-    pub register: u32,
-    pub value: u32,
+    pub reg: RegIdx,
+    pub val: u32,
 }
 
 #[derive(Default, Copy, Clone)]
@@ -132,12 +132,13 @@ impl Cpu {
         })
     }
 
-    fn read_reg(&self, index: u32) -> u32 {
-        self.registers[index as usize]
+    fn read_reg(&self, idx: RegIdx) -> u32 {
+        self.registers[idx.0 as usize]
     }
 
-    fn set_reg(&mut self, index: u32, value: u32) {
-        self.registers[index as usize] = value;
+    fn set_reg(&mut self, idx: RegIdx, value: u32) {
+        self.registers[idx.0 as usize] = value;
+        self.registers[0] = 0;
     }
 
     fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
@@ -154,15 +155,19 @@ impl Cpu {
     }
 
     /// Add pending load. If there's already one pending, fetch it.
-    fn add_load_slot(&mut self, register: u32, value: u32) {
-        let eq = (register != self.load_delay.register) as u32;
-        self.set_reg(self.load_delay.register * eq, self.load_delay.value * eq);
-        self.load_delay = DelaySlot { register, value };
+    fn add_load_slot(&mut self, reg: RegIdx, val: u32) {
+        let (sreg, sval) = if self.load_delay.reg != reg {
+            (self.load_delay.reg, self.load_delay.val)
+        } else {
+            (RegIdx::ZERO, 0) 
+        };
+        self.set_reg(sreg, sval);
+        self.load_delay = DelaySlot { reg, val };
     }
 
     /// Fetch pending load if there is any.
     fn fetch_load_slot(&mut self) {
-        self.set_reg(self.load_delay.register, self.load_delay.value);
+        self.set_reg(self.load_delay.reg, self.load_delay.val);
         self.load_delay = DelaySlot::default();
     }
 
@@ -183,10 +188,6 @@ impl Cpu {
         // Offset is shifted 2 bits since PC addresses must be 32-bit aligned.
         self.next_pc = self.pc.wrapping_add(offset << 2);
         self.branched = true;
-        if !Word::is_aligned(self.next_pc) {
-            self.cop0.set_reg(8, self.next_pc);
-            self.throw_exception(Exception::AddressLoadError);
-        }
     }
 
     /// Jump to absolute.
@@ -224,7 +225,7 @@ impl Cpu {
     }
 
     // Used fot debug.
-    pub fn current_instruction(&mut self) -> Opcode {
+    pub fn curr_ins(&mut self) -> Opcode {
         Opcode::new(self.load::<Word>(self.pc).unwrap())
     }
 
@@ -310,8 +311,8 @@ impl Cpu {
                 0x11 => self.op_mthi(opcode),
                 0x12 => self.op_mflo(opcode),
                 0x13 => self.op_mtlo(opcode),
-                0x18 => self.op_mul(opcode),
-                0x19 => self.op_mulu(opcode),
+                0x18 => self.op_mult(opcode),
+                0x19 => self.op_multu(opcode),
                 0x1a => self.op_div(opcode),
                 0x1b => self.op_divu(opcode),
                 0x20 => self.op_add(opcode),
@@ -428,9 +429,45 @@ impl Cpu {
         self.set_reg(op.rd(), pc);
     }
 
+    fn syscall_trace(&mut self) {
+        match self.read_reg(RegIdx::V0) {
+            1 => trace!("syscall: print {}", self.read_reg(RegIdx::A0)),
+            2 | 3 => warn!("syscall: print float"),
+            4 => {
+                let mut addr = self.read_reg(RegIdx::A0);
+                let mut print = String::new();
+                loop {
+                    let c = match self.load::<Byte>(addr) {
+                        Ok(val) => (val as u8) as char,
+                        Err(_) => break,
+                    };
+                    if c == '\n' {
+                        break
+                    }
+                    print.push(c);
+                    addr += 1;
+                }
+                debug!("syscall: print \"{}\"", print);
+            }
+            5 => debug!("syscall: read integer"),
+            6 | 7 => trace!("syscall: read float"),
+            8 => {
+                debug!("syscall: read string"); 
+            }
+            9 => {
+                debug!("syscall: allocate {} bytes", self.read_reg(RegIdx::A0));
+            }
+            10 => debug!("syscall: terminate"),
+            val => debug!("syscall: type {}", val),
+        }
+    }
+
     /// SYSCALL - Throws syscall exception.
     fn op_syscall(&mut self) {
         self.fetch_load_slot();
+        if log_enabled!(log::Level::Trace) {
+            self.syscall_trace();
+        }
         self.throw_exception(Exception::Syscall);
     }
 
@@ -466,11 +503,11 @@ impl Cpu {
         self.fetch_load_slot();
     }
 
-    /// MUL - Signed multiplication.
+    /// MULT - Signed multiplication.
     ///
     /// Multiplication takes different amount of cycles to complete dependent on the size of the
     /// inputs numbers.
-    fn op_mul(&mut self, op: Opcode) {
+    fn op_mult(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs()) as i32;
         let rhs = self.read_reg(op.rt()) as i32;
         let cycles = match if lhs < 0 { !lhs } else { lhs }.leading_zeros() {
@@ -484,8 +521,8 @@ impl Cpu {
         self.add_pending_hi_lo(cycles, (val >> 32) as u32, val as u32);
     }
 
-    /// MULU - Unsigned multiplication.
-    fn op_mulu(&mut self, op: Opcode) {
+    /// MULTU - Unsigned multiplication.
+    fn op_multu(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs());
         let rhs = self.read_reg(op.rt());
         let cycles = match lhs {
@@ -632,8 +669,8 @@ impl Cpu {
         let cond = cond ^ op.bgez() as u32;
         self.fetch_load_slot();
         // Set return register if required.
-        if op.set_ra_on_branch() {
-            self.set_reg(31, self.next_pc);
+        if op.update_ra_on_branch() {
+            self.set_reg(RegIdx::new(31), self.next_pc);
         }
         if cond != 0 {
             self.branch(op.signed_imm());
@@ -650,7 +687,7 @@ impl Cpu {
     fn op_jal(&mut self, op: Opcode) {
         let pc = self.next_pc;
         self.op_j(op);
-        self.set_reg(31, pc);
+        self.set_reg(RegIdx::new(31), pc);
     }
 
     /// BEQ - Branch if equal.
@@ -715,7 +752,7 @@ impl Cpu {
         self.set_reg(op.rt(), val as u32);
     }
 
-    /// SLTI - Set if less than immediate unsigned.
+    /// SLTUI - Set if less than immediate unsigned.
     fn op_sltui(&mut self, op: Opcode) {
         let val = self.read_reg(op.rs()) < op.signed_imm();
         self.fetch_load_slot();
@@ -755,17 +792,17 @@ impl Cpu {
         match op.cop_op() {
             // MFC0 - Move from Co-Processor0.
             0x0 => {
-                let reg = op.rd();
+                let reg = op.rd().0;
                 if reg > 15 {
                     self.throw_exception(Exception::ReservedInstruction);
                 } else {
-                    self.add_load_slot(op.rt(), self.cop0.read_reg(reg));
+                    self.add_load_slot(op.rt(), self.cop0.read_reg(reg.into()));
                 }
             }
             // MTC0 - Move to Co-Processor0.
             0x4 => {
                 self.fetch_load_slot();
-                self.cop0.set_reg(op.rd(), self.read_reg(op.rt()));
+                self.cop0.set_reg(op.rd().0.into(), self.read_reg(op.rt()));
             }
             // RFE - Restore from exception.
             0x10 => {
@@ -785,13 +822,13 @@ impl Cpu {
     /// COP2 - GME instruction.
     fn op_cop2(&mut self, op: Opcode) {
         let cop = op.cop_op();
-        if cop.extract_bit(4) == 1 {
+        if cop.bit(4) {
             self.gte.cmd(op.0);
         } else {
             match cop {
                 // Load from COP2 data register.
                 0x0 => {
-                    let val = self.gte.data_load(op.rd());
+                    let val = self.gte.data_load(op.rd().0.into());
                     self.add_load_slot(op.rt(), val);
                 }
                 // Load from COP2 control register.
@@ -802,13 +839,13 @@ impl Cpu {
                 0x4 => {
                     let val = self.read_reg(op.rt());
                     self.fetch_load_slot();
-                    self.gte.data_store(op.rd(), val);
+                    self.gte.data_store(op.rd().0.into(), val);
                 }
                 // Store to COP2 control register.
                 0x6 => {
                     let val = self.read_reg(op.rt());
                     self.fetch_load_slot();
-                    self.gte.ctrl_store(op.rd(), val);
+                    self.gte.ctrl_store(op.rd().0.into(), val);
                 }
                _ => unreachable!(),
             }
@@ -853,8 +890,8 @@ impl Cpu {
     /// address.
     fn op_lwl(&mut self, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        let val = if self.load_delay.register == op.rt() {
-            self.load_delay.value
+        let val = if self.load_delay.reg == op.rt() {
+            self.load_delay.val
         } else {
             self.read_reg(op.rt())
         };
@@ -921,8 +958,8 @@ impl Cpu {
     /// See 'op_lwl'.
     fn op_lwr(&mut self, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        let val = if self.load_delay.register == op.rt() {
-            self.load_delay.value
+        let val = if self.load_delay.reg == op.rt() {
+            self.load_delay.val
         } else {
             self.read_reg(op.rt())
         };
@@ -1077,7 +1114,7 @@ impl Cpu {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// ILLEGAL - Illegal/Undefined opcode.
+    /// Illegal/Undefined opcode.
     fn op_illegal(&mut self) {
         self.throw_exception(Exception::ReservedInstruction);
     }
@@ -1088,3 +1125,189 @@ pub const REGISTER_NAMES: [&str; 32] = [
     "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
     "ra",
 ];
+
+#[cfg(test)]
+mod tests {
+    use crate::asm;
+    use crate::bus::bios::Bios;
+
+    use super::opcode::RegIdx;
+    use super::Cpu;
+
+    fn run_cpu(cpu: &mut Cpu) {
+        loop {
+            let ins = cpu.curr_ins();
+            // Stop if the current instruction is break.
+            if ins.op() == 0x0 && ins.special() == 0xd {
+                break;
+            }
+            cpu.step();
+        }
+    }
+
+    fn run(input: &str) -> Box<Cpu> {
+        let base = 0x1fc00000;
+        let code = match asm::assemble(input, base) {
+            Ok(code) => code,
+            Err(error) => panic!("{error}"),
+        };
+        let mut cpu = Cpu::new(Bios::from_code(base, &code));
+        run_cpu(&mut cpu);
+        cpu
+    }
+
+    #[test]
+    fn zero_reg() {
+        let cpu = run(r#"
+            .text
+                li $zero, 1
+                break 0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::ZERO), 0);
+    }
+
+    #[test]
+    fn branch_delay() {
+        let cpu = run(r#"
+                li      $v0, 0
+                j       l1  
+                addiu   $v0, $v0, 1
+            l1:
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::V0), 1);
+    }
+
+    #[test]
+    fn load_delay() {
+        let cpu = run(r#"
+                li      $v0, 42
+                li      $s1, 43
+                la      $v1, 0x0
+                sw      $v0, $v1, 0
+                lw      $s1, $v1, 0
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::S1), 43);
+    }
+
+    #[test]
+    fn simple_loop() {
+        let cpu = run(r#"
+            main:
+                li      $v0, 1
+            l2:
+                sll     $v0, $v0, 1
+                slti    $v1, $v0, 1024
+                bne     $v1, $zero, l2
+                nop
+
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::V0), 1024);
+    }
+
+    #[test]
+    fn sll() {
+        let cpu = run(r#"
+                li      $v0, 8
+                sll     $v0, $v0, 2
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::V0), 8 << 2);
+    }
+
+
+
+    #[test]
+    fn srl() {
+        let cpu = run(r#"
+                li      $v0, 8
+                srl     $v0, $v0, 2
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::V0), 8 >> 2);
+    }
+
+    #[test]
+    fn sra() {
+        let cpu = run(r#"
+                li      $v0, -8
+                sra     $v0, $v0, 2
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::V0), (-8_i32 >> 2) as u32);
+    }
+
+    #[test]
+    fn sllv() {
+        let cpu = run(r#"
+                li      $v0, 8
+                li      $v1, 2
+                sllv    $v0, $v0, $v1
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::V0), 8 << 2);
+    }
+
+    #[test]
+    fn srlv() {
+        let cpu = run(r#"
+                li      $v0, 8
+                li      $v1, 2
+                srlv    $v0, $v0, $v1
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::V0), 8 >> 2);
+    }
+
+    #[test]
+    fn jalr() {
+        let cpu = run(r#"
+                la      $v0, l1
+                li      $ra, 0
+                li      $a0, 0
+                li      $a1, 0
+
+                jalr    $ra, $v0
+
+                li      $a0, 3
+                li      $a1, 4
+
+            l1:
+                break   0
+        "#);
+        assert_ne!(cpu.read_reg(RegIdx::RA), 0);
+        assert_eq!(cpu.read_reg(RegIdx::A0), 3);
+        assert_ne!(cpu.read_reg(RegIdx::A1), 4);
+    }
+
+    #[test]
+    fn bltzal() {
+        let cpu = run(r#"
+                li      $t0, -1
+                bltzal  $t0, l1 
+                nop
+                li      $t0, 1
+            l1:
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::T0), (-1_i32) as u32);
+        assert_ne!(cpu.read_reg(RegIdx::RA), 0);
+    }
+
+    #[test]
+    fn addiu() {
+        let cpu = run(r#"
+                li      $v0, 0
+                addiu   $v0, $v0, -1
+
+                li      $v1, -1
+                addiu   $v1, $v1, 1
+
+                break 0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::V0), (-1_i32) as u32);
+        assert_eq!(cpu.read_reg(RegIdx::V1), 0);
+    }
+}

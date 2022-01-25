@@ -1,7 +1,7 @@
 //! Emulating Direct Memory Access chip. Used to transfer data between devices. The CPU halts when
 //! this is running, but the CPU can be allowed to run in intervals called chopping.
 
-use crate::util::{BitExtract, BitSet};
+use crate::util::{Bit, BitSet};
 use crate::cpu::Irq;
 use crate::system::Cycle;
 
@@ -31,8 +31,8 @@ struct BlockCtrl {
 impl BlockCtrl {
     fn new(val: u32) -> Self {
         Self {
-            size: val.extract_bits(0, 15) as u16,
-            count: val.extract_bits(16, 31) as u16,
+            size: val.bit_range(0, 15) as u16,
+            count: val.bit_range(16, 31) as u16,
         }
     }
 
@@ -48,16 +48,6 @@ pub enum ChanDir {
     ToPort,
 }
 
-impl ChanDir {
-    fn from_value(value: u32) -> Self {
-        match value {
-            0 => ChanDir::ToRam,
-            1 => ChanDir::ToPort,
-            _ => unreachable!("Invalid direction"),
-        }
-    }
-}
-
 #[derive(PartialEq, Eq, Copy, Clone)]
 pub enum SyncMode {
     /// Start immediately and transfer all at once. Used to send textures to the VRAM and
@@ -69,17 +59,6 @@ pub enum SyncMode {
     LinkedList = 2,
 }
 
-impl SyncMode {
-    fn from_value(value: u32) -> Self {
-        match value {
-            0 => SyncMode::Manual,
-            1 => SyncMode::Request,
-            2 => SyncMode::LinkedList,
-            _ => unreachable!("Invalid sync mode"),
-        }
-    }
-}
-
 /// Which way to step from the base address. Either increment or decrement one word.
 #[derive(Copy, Clone)]
 pub enum Step {
@@ -88,14 +67,6 @@ pub enum Step {
 }
 
 impl Step {
-    fn from_value(value: u32) -> Self {
-        match value {
-            0 => Step::Inc,
-            1 => Step::Dec,
-            _ => unreachable!("Invalid step"),
-        }
-    }
-
     /// The step amount. This is the amount to add to the base address each word and uses
     /// wrap around to avoid branching each word transfered.
     fn step_amount(self) -> u32 {
@@ -116,46 +87,58 @@ impl ChannelCtrl {
 
     /// Check if Channel is either from or to CPU.
     fn direction(self) -> ChanDir {
-        ChanDir::from_value(self.0.extract_bit(0))
+        match self.0.bit(0) {
+            false => ChanDir::ToRam,
+            true => ChanDir::ToPort,
+        }
     }
 
     fn step(self) -> Step {
-        Step::from_value(self.0.extract_bit(1))
+        match self.0.bit(1) {
+            false => Step::Inc,
+            true => Step::Dec,
+        }
     }
 
     /// Chopping means that the CPU get's to run at intervals while transfering.
     fn chopping_enabled(self) -> bool {
-        self.0.extract_bit(8) == 1
+        self.0.bit(8)
     }
 
     fn sync_mode(self) -> SyncMode {
-        SyncMode::from_value(self.0.extract_bits(9, 10))
+        match self.0.bit_range(9, 10)  {
+            0 => SyncMode::Manual,
+            1 => SyncMode::Request,
+            2 => SyncMode::LinkedList,
+            _ => unreachable!("Invalid sync mode"),
+        }
     }
 
     /// If the channel itself is enabled. If it's not, then the channel doesn't run.
     fn enabled(self) -> bool {
-        self.0.extract_bit(24) == 1
+        self.0.bit(24)
     }
 
     /// How many cycles to run in the interval between CPU chop.
     fn dma_chop_size(self) -> u32 {
-        self.0.extract_bits(16, 18) << 1
+        self.0.bit_range(16, 18) << 1
     }
 
     /// How many cycles the CPU get's to run when chopping.
     fn cpu_chop_size(self) -> Cycle {
-        (self.0.extract_bits(20, 22) << 1) as Cycle
+        (self.0.bit_range(20, 22) << 1) as Cycle
     }
 
     /// This is only used when in manual sync mode. It must be set for the transfer to start.
     fn start(self) -> bool {
-        self.0.extract_bit(28) == 1
+        self.0.bit(28)
     }
 
     fn mark_as_finished(&mut self) {
         // Clear both enabled and start flags.
-        self.0.set_bit(24, false);
-        self.0.set_bit(28, false);
+        self.0 = self.0
+            .set_bit(24, false)
+            .set_bit(28, false);
     }
 
     fn store(&mut self, port: Port, val: u32) {
@@ -209,12 +192,12 @@ impl ChanStat {
     }
 
     /// Store value in channel register.
-    fn store(&mut self, offset: u32, value: u32) {
+    fn store(&mut self, offset: u32, val: u32) {
         match offset {
-            0 => self.base = value.extract_bits(0, 23),
-            4 => self.block_ctrl = BlockCtrl::new(value),
+            0 => self.base = val.bit_range(0, 23),
+            4 => self.block_ctrl = BlockCtrl::new(val),
             8 => {
-                self.ctrl.store(self.port, value);
+                self.ctrl.store(self.port, val);
                 if self.ctrl.chopping_enabled() {
                     warn!("DMA chopping enabled");
                 }
@@ -237,14 +220,14 @@ impl Default for CtrlReg {
 impl CtrlReg {
     #[allow(dead_code)]
     pub fn channel_priority(self, channel: Port) -> u32 {
-        let base = (channel as u32) << 2;
-        self.0.extract_bits(base, base + 2)
+        let base = (channel as usize) << 2;
+        self.0.bit_range(base, base + 2)
     }
 
     #[allow(dead_code)]
     pub fn channel_enabled(self, channel: Port) -> bool {
-        let base = (channel as u32) << 2;
-        self.0.extract_bit(base + 3) == 1
+        let base = (channel as usize) << 2;
+        self.0.bit(base + 3)
     }
 }
 
@@ -262,33 +245,33 @@ impl IrqReg {
     /// If this is set, a interrupt will always be triggered when a channel is done or this
     /// register is written to.
     fn force_irq(self) -> bool {
-        self.0.extract_bit(15) == 1
+        self.0.bit(15)
     }
 
     /// If interrupts are enabled for each channel.
     fn channel_irq_enabled(self, channel: Port) -> bool {
-        self.0.extract_bit((channel as u32) + 16) == 1
+        self.0.bit(channel as usize + 16)
     }
 
     /// Master flag to enabled or disabled interrupts. ['force_irq'] has higher precedence.
     fn master_irq_enabled(self) -> bool {
-        self.0.extract_bit(23) == 1
+        self.0.bit(23)
     }
 
     /// This is set when a channel is done with a transfer, if interrupts are enabled for the
     /// channed.
     #[allow(dead_code)]
     fn channel_irq_flag(self, channel: Port) -> bool {
-        self.0.extract_bit((channel as u32) + 24) == 1
+        self.0.bit(channel as usize + 24)
     }
 
     fn set_channel_irq_flag(&mut self, channel: Port) {
-        self.0.set_bit(24 + channel as usize, true);
+        self.0 = self.0.set_bit(24 + channel as usize, true);
     }
 
     /// This is a readonly and is updated whenever ['Interrupt'] is changed in any way.
     fn master_irq_flag(self) -> bool {
-        self.0.extract_bit(31) == 1
+        self.0.bit(31)
     }
 
     /// If this ever get's set, an interrupt is triggered.
@@ -298,14 +281,14 @@ impl IrqReg {
         // Otherwise it will trigger if any of the flags are set and 'master_irq_enabled' is on.
         let result = self.force_irq()
             || self.master_irq_enabled()
-            && self.0.extract_bits(24, 30) != 0;
+            && self.0.bit_range(24, 30) != 0;
         if result {
             if !self.master_irq_flag() {
-                self.0.set_bit(31, true);
+                self.0 = self.0.set_bit(31, true);
                 schedule.schedule_now(Event::IrqTrigger(Irq::Dma));
             }
         } else {
-            self.0.set_bit(31, false);
+            self.0 = self.0.set_bit(31, false);
         }
     }
 
@@ -352,8 +335,8 @@ impl Dma {
     }
 
     pub fn load(&self, offset: u32) -> u32 {
-        let channel = offset.extract_bits(4, 6);
-        let reg = offset.extract_bits(0, 3);
+        let channel = offset.bit_range(4, 6);
+        let reg = offset.bit_range(0, 3);
         match channel {
             0..=6 => self.channels[channel as usize].load(reg),
             7 => match reg {
@@ -366,8 +349,8 @@ impl Dma {
     }
 
     pub fn store(&mut self, schedule: &mut Schedule, offset: u32, value: u32) {
-        let channel = offset.extract_bits(4, 6);
-        let reg = offset.extract_bits(0, 3);
+        let channel = offset.bit_range(4, 6);
+        let reg = offset.bit_range(0, 3);
         match channel {
             0..=6 => self.channels[channel as usize].store(reg, value),
             7 => match reg {
@@ -450,10 +433,10 @@ impl Dma {
                             let header = ram.load::<Word>(stat.base & 0x001f_fffc);
                             let tran = Transfer {
                                 inc: stat.ctrl.step().step_amount(),
-                                size: header.extract_bits(24, 31),
-                                cursor: (stat.base + 4).extract_bits(0, 23),
+                                size: header.bit_range(24, 31),
+                                cursor: (stat.base + 4).bit_range(0, 23),
                             };
-                            stat.base = header.extract_bits(0, 23);
+                            stat.base = header.bit_range(0, 23);
                             if tran.size == 0 {
                                 continue;
                             }
@@ -559,7 +542,7 @@ impl DmaChan for OrderingTable {
         if words_left == 1 {
             0x00ff_ffff
         } else {
-            addr.wrapping_sub(4).extract_bits(0, 21)
+            addr.wrapping_sub(4).bit_range(0, 21)
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::util::BitExtract;
+use crate::util::Bit;
 
 const FIFO_SIZE: usize = 16;
 
@@ -20,7 +20,7 @@ impl Fifo {
     }
 
     pub fn len(&self) -> usize {
-        self.head.wrapping_sub(self.tail).extract_bits(0, 3) as usize
+        self.head.wrapping_sub(self.tail).bit_range(0, 3) as usize
     }
 
     pub fn is_empty(&self) -> bool {
@@ -36,8 +36,8 @@ impl Fifo {
     }
 
     pub fn push(&mut self, value: u8) {
-        self.data[self.head.extract_bits(0, 3) as usize] = value;
-        self.head = self.head.wrapping_add(1).extract_bits(0, 3);
+        self.data[self.head.bit_range(0, 3) as usize] = value;
+        self.head = self.head.wrapping_add(1).bit_range(0, 3);
     }
 
     pub fn push_slice(&mut self, values: &[u8]) {
@@ -48,8 +48,8 @@ impl Fifo {
     }
 
     pub fn pop(&mut self) -> u8 {
-        let value = self.data[self.tail.extract_bits(0, 3) as usize];
-        self.tail = self.tail.wrapping_add(1).extract_bits(0, 3);
+        let value = self.data[self.tail.bit_range(0, 3) as usize];
+        self.tail = self.tail.wrapping_add(1).bit_range(0, 3);
         value
     }
 

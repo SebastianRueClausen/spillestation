@@ -5,7 +5,7 @@ pub mod dma;
 pub mod ram;
 
 use crate::gpu::{Gpu, Vram};
-use crate::util::BitExtract;
+use crate::util::Bit;
 use crate::cdrom::{CdRom, CdRomCmd};
 use crate::cpu::{Irq, IrqState, cop0::Exception};
 use crate::timer::{Timers, TimerId};
@@ -348,7 +348,7 @@ pub struct CacheCtrl(u32);
 
 impl CacheCtrl {
     pub fn icache_enabled(&self) -> bool {
-        self.0.extract_bit(11) == 1
+        self.0.bit(11)
     }
 }
 

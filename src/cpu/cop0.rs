@@ -3,7 +3,7 @@
 //! Used to handle CPU exceptions in the Playstation 1. It can also handle virtual memory,
 //! but that isn't used by the playstation 1.
 
-use crate::util::{BitExtract, BitSet};
+use crate::util::{Bit, BitSet};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Exception {
@@ -47,51 +47,51 @@ pub(super) struct Cop0 {
     /// - 13 - Cause - Exception type.
     /// - 14 - EPC - Return address tom trap.
     /// - 15 - PRID - Processor ID.
-    registers: [u32; 16],
+    regs: [u32; 16],
 }
 
 impl Cop0 {
     pub(super) fn new() -> Self {
         Self {
-            registers: REGISTER_VALUES,
+            regs: REGISTER_VALUES,
         }
     }
 
     /// Describes if the scrachpad is enabled.
     pub(super) fn cache_isolated(&self) -> bool {
-        self.registers[12].extract_bit(16) == 1
+        self.regs[12].bit(16)
     }
 
     /// Describes if boot exception vectors is in RAM.
     fn bev_in_ram(&self) -> bool {
-        self.registers[12].extract_bit(22) == 1
+        self.regs[12].bit(22)
     }
 
     pub(super) fn irq_enabled(&self) -> bool {
-        self.registers[12].extract_bit(0) == 1
+        self.regs[12].bit(0)
     }
 
     pub(super) fn set_reg(&mut self, reg: u32, value: u32) {
-        self.registers[reg as usize] = value;
+        self.regs[reg as usize] = value;
     }
 
     pub(super) fn read_reg(&self, reg: u32) -> u32 {
         if reg == 8 {
             trace!("Bad virtual address register read");
         }
-        self.registers[reg as usize]
+        self.regs[reg as usize]
     }
 
     pub(super) fn enter_exception(&mut self, last_pc: u32, in_delay: bool, ex: Exception) -> u32 {
         // Remember bits 0..5 of the status register, which keep track of interrupt and
         // kernel/user mode flags. Bits 0..1 keep track of the current flags, bits 2..3 keeps
         // track of the last flags, and bits 4..5 the ones before that.
-        let flags = self.registers[12].extract_bits(0, 5);
+        let flags = self.regs[12].bit_range(0, 5);
         // When entering and exception, two 0 are appended to these bits, which disables interrupts
         // and sets the CPU to kernel mode.
-        self.registers[12].set_bit_range(0, 5, flags << 2);
+        self.regs[12] = self.regs[12].set_bit_range(0, 5, flags << 2);
         // Set CAUSE register to the exception type.
-        self.registers[13].set_bit_range(2, 6, ex as u32);
+        self.regs[13] = self.regs[13].set_bit_range(2, 6, ex as u32);
         // If the CPU is in a branch delay slot, EPC is set to one instruction behind the last pc.
         // Bit 31 of CAUSE is also set.
         let (bit31, addr) = if in_delay {
@@ -99,8 +99,8 @@ impl Cop0 {
         } else {
             (false, last_pc)
         };
-        self.registers[13].set_bit(31, bit31);
-        self.registers[14] = addr;
+        self.regs[13] = self.regs[13].set_bit(31, bit31);
+        self.regs[14] = addr;
         // Set PC to the exception handler. The exception handler address depend on BEV flag in
         // COP0 status register.
         if self.bev_in_ram() {
@@ -111,9 +111,9 @@ impl Cop0 {
     }
 
     pub(super) fn exit_exception(&mut self) {
-        let flags = self.registers[12].extract_bits(0, 5);
-        self.registers[12] &= !0xf;
-        self.registers[12] |= flags >> 2;
+        let flags = self.regs[12].bit_range(0, 5);
+        self.regs[12] &= !0xf;
+        self.regs[12] |= flags >> 2;
     }
 }
 

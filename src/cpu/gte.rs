@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::util::BitExtract;
+use crate::util::Bit;
 
 /// Each element is 16 bits. 1 bit sign, 3 bit integer, 12 bit fraction.
 type Mat3 = [[i16; 3]; 3];
@@ -109,7 +109,7 @@ impl Gte {
                 // 'val' is in this case a signed 32 bit int. If bit 31 is set, it's a negative
                 // value, in which case the 'lzcr' counts the leading ones instead of leading
                 // zeroes.
-                self.lzcr = if val.extract_bit(31) == 1 {
+                self.lzcr = if val.bit(31) {
                     val.leading_ones() as u8
                 } else {
                     val.leading_zeros() as u8
@@ -158,21 +158,21 @@ struct Opcode(u32);
 impl Opcode {
     /// The command number itself.
     fn cmd(self) -> u32 {
-        self.0.extract_bits(0, 5)
+        self.0.bit_range(0, 5)
     }
 
     /// If IR1, IR2 and IR2 results should clamp between -0x8000..0x7fff or 0..0x7fff.
     fn ir_clamp(self) -> bool {
-        self.0.extract_bit(10) == 1
+        self.0.bit(10)
     }
 
     fn ir_frac(self) -> bool {
-        self.0.extract_bit(19) == 1
+        self.0.bit(19)
     }
 
     /// The matrix to be operated on.
     fn mul_mat(self) -> MulMat {
-        match self.0.extract_bits(17, 18) {
+        match self.0.bit_range(17, 18) {
             0 => MulMat::Reserved,
             1 => MulMat::Light,
             2 => MulMat::LightColor,
@@ -182,7 +182,7 @@ impl Opcode {
     }
 
     fn mul_vec(self) -> MulVec {
-        match self.0.extract_bits(15, 16) {
+        match self.0.bit_range(15, 16) {
             0 => MulVec::V0,
             1 => MulVec::V1,
             2 => MulVec::V2,
@@ -192,7 +192,7 @@ impl Opcode {
     }
 
     fn trans_vec(self) -> TransVec {
-        match self.0.extract_bits(13, 14) {
+        match self.0.bit_range(13, 14) {
             0 => TransVec::Translation,
             1 => TransVec::BackgroundColor,
             2 => TransVec::FarColor,
@@ -203,9 +203,9 @@ impl Opcode {
 }
 
 fn u32_to_rgbx(val: u32) -> Rgbx {
-    let r = val.extract_bits(0, 7) as u8;
-    let g = val.extract_bits(8, 15) as u8;
-    let b = val.extract_bits(16, 23) as u8;
-    let x = val.extract_bits(24, 31) as u8;
+    let r = val.bit_range(0, 7) as u8;
+    let g = val.bit_range(8, 15) as u8;
+    let b = val.bit_range(16, 23) as u8;
+    let x = val.bit_range(24, 31) as u8;
     [r, g, b, x]
 }

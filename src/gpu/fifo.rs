@@ -1,6 +1,6 @@
 //! This module emulates the Playstations GPU command buffer.
 
-use crate::util::BitExtract;
+use crate::util::Bit;
 use std::ops::Index;
 
 /// The FIFO on the real Playstation is 16 words long.
@@ -66,7 +66,7 @@ impl Fifo {
 
     pub fn next_cmd(&self) -> Option<u32> {
         if !self.is_empty() {
-            Some(self[0].extract_bits(24, 31))
+            Some(self[0].bit_range(24, 31))
         } else {
             None
         }

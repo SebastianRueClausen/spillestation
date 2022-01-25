@@ -2,7 +2,7 @@
 
 mod dualshock;
 
-use crate::util::BitExtract;
+use crate::util::Bit;
 use crate::bus::BusMap;
 use crate::cpu::{Irq, IrqState};
 
@@ -17,29 +17,29 @@ struct CtrlReg(u16);
 
 impl CtrlReg {
     fn tx_enabled(self) -> bool {
-        self.0.extract_bit(0) == 1
+        self.0.bit(0)
     }
 
     fn select(self) -> bool {
-        self.0.extract_bit(1) == 1
+        self.0.bit(1)
     }
 
     fn rx_enabled(self) -> bool {
-        self.0.extract_bit(2) == 1
+        self.0.bit(2)
     }
 
     fn acknowledge(self) -> bool {
-        self.0.extract_bit(4) == 1
+        self.0.bit(4)
     }
 
     fn reset(self) -> bool {
-        self.0.extract_bit(6) == 1
+        self.0.bit(6)
     }
 
     /// RX Interrupt mode. This tells when it should IRQ, in relation to how many bytes the RX FIFO
     /// contains. It's either 1, 2, 4 or 8.
     fn rx_irq_mode(self) -> u32 {
-        match self.0.extract_bits(8, 9) {
+        match self.0.bit_range(8, 9) {
             0 => 1,
             1 => 2,
             2 => 4,
@@ -49,22 +49,21 @@ impl CtrlReg {
     }
 
     fn tx_irq_enabled(self) -> bool {
-        self.0.extract_bit(10) == 1
+        self.0.bit(10)
     }
 
     fn rx_irq_enabled(self) -> bool {
-        self.0.extract_bit(11) == 1
+        self.0.bit(11)
     }
 
     fn ack_irq_enabled(self) -> bool {
-        self.0.extract_bit(12) == 1
+        self.0.bit(12)
     }
 
     fn desired_slot_num(self) -> SlotNum {
-        match self.0.extract_bit(13) {
-            0 => SlotNum::Joy1,
-            1 => SlotNum::Joy2,
-            _ => unreachable!(),
+        match self.0.bit(13) {
+            false => SlotNum::Joy1,
+            true => SlotNum::Joy2,
         }
     }
 }

@@ -1,7 +1,7 @@
 
 mod fifo;
 
-use crate::util::BitExtract;
+use crate::util::Bit;
 use crate::cpu::Irq;
 use crate::bus::{Schedule, Event, AddrUnit, BusMap};
 
@@ -41,7 +41,7 @@ impl CdRom {
 
     pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
         match addr {
-            0 => self.index = val.extract_bits(0, 1) as u8,
+            0 => self.index = val.bit_range(0, 1) as u8,
             1 => match self.index {
                 0 => {
                     if self.cmd.is_some() {
@@ -68,7 +68,7 @@ impl CdRom {
                 0 => todo!(),
                 1 => {
                     self.irq_flags &= !(val as u8 & 0x1f);
-                    if val.extract_bit(6) == 1  {
+                    if val.bit(6) {
                         self.arg_fifo.clear();
                     }
                 }

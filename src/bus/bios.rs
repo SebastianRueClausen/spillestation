@@ -1,6 +1,9 @@
 use super::{AddrUnit, BusMap};
-use std::{fs::File, io::{self, Read}, path::Path};
 use thiserror::Error;
+
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
 
 /// Bios always takes up 512 kilobytes.
 pub const BIOS_SIZE: usize = 1024 * 512;
@@ -9,6 +12,7 @@ pub const BIOS_SIZE: usize = 1024 * 512;
 pub enum BiosError {
     #[error("Failed to load BIOS: {0}")]
     IoError(#[from] io::Error),
+
     #[error("Invalid BIOS file: must be 512 kb, is {0} bytes")]
     InvalidSize(usize),
 }
@@ -27,6 +31,18 @@ impl Bios {
         } else {
             Ok(Self::new(data.into_boxed_slice()))
         }
+    }
+
+    #[cfg(test)]
+    pub fn from_code(base: u32, code: &[u8]) -> Self {
+        debug_assert!((Self::BUS_BEGIN..=Self::BUS_END).contains(&base));
+        let base = (base - Self::BUS_BEGIN) as usize;
+        debug_assert!(base + code.len() <= BIOS_SIZE);
+        let mut data = [0x0; BIOS_SIZE];
+        for (i, byte) in code.iter().enumerate() {
+            data[i + base] = *byte;
+        }
+        Self::new(Box::from(data))
     }
 
     pub fn new(data: Box<[u8]>) -> Self {
