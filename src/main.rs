@@ -1,23 +1,4 @@
-#![feature(let_else, binary_heap_retain)]
-
-#[macro_use]
-extern crate log;
-
-mod cpu;
-mod front;
-mod gpu;
-mod bus;
-mod cdrom;
-mod util;
-mod timer;
-mod timing;
-mod system;
-mod spu;
-mod io_port;
-mod render;
-mod asm;
-
-use front::Frontend;
+use splst_front::Frontend;
 
 use log::LevelFilter;
 use std::io::Write;
@@ -32,6 +13,5 @@ fn main() {
         .filter_module("naga", LevelFilter::Error)
         .filter(None, LevelFilter::Debug)
         .init();
-
     Frontend::new().run();
 }

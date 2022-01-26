@@ -1,0 +1,17 @@
+[package]
+name = "splst_core"
+version = "0.1.0"
+edition = "2021"
+
+[profile.dev]
+# This must be enabled to avoid copying from the stack when initializing heap arrays,
+# since it can cause a stack overflow otherwise.
+opt-level = 3
+
+[dependencies]
+splst_util = { path = "../splst_util" }
+splst_asm = { path = "../splst_asm" }
+
+ultraviolet = { version = "0.8.1" }
+thiserror = "*"
+log = "*"
