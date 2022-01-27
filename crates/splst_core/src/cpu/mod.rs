@@ -1187,8 +1187,8 @@ mod tests {
                 li      $v0, 42
                 li      $s1, 43
                 la      $v1, 0x0
-                sw      $v0, $v1, 0
-                lw      $s1, $v1, 0
+                sw      $v0, 0($v1)
+                lw      $s1, 0($v1)
                 break   0
         "#);
         assert_eq!(cpu.read_reg(RegIdx::S1), 43);

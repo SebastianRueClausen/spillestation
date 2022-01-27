@@ -39,6 +39,23 @@ impl<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
         }
     }
 
+    /// Parse a register and offset used as arguments for load and store instructions.
+    ///
+    /// '''ignore
+    /// lw  $t1, 4($sp)
+    /// '''
+    fn reg_offset(&mut self) -> Result<(Register, u32), Error> {
+        let num = self.num()?;
+        if !matches!(self.expect_some()?.ty, TokTy::LParan) {
+            return Err(self.err("Expected '('")); 
+        }
+        let reg = self.reg()?;
+        if !matches!(self.expect_some()?.ty, TokTy::RParan) {
+            return Err(self.err("Expected ')'")); 
+        }
+        Ok((reg, num))
+    }
+
     fn num(&mut self) -> Result<u32, Error> {
         let tok = self.expect_some()?;
         match tok.ty {
@@ -52,7 +69,7 @@ impl<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
         match tok.ty {
             TokTy::Id(id) => Ok(Label::Label(id)),
             TokTy::Num(num) => Ok(Label::Abs(num)),
-            _ => Err(self.err("Expected immediate value")),
+            _ => Err(self.err("Expected label or address")),
         }
     }
 
@@ -74,9 +91,15 @@ impl<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
                 TokTy::Label(id) => {
                     ir.push(Ir::new(tok.line, IrTy::Label(id)));
                 }
-                TokTy::Num(..) | TokTy::Reg(..) | TokTy::Comma => return Err(
-                    self.err(&format!("Expected label, section or instruction"))
-                ),
+                TokTy::Num(..)
+                | TokTy::Reg(..)
+                | TokTy::LParan
+                | TokTy::RParan
+                | TokTy::Comma => {
+                    return Err(self.err(
+                        &format!("Expected label, section or instruction")
+                    ));
+                }
                 TokTy::Eof => unreachable!(),
                 TokTy::Id(id) => {
                     let ins = match id {
@@ -262,66 +285,66 @@ impl<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
                             self.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "lb" => IrTy::Lb(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "lh" => IrTy::Lh(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "lwl" => IrTy::Lwl(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "lw" => IrTy::Lw(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "lbu" => IrTy::Lbu(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "lhu" => IrTy::Lhu(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "lwr" => IrTy::Lwr(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "sb" => IrTy::Sb(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "sh" => IrTy::Sh(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "swl" => IrTy::Swl(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "sw" => IrTy::Sw(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
-                        "swr" => IrTy::Swr(
-                            self.reg()?,
-                            self.comma()?.reg()?,
-                            self.comma()?.num()?,
-                        ),
+                        "lb" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Lb(rt, rd, offset)
+                        }
+                        "lh" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Lh(rt, rd, offset)
+                        },
+                        "lwl" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Lwl(rt, rd, offset)
+                        },
+                        "lw" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Lw(rt, rd, offset)
+                        },
+                        "lbu" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Lbu(rt, rd, offset)
+                        },
+                        "lhu" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Lhu(rt, rd, offset)
+                        },
+                        "lwr" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Lwr(rt, rd, offset)
+                        },
+                        "sb" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Sb(rt, rd, offset)
+                        },
+                        "sh" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Sh(rt, rd, offset)
+                        },
+                        "swl" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Swl(rt, rd, offset)
+                        },
+                        "sw" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Sw(rt, rd, offset)
+                        },
+                        "swr" => {
+                            let rt = self.reg()?;
+                            let (rd, offset) = self.comma()?.reg_offset()?;
+                            IrTy::Swr(rt, rd, offset)
+                        },
                         "mfc0" => IrTy::Mfc0(
                             self.reg()?,
                             self.comma()?.num()?,
@@ -352,9 +375,9 @@ impl<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
                             self.reg()?,
                             self.comma()?.addr()?,
                         ),
-                        id => return Err(
-                            self.err(&format!("Unknown instruction '{}'", id))
-                        ),
+                        id => return Err(self.err(
+                            &format!("Unknown instruction '{}'", id)
+                        )),
                     };
                     ir.push(Ir::new(tok.line, ins));
                 }

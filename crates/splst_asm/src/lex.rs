@@ -11,6 +11,8 @@ pub enum TokTy<'a> {
     Num(u32),
     Reg(Register), 
     Comma,
+    LParan,
+    RParan,
     Eof,
 }
 
@@ -193,6 +195,14 @@ impl<'a> Lexer<'a> {
             ',' => {
                 self.eat();
                 Ok(self.tok(TokTy::Comma))
+            }
+            '(' => {
+                self.eat();
+                Ok(self.tok(TokTy::LParan))
+            }
+            ')' => {
+                self.eat();
+                Ok(self.tok(TokTy::RParan))
             }
             '$' => {
                 self.eat();
