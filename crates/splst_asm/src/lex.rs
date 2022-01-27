@@ -1,14 +1,15 @@
 use crate::Error;
-use crate::ir::{Section, Register};
+use crate::ir::{Directive, Register};
 
 use std::str::Chars;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TokTy<'a> {
-    Section(Section),
+    Directive(Directive),
     Label(&'a str),
     Id(&'a str),
     Num(u32),
+    Str(String),
     Reg(Register), 
     Comma,
     LParan,
@@ -27,6 +28,7 @@ impl<'a> Tok<'a> {
     }
 }
 
+#[derive(Clone)]
 struct Lexer<'a> {
    chars: Chars<'a>,
    line: usize,
@@ -166,6 +168,38 @@ impl<'a> Lexer<'a> {
             c if c.is_ascii_digit() => self.eat_num().map(|num| {
                 self.tok(TokTy::Num(num))
             }),
+            '"' => {
+                self.eat(); 
+                let mut string = String::new();
+                while !self.eat_char('"') {
+                    let c = match self.first() {
+                        '\\' => {
+                            self.eat();
+                            match self.first() {
+                                't' => '\t',
+                                'r' => '\r',
+                                'n' => '\n',
+                                '0' => '\0',
+                                '\\' => '\\',
+                                c => {
+                                    return Err(self.err(
+                                        &format!("Invalid escape sequence '\\{c}'")
+                                    ));
+                                }
+                            }
+                        }
+                        '\n' => {
+                            return Err(self.err(
+                                &format!("Newline in string literal")
+                            ));
+                        }
+                        c => c,
+                    };
+                    self.eat();
+                    string.push(c);
+                }
+                Ok(self.tok(TokTy::Str(string)))
+            }
             '-' => {
                 self.eat();
                 self.eat_whitespace();
@@ -180,17 +214,22 @@ impl<'a> Lexer<'a> {
             }
             '.' => {
                 self.eat();
-                let section = match self.eat_id() {
-                    "text" => Section::Text,
-                    "data" => Section::Data,
+                let directive = match self.eat_id() {
+                    "text" => Directive::Text,
+                    "data" => Directive::Data,
+                    "word" => Directive::Word,
+                    "halfword" => Directive::HalfWord,
+                    "byte" => Directive::Byte,
+                    "ascii" => Directive::Ascii,
+                    "asciiz" => Directive::Asciiz,
                     id if id.is_empty() => {
-                        return Err(self.err("Expected section after '.'"))
+                        return Err(self.err("Expected directive after '.'"))
                     }
                     id => {
-                        return Err(self.err(&format!("Invalid section .{}", id)))
+                        return Err(self.err(&format!("Invalid directive '.{id}'")))
                     }
                 };
-                Ok(self.tok(TokTy::Section(section)))
+                Ok(self.tok(TokTy::Directive(directive)))
             }
             ',' => {
                 self.eat();
@@ -233,7 +272,9 @@ impl<'a> Lexer<'a> {
     }
 }
 
-pub fn tokenize(input: &str) -> impl Iterator<Item = Result<Tok, Error>> + '_ {
+pub fn tokenize(
+    input: &str
+) -> impl Iterator<Item = Result<Tok, Error>> + Clone + '_ {
     let mut lexer = Lexer::new(input);
     std::iter::from_fn(move || {
         match lexer.next_tok() {
@@ -291,6 +332,13 @@ fn number() {
 #[test]
 fn general() {
     let input = r#"
+        .data
+        w: .word 32 
+        hw: .halfword 65
+        b: .byte 12
+        a: .ascii "String\0"
+        az: .asciiz "String"
+
         .text
         main:
             li $v0, 4
@@ -328,7 +376,29 @@ fn general() {
             syscall
     "#;
     let expected = [
-        TokTy::Section(Section::Text),
+        TokTy::Directive(Directive::Data),
+
+        TokTy::Label("w"),
+        TokTy::Directive(Directive::Word),
+        TokTy::Num(32),
+
+        TokTy::Label("hw"),
+        TokTy::Directive(Directive::HalfWord),
+        TokTy::Num(65),
+
+        TokTy::Label("b"),
+        TokTy::Directive(Directive::Byte),
+        TokTy::Num(12),
+
+        TokTy::Label("a"),
+        TokTy::Directive(Directive::Ascii),
+        TokTy::Str("String\0".to_owned()),
+        
+        TokTy::Label("az"),
+        TokTy::Directive(Directive::Asciiz),
+        TokTy::Str("String".to_owned()),
+
+        TokTy::Directive(Directive::Text),
         TokTy::Label("main"),
 
         TokTy::Id("li"),

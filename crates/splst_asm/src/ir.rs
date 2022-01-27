@@ -1,11 +1,15 @@
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Register(pub u8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Section {
+pub enum Directive {
     Text,
     Data,
+    Word,
+    HalfWord,
+    Byte,
+    Ascii,
+    Asciiz,
 }
 
 #[derive(Clone, Copy)]
@@ -14,7 +18,7 @@ pub enum Label<'a> {
     Abs(u32),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum IrTy<'a> {
     Sll(Register, Register, u32), 
     Srl(Register, Register, u32),
@@ -80,6 +84,11 @@ pub enum IrTy<'a> {
 
     Label(&'a str),
 
+    Word(u32),
+    HalfWord(u16),
+    Byte(u8),
+    Ascii(String),
+
     Nop,
     Move(Register, Register),
     Li(Register, u32),
@@ -109,7 +118,7 @@ impl<'a> IrTy<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Ir<'a> {
     pub ty: IrTy<'a>,
     pub line: usize,

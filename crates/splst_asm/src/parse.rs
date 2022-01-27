@@ -1,21 +1,27 @@
 use crate::Error;
-use crate::ir::{Label, Register, Section, Ir, IrTy};
+use crate::ir::{Label, Register, Directive, Ir, IrTy};
 use crate::lex::{self, Tok, TokTy};
 
-pub fn parse<'a>(input: &'a str) -> Result<Vec<Ir<'a>>, Error> {
+#[derive(Clone, Copy)]
+enum Section {
+    Text,
+    Data,
+}
+
+pub fn parse<'a>(input: &'a str) -> Result<(Vec<Ir<'a>>, Vec<Ir<'a>>), Error> {
     Parser::new(lex::tokenize(input)).parse()
 }
 
 struct Parser<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> {
-    section: Option<Section>,
+    sec: Section,
     prev_line: usize,
     input: Iter,
 }
 
-impl<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
+impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
     fn new(input: Iter) -> Self {
         Self {
-            section: None,
+            sec: Section::Text,
             prev_line: 1,
             input
         }
@@ -26,9 +32,9 @@ impl<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
     }
     
     fn expect_some(&mut self) -> Result<Tok<'a>, Error> {
-        self.input.next().unwrap_or(
+        self.input.next().unwrap_or_else(|| {
             Err(self.err("Unexpected end of input"))
-        )
+        })
     }
 
     fn reg(&mut self) -> Result<Register, Error> {
@@ -81,17 +87,58 @@ impl<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
         }
     }
 
-    pub fn parse(&mut self) -> Result<Vec<Ir<'a>>, Error> {
-        let mut ir = Vec::with_capacity(64);
+    pub fn parse(&mut self) -> Result<(Vec<Ir<'a>>, Vec<Ir<'a>>), Error> {
+        let mut text = Vec::with_capacity(64);
+        let mut data = Vec::with_capacity(32);
+
+        let mut push_ir = |sec, ir| {
+            match sec {
+                Section::Data => data.push(ir),
+                Section::Text => text.push(ir),
+            }
+        };
+
         while let Some(tok) = self.input.next() {
             let tok = tok?;
             self.prev_line = tok.line;
             match tok.ty {
-                TokTy::Section(sec) => self.section = Some(sec),
+                TokTy::Directive(dir) => match dir {
+                    Directive::Data => self.sec = Section::Data,
+                    Directive::Text => self.sec = Section::Text,
+                    Directive::Word => {
+                        push_ir(self.sec, Ir::new(tok.line, IrTy::Word(self.num()?)));
+                    }
+                    Directive::HalfWord => {
+                        let num: u16 = self.num()?.try_into().map_err(|err| {
+                            self.err(&format!("{err}"))
+                        })?;
+                        push_ir(self.sec, Ir::new(tok.line, IrTy::HalfWord(num)))
+                    }
+                    Directive::Byte => {
+                        let num: u8 = self.num()?.try_into().map_err(|err| {
+                            self.err(&format!("{err}"))
+                        })?;
+                        push_ir(self.sec, Ir::new(tok.line, IrTy::Byte(num)))
+                    }
+                    ty @ Directive::Ascii | ty @ Directive::Asciiz => {
+                        let tok = self.expect_some()?;
+                        if let TokTy::Str(mut string) = tok.ty {
+                            if let Directive::Asciiz = ty {
+                                string.push('\0');
+                            }
+                            push_ir(self.sec, Ir::new(tok.line, IrTy::Ascii(string)))
+                        } else {
+                            return Err(self.err(
+                                &format!("Expected string literal")
+                            ));
+                        }
+                    }
+                }
                 TokTy::Label(id) => {
-                    ir.push(Ir::new(tok.line, IrTy::Label(id)));
+                    push_ir(self.sec, Ir::new(tok.line, IrTy::Label(id)));
                 }
                 TokTy::Num(..)
+                | TokTy::Str(..)
                 | TokTy::Reg(..)
                 | TokTy::LParan
                 | TokTy::RParan
@@ -379,10 +426,10 @@ impl<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>  {
                             &format!("Unknown instruction '{}'", id)
                         )),
                     };
-                    ir.push(Ir::new(tok.line, ins));
+                    push_ir(self.sec, Ir::new(tok.line, ins));
                 }
             }
         }
-        Ok(ir)
+        Ok((text, data))
     }
 }

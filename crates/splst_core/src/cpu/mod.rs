@@ -1170,6 +1170,21 @@ mod tests {
     }
 
     #[test]
+    fn data() {
+        let cpu = run(r#"
+                la      $t1, num
+                lw      $t2, 0($t1)
+                nop
+
+                break 0
+
+            .data
+                num: .word 42
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::T2), 42);
+    }
+
+    #[test]
     fn branch_delay() {
         let cpu = run(r#"
                 li      $v0, 0
@@ -1307,6 +1322,7 @@ mod tests {
                 addiu   $v1, $v1, 1
 
                 break 0
+
         "#);
         assert_eq!(cpu.read_reg(RegIdx::V0), (-1_i32) as u32);
         assert_eq!(cpu.read_reg(RegIdx::V1), 0);

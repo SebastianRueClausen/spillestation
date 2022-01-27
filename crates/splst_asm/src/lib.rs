@@ -24,5 +24,6 @@ impl fmt::Display for Error {
 }
 
 pub fn assemble<'a>(input: &'a str, base: u32) -> Result<Vec<u8>, Error> {
-    gen::gen_machine_code(parse::parse(input)?, base)
+    let (text, data) = parse::parse(input)?;
+    gen::gen_machine_code(text, data, base)
 }

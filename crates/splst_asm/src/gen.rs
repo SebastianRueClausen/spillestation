@@ -309,6 +309,18 @@ impl<'a> CodeGen<'a> {
             IrTy::Swr(rt, rs, val) => {
                 self.gen_ins(InsBuilder::op(0x2e).rt(rt).rs(rs).imm(val));
             }
+            IrTy::Word(val) => {
+                self.code.extend_from_slice(&val.to_le_bytes());
+            }
+            IrTy::HalfWord(val) => {
+                self.code.extend_from_slice(&val.to_le_bytes());
+            }
+            IrTy::Byte(val) => {
+                self.code.extend_from_slice(&val.to_le_bytes());
+            }
+            IrTy::Ascii(ref string) => {
+                self.code.extend_from_slice(string.as_bytes());
+            }
             IrTy::Nop => {
                 self.gen_ins(InsBuilder::special(0x0)
                     .rd(Register(0))
@@ -371,22 +383,27 @@ impl<'a> CodeGen<'a> {
     }
 }
 
-pub fn gen_machine_code<'a>(ir: Vec<Ir<'a>>, base: u32) -> Result<Vec<u8>, Error> {
+pub fn gen_machine_code<'a>(
+    text: Vec<Ir<'a>>,
+    data: Vec<Ir<'a>>,
+    base: u32
+) -> Result<Vec<u8>, Error> {
     let mut gen = CodeGen::new();
     let mut addr = base;
-    for ins in &ir {
+    for ins in text.iter().chain(data.iter()) {
         if let IrTy::Label(id) = ins.ty {
             if gen.labels.insert(id, addr).is_some() {
                 return Err(Error::new(
                     ins.line,
-                    format!("Global label '{}' redeclared", id),  
+                    format!("Label '{}' redeclared", id),  
                 ));
             }
         } else {
             addr += ins.ty.size();
         }
     }
-    for ins in &ir {
+    // Generate text section and then data section.
+    for ins in text.iter().chain(data.iter()) {
         gen.assemble_ir(ins)?;
     }
     Ok(gen.code)
