@@ -28,16 +28,36 @@ pub struct DrawInfo {
 }
 
 #[derive(PartialEq, Eq)]
-pub enum DebugStop {
-    Breakpoint(u32),
+pub enum StopReason {
     Time,
+    Break,
 }
 
-/// Breakpoints which can be supplied to ['System::debug_step'] and ['System::debug_run'].
-pub struct Breaks<'a> {
-    pub code: &'a [u32],
-    pub store: &'a [u32],
-    pub load: &'a [u32],
+pub trait Debugger {
+    /// Called when loading an instruction.
+    fn instruction_load(&mut self, addr: u32);
+
+    /// Callec when loading data. 
+    fn data_load(&mut self, addr: u32);
+
+    /// Called when storing data.
+    fn data_store(&mut self, addr: u32);
+
+    /// Called after every cycle. The ['System'] will stop if it returns true.
+    fn should_stop(&mut self) -> bool;
+}
+
+// Implement debugger for unit type to easily use no debugger.
+impl Debugger for () {
+    fn instruction_load(&mut self, _: u32) { }
+
+    fn data_load(&mut self, _: u32) { }
+
+    fn data_store(&mut self, _: u32) { }
+
+    fn should_stop(&mut self) -> bool {
+        false
+    }
 }
 
 /// The whole system is on ['Cpu']. This struct is to control and interact with the system
@@ -63,35 +83,42 @@ impl System {
 
     /// Run at full speed for a given amount of time.
     pub fn run(&mut self, time: Duration, out: &mut impl VidOut) {
+        // This is pretty bad, but since ['Duration'] can't be constant for now, it has to be
+        // calculated each run even though the number is constant.
         let cycle_time = Duration::from_secs(1) / timing::CPU_HZ as u32;
-        let cycles = time.as_nanos() / cycle_time.as_nanos();
+        // Calculate the number the cycles to run.
+        let cycles = time.as_nanos() / (cycle_time.as_nanos() + 1);
+        // ['System::maybe_draw_frame'] only gets called every 16nth cycle. The system isn't
+        // that accurate anyways.
         let outer = cycles / 16;
         for _ in 0..outer {
             for _ in 0..16 { 
-                self.cpu.step();
+                self.cpu.step(&mut ());
             }
             self.maybe_draw_frame(out);
         }
     }
 
-    /// Run at a given speed in debug mode. Returns the remainder.
+    /// Run at a given speed in debug mode. The time remainder is returned. This is required since
+    /// for a couple of reasons. If running at very low speeds, then saving the remainder is
+    /// required to be accurate. It's also nice to have if the ['System'] exits early.
     pub fn run_debug(
         &mut self,
         hz: u64,
         mut time: Duration,
         out: &mut impl VidOut,
-        breaks: Breaks
-    ) -> (Duration, DebugStop) {
+        dbg: &mut impl Debugger,
+    ) -> (Duration, StopReason) {
         let cycle_time = Duration::from_secs(1) / hz as u32;
         while let Some(new) = time.checked_sub(cycle_time) {
             time = new;
-            self.cpu.step();
+            self.cpu.step(dbg);
             self.maybe_draw_frame(out);
-            if breaks.code.contains(&self.cpu.next_pc) {
-                return (time, DebugStop::Breakpoint(self.cpu.next_pc));
+            if dbg.should_stop() {
+                return (time, StopReason::Break);
             }
         }
-        (time, DebugStop::Time)
+        (time, StopReason::Time)
     }
 
     /// Run for a given number of cycles in debug mode.
@@ -99,16 +126,16 @@ impl System {
         &mut self,
         steps: u64,
         out: &mut impl VidOut,
-        breaks: Breaks
-    ) -> DebugStop {
+        dbg: &mut impl Debugger,
+    ) -> StopReason {
         for _ in 0..steps {
-            self.cpu.step();
+            self.cpu.step(dbg);
             self.maybe_draw_frame(out);
-            if breaks.code.contains(&self.cpu.next_pc) {
-                return DebugStop::Breakpoint(self.cpu.next_pc);
+            if dbg.should_stop() {
+                return StopReason::Break;
             }
         }
-        DebugStop::Time
+        StopReason::Time
     }
 }
 

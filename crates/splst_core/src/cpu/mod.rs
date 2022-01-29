@@ -8,7 +8,7 @@ pub mod opcode;
 
 use splst_util::Bit;
 
-use crate::Cycle;
+use crate::{Cycle, Debugger};
 use crate::bus::{Event, AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
 
 use cop0::{Cop0, Exception};
@@ -244,7 +244,7 @@ impl Cpu {
     }
 
     /// Fetch and execute next instruction.
-    pub fn step(&mut self) {
+    pub fn step(&mut self, dbg: &mut impl Debugger) {
         if let Some(event) = self.bus.schedule.pop_event() {
             if let Event::IrqTrigger(irq) = event {
                 if self.irq_pending() {
@@ -261,17 +261,18 @@ impl Cpu {
             }
         } else {
             let addr = self.next_pc();
+            dbg.instruction_load(addr);
             if addr < 0xa0000000 && self.bus.cache_ctrl.icache_enabled() {
                 let tag = ((addr & 0xfffff000) >> 12) | 0x80000000;
                 let index = ((addr & 0xffc) >> 2) as usize;
                 let cache = self.icache[index];
                 if cache.tag == tag {
-                    self.exec(Opcode::new(cache.data));
+                    self.exec(dbg, Opcode::new(cache.data));
                 } else {
                     match self.load::<Word>(addr) {
                         Ok(data) => {
                             self.icache[index] = CacheLine { tag, data };
-                            self.exec(Opcode::new(data));
+                            self.exec(dbg, Opcode::new(data));
                         }
                         Err(exp) if exp == Exception::AddressLoadError => {
                             // This might not be correct. Accessing at an unaligned address when loading
@@ -287,7 +288,7 @@ impl Cpu {
                 // Cache misses take about 4 cycles.
                 self.bus.schedule.tick(4);
                 if let Ok(val) = self.load::<Word>(addr) {
-                    self.exec(Opcode::new(val));
+                    self.exec(dbg, Opcode::new(val));
                 } else {
                     self.throw_exception(Exception::BusInstructionError);
                 }
@@ -297,7 +298,7 @@ impl Cpu {
     }
 
     /// Execute opcode.
-    fn exec(&mut self, opcode: Opcode) {
+    fn exec(&mut self, dbg: &mut impl Debugger, opcode: Opcode) {
         match opcode.op() {
             0x0 => match opcode.special() {
                 0x0 => self.op_sll(opcode),
@@ -349,18 +350,18 @@ impl Cpu {
             0x11 => self.op_cop1(),
             0x12 => self.op_cop2(opcode),
             0x13 => self.op_cop3(),
-            0x20 => self.op_lb(opcode),
-            0x21 => self.op_lh(opcode),
-            0x22 => self.op_lwl(opcode),
-            0x23 => self.op_lw(opcode),
-            0x24 => self.op_lbu(opcode),
-            0x25 => self.op_lhu(opcode),
-            0x26 => self.op_lwr(opcode),
-            0x28 => self.op_sb(opcode),
-            0x29 => self.op_sh(opcode),
-            0x2a => self.op_swl(opcode),
-            0x2b => self.op_sw(opcode),
-            0x2e => self.op_swr(opcode),
+            0x20 => self.op_lb(dbg, opcode),
+            0x21 => self.op_lh(dbg, opcode),
+            0x22 => self.op_lwl(dbg, opcode),
+            0x23 => self.op_lw(dbg, opcode),
+            0x24 => self.op_lbu(dbg, opcode),
+            0x25 => self.op_lhu(dbg, opcode),
+            0x26 => self.op_lwr(dbg, opcode),
+            0x28 => self.op_sb(dbg, opcode),
+            0x29 => self.op_sh(dbg, opcode),
+            0x2a => self.op_swl(dbg, opcode),
+            0x2b => self.op_sw(dbg, opcode),
+            0x2e => self.op_swr(dbg, opcode),
             0x30 => self.op_lwc0(),
             0x31 => self.op_lwc1(),
             0x32 => self.op_lwc2(opcode),
@@ -862,8 +863,9 @@ impl Cpu {
     }
 
     /// LB - Load byte.
-    fn op_lb(&mut self, op: Opcode) {
+    fn op_lb(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_load(addr);
         match self.load::<Byte>(addr) {
             Ok(val) => self.add_load_slot(op.rt(), (val as i8) as u32),
             Err(exp) => self.throw_exception(exp),
@@ -871,8 +873,9 @@ impl Cpu {
     }
 
     /// LH - Load half word.
-    fn op_lh(&mut self, op: Opcode) {
+    fn op_lh(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_load(addr);
         match self.load::<HalfWord>(addr) {
             Ok(val) => self.add_load_slot(op.rt(), (val as i16) as u32),
             Err(exp) => {
@@ -891,8 +894,9 @@ impl Cpu {
     /// memory which contain the unaligned address. The result is a combination (bitwise or) of the
     /// base value and the loaded word, where the combination depend on the alignment of the
     /// address.
-    fn op_lwl(&mut self, op: Opcode) {
+    fn op_lwl(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_load(addr);
         let val = if self.load_delay.reg == op.rt() {
             self.load_delay.val
         } else {
@@ -920,8 +924,9 @@ impl Cpu {
     }
 
     /// LW - Load word.
-    fn op_lw(&mut self, op: Opcode) {
+    fn op_lw(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_load(addr);
         match self.load::<Word>(addr) {
             Ok(val) => self.add_load_slot(op.rt(), val),
             Err(exp) => {
@@ -934,8 +939,9 @@ impl Cpu {
     }
 
     /// LBU - Load byte unsigned.
-    fn op_lbu(&mut self, op: Opcode) {
+    fn op_lbu(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_load(addr);
         match self.load::<Byte>(addr) {
             Ok(val) => self.add_load_slot(op.rt(), val),
             Err(exp) => self.throw_exception(exp),
@@ -943,8 +949,9 @@ impl Cpu {
     }
 
     /// LHU - Load half word unsigned.
-    fn op_lhu(&mut self, op: Opcode) {
+    fn op_lhu(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_load(addr);
         match self.load::<Byte>(addr) {
             Ok(val) => self.add_load_slot(op.rt(), val),
             Err(exp) => {
@@ -959,8 +966,9 @@ impl Cpu {
     /// LWR - Load word right.
     ///
     /// See 'op_lwl'.
-    fn op_lwr(&mut self, op: Opcode) {
+    fn op_lwr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_load(addr);
         let val = if self.load_delay.reg == op.rt() {
             self.load_delay.val
         } else {
@@ -982,8 +990,9 @@ impl Cpu {
     }
 
     /// SB - Store byte.
-    fn op_sb(&mut self, op: Opcode) {
+    fn op_sb(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_store(addr);
         let val = self.read_reg(op.rt());
         self.fetch_load_slot();
         if let Err(exp) = self.store::<Byte>(addr, val) {
@@ -992,8 +1001,9 @@ impl Cpu {
     }
 
     /// SH - Store half word.
-    fn op_sh(&mut self, op: Opcode) {
+    fn op_sh(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_store(addr);
         let val = self.read_reg(op.rt());
         self.fetch_load_slot();
         if let Err(exp) = self.store::<HalfWord>(addr, val) {
@@ -1008,8 +1018,9 @@ impl Cpu {
     ///
     /// This is used to store words to addresses which aren't 32-aligned. It's the  same idea
     /// as 'op_lwl' and 'op_lwr'.
-    fn op_swl(&mut self, op: Opcode) {
+    fn op_swl(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_store(addr);
         let val = self.read_reg(op.rt());
         // Get address of whole word containing unaligned address.
         let aligned = addr & !3;
@@ -1036,8 +1047,9 @@ impl Cpu {
 
     /// SW - Store word.
     /// Store word from target register at address from source register + signed immediate value.
-    fn op_sw(&mut self, op: Opcode) {
+    fn op_sw(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_store(addr);
         let val = self.read_reg(op.rt());
         self.fetch_load_slot();
         if let Err(exp) = self.store::<Word>(addr, val) {
@@ -1051,8 +1063,9 @@ impl Cpu {
     /// SWR - Store world right.
     ///
     /// See 'op_swl'.
-    fn op_swr(&mut self, op: Opcode) {
+    fn op_swr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        dbg.data_store(addr);
         let val = self.read_reg(op.rt());
         let aligned = addr & !3;
         match self.load::<Word>(aligned) {
