@@ -9,9 +9,12 @@ pub enum Directive {
     HalfWord,
     Byte,
     Ascii,
+    /// Character array with a terminating '\0'.
     Asciiz,
 }
 
+/// Should maybe be called Address. It represents an address in memory,
+/// given by either an absolute address or a label reference.
 #[derive(Clone, Copy)]
 pub enum Label<'a> {
     Label(&'a str),
@@ -78,17 +81,19 @@ pub enum IrTy<'a> {
     Swl(Register, Register, u32),
     Sw(Register, Register, u32),
     Swr(Register, Register, u32),
-
     Mfc0(Register, u32),
     Mtc0(Register, u32),
 
+    /// A label in memory. Doesn't take space in the binary.
     Label(&'a str),
 
+    // Data.
     Word(u32),
     HalfWord(u16),
     Byte(u8),
     Ascii(String),
 
+    // Pseudo instructions.
     Nop,
     Move(Register, Register),
     Li(Register, u32),
@@ -118,9 +123,13 @@ impl<'a> IrTy<'a> {
     }
 }
 
+/// An immediate representation of assembly code. Since this assembler is multi-pass, ie. it's
+/// possible to reference labels out of lexical order, the code has to be represented in some way
+/// between parsing and code generation when symbols are getting resolved.
 #[derive(Clone)]
 pub struct Ir<'a> {
     pub ty: IrTy<'a>,
+    /// The line of the source file containing the code.
     pub line: usize,
 }
 

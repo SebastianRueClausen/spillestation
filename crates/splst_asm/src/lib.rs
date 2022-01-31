@@ -1,3 +1,12 @@
+//! A small Mips assmebler. Written mainly to be used for convenient testing and debugging.
+//!
+//! todo:
+//! * Support for multiple files and global scoped labels.
+//! * More pseudo instructions / directives such as 'align'.
+//! * Macros.
+//! * Add an 'API' with functions for common operations on the system such as DMA transfers or GPU
+//!   commands.
+
 mod lex;
 mod parse;
 mod gen;
@@ -23,6 +32,7 @@ impl fmt::Display for Error {
     }
 }
 
+/// Assemble the input string. 'base' is the address of the first instruction in the text segment.
 pub fn assemble<'a>(input: &'a str, base: u32) -> Result<Vec<u8>, Error> {
     let (text, data) = parse::parse(input)?;
     gen::gen_machine_code(text, data, base)

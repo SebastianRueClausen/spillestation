@@ -8,13 +8,19 @@ enum Section {
     Data,
 }
 
+/// Scan and parse 'input'. Returns Ir code for both text (first) and data (second) sections.
 pub fn parse<'a>(input: &'a str) -> Result<(Vec<Ir<'a>>, Vec<Ir<'a>>), Error> {
     Parser::new(lex::tokenize(input)).parse()
 }
 
 struct Parser<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> {
+    /// The current section.
     sec: Section,
-    prev_line: usize,
+    /// The line number of the previous token.
+    /// FIXME: Gives an invalid line number if for instance an instruction spans more than a single
+    /// line.
+    line: usize,
+    /// Input token iterator.
     input: Iter,
 }
 
@@ -22,21 +28,23 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
     fn new(input: Iter) -> Self {
         Self {
             sec: Section::Text,
-            prev_line: 1,
+            line: 1,
             input
         }
     }
 
     fn err(&mut self, msg: impl Into<String>) -> Error {
-        Error::new(self.prev_line, msg)
+        Error::new(self.line, msg)
     }
-    
+   
+    /// Expect some kind of token. Returns an error if the whole input has been consumed.
     fn expect_some(&mut self) -> Result<Tok<'a>, Error> {
         self.input.next().unwrap_or_else(|| {
             Err(self.err("Unexpected end of input"))
         })
     }
 
+    /// Parse a register. fx '$sp'.
     fn reg(&mut self) -> Result<Register, Error> {
         let tok = self.expect_some()?;
         match tok.ty {
@@ -62,6 +70,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
         Ok((reg, num))
     }
 
+    /// Parse a number.
     fn num(&mut self) -> Result<u32, Error> {
         let tok = self.expect_some()?;
         match tok.ty {
@@ -70,6 +79,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
         }
     }
 
+    /// Parse an 'address'. Could be either a reference to a label or an absolute address.
     fn addr(&mut self) -> Result<Label<'a>, Error> {
         let tok = self.expect_some()?;
         match tok.ty {
@@ -100,7 +110,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
 
         while let Some(tok) = self.input.next() {
             let tok = tok?;
-            self.prev_line = tok.line;
+            self.line = tok.line;
             match tok.ty {
                 TokTy::Directive(dir) => match dir {
                     Directive::Data => self.sec = Section::Data,
@@ -147,6 +157,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
                         &format!("Expected label, section or instruction")
                     ));
                 }
+                // The lexer should catch any EOF tokens and return None instead.
                 TokTy::Eof => unreachable!(),
                 TokTy::Id(id) => {
                     let ins = match id {

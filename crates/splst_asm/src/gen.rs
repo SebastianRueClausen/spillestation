@@ -5,6 +5,7 @@ use crate::Error;
 
 use std::collections::HashMap;
 
+/// A builder struct to build binary instruction.
 #[derive(Clone, Copy)]
 struct InsBuilder(u32);
 
@@ -75,6 +76,8 @@ impl<'a> CodeGen<'a> {
         }
     }
 
+    /// Resolve a ['Label'] by finding the address it's pointing to. Returns an error if the label
+    /// can't be found.
     fn resolve_label(&self, line: usize, addr: &Label) -> Result<u32, Error> {
         match addr {
             Label::Label(id) => match self.labels.get(id) {
@@ -87,12 +90,16 @@ impl<'a> CodeGen<'a> {
         }
     }
 
+    /// Find the branch offset of a ['Label']. Must be called before adding any following
+    /// instructions.
     fn branch_offset(&self, line: usize, addr: &Label) -> Result<i32, Error> {
         let loc = self.code.len() as i32 + 4;
         let dest = self.resolve_label(line, addr)? as i32;
         Ok((dest - loc) >> 2)
     }
 
+    /// Find the jump address of a ['Label']. Points to the next instruction / data after the
+    /// label.
     fn jump_addr(&self, line: usize, addr: &Label) -> Result<u32, Error> {
         Ok(self.resolve_label(line, addr)? >> 2)
     }
@@ -383,6 +390,7 @@ impl<'a> CodeGen<'a> {
     }
 }
 
+/// Generate binary machine code from ['Ir'] instructions.
 pub fn gen_machine_code<'a>(
     text: Vec<Ir<'a>>,
     data: Vec<Ir<'a>>,
