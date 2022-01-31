@@ -1,0 +1,8 @@
+[package]
+name = "splst_cdimg"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+splst_util = { path = "../splst_util" }
+thiserror = "*"
