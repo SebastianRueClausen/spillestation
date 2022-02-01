@@ -2,11 +2,16 @@ use splst_util::Bit;
 
 use std::fmt;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Bcd(u8);
 
 impl Bcd {
     pub const ZERO: Self = Self(0);
+    pub const ONE: Self = Self(1);
+
+    pub fn raw(self) -> u8 {
+        self.0
+    }
 
     pub fn from_binary(val: u8) -> Option<Self> {
         if val > 0x99 {

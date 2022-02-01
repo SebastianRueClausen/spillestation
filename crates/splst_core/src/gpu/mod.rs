@@ -341,7 +341,6 @@ impl Status {
         self.0.bit(24)
     }
 
-    #[allow(dead_code)]
     pub fn dma_data_request(self) -> bool {
         self.0.bit(25)
     }

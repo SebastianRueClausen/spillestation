@@ -17,8 +17,6 @@ struct Parser<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> {
     /// The current section.
     sec: Section,
     /// The line number of the previous token.
-    /// FIXME: Gives an invalid line number if for instance an instruction spans more than a single
-    /// line.
     line: usize,
     /// Input token iterator.
     input: Iter,
@@ -39,9 +37,14 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
    
     /// Expect some kind of token. Returns an error if the whole input has been consumed.
     fn expect_some(&mut self) -> Result<Tok<'a>, Error> {
-        self.input.next().unwrap_or_else(|| {
-            Err(self.err("Unexpected end of input"))
-        })
+        self.input.next()
+            .unwrap_or_else(|| {
+                Err(self.err("Unexpected end of input"))
+            })
+            .and_then(|tok| {
+                self.line = tok.line;
+                Ok(tok)
+            })
     }
 
     /// Parse a register. fx '$sp'.
@@ -110,7 +113,6 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
 
         while let Some(tok) = self.input.next() {
             let tok = tok?;
-            self.line = tok.line;
             match tok.ty {
                 TokTy::Directive(dir) => match dir {
                     Directive::Data => self.sec = Section::Data,

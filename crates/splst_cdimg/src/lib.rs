@@ -1,17 +1,22 @@
 #![feature(let_else)]
 
-mod cue;
 mod bcd;
 mod msf;
+mod index;
+mod cue;
+pub mod sector;
+pub mod cd;
 
-use bcd::Bcd;
 use thiserror::Error;
-
 use std::io;
+
+pub use cue::parse_cue;
+pub use cd::Cd;
+pub use sector::Sector;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("{0}")]
+    #[error("[error]: {0}")]
     IoError(#[from] io::Error),
 
     #[error("[error]:{line}: {msg}")]
@@ -19,6 +24,9 @@ pub enum Error {
         line: usize,
         msg: String,
     },
+
+    #[error("Section read failure")]
+    SectionReadError,
 }
 
 impl Error {
@@ -27,7 +35,7 @@ impl Error {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackMode {
     Audio,
     Mode1,
@@ -43,7 +51,7 @@ impl TrackMode {
             "MODE1/2048" => TrackMode::Mode1,
             "MODE1/2352" => TrackMode::Mode1Raw,
             "MODE2/2336" => TrackMode::Mode2,
-            "Mode2/2352" => TrackMode::Mode2Raw,
+            "MODE2/2352" => TrackMode::Mode2Raw,
             _ => return None,
         };
         Some(out)
@@ -66,26 +74,9 @@ impl TrackMode {
     }
 }
 
-
-enum TrackFormat {
+#[derive(Debug, Clone, Copy)]
+pub enum TrackFormat {
     Audio,
     Mode1,
     Mode2Xa,
-}
-
-pub enum Storage {
-    Binary {
-        index: usize,
-        offset: usize,
-        mode: TrackMode, 
-    },
-    PreGap,
-}
-
-pub struct Index<T> {
-    sector: usize,
-    index: Bcd,
-    track: Bcd,
-    format: TrackFormat,
-    data: T 
 }

@@ -1,4 +1,8 @@
-#[derive(Clone, Copy)]
+use crate::bcd::Bcd;
+
+use std::ops::Sub;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Msf {
     pub min: Bcd,
     pub sec: Bcd,

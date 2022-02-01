@@ -1,132 +1,117 @@
+#![allow(dead_code)]
+
 use crate::bcd::Bcd;
 use crate::msf::Msf;
-use crate::{Error, Index, TrackMode, Storage};
+use crate::index::{Index, IndexLookup, Storage, Binary};
+use crate::{Error, TrackMode};
+use crate::cd::Cd;
 
-use std::path::PathBuf;
+use itertools::Itertools;
+
+use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::Read;
 
-struct Track {
+#[derive(Debug, Clone, Copy)]
+struct TrackEntry {
     num: Bcd,
     binary: usize,
     mode: TrackMode,
     start: Msf,
 }
 
-struct Binary {
-    data: Box<[u8]>,
-}
-
-impl Binary {
-    fn size_left(&self) -> usize {
-        self.data.len() - self.consumed
-    }
-}
-
-struct CueIndex {
+#[derive(Debug, Clone, Copy)]
+struct IndexEntry {
+    /// The index of the track.
     track: usize,
+    /// The line of source the index is defined on.
     line: usize,
     num: Bcd,
     start: Msf,
 }
 
-struct Parser<'a> {
-    input: &'a str,
-    indices: Vec<CueIndex>,
-    binaries: Vec<Binary>,
-    tracks: Vec<Track>,
-}
+fn parse(input: &str, folder: &Path) -> Result<(Vec<PathBuf>, Vec<TrackEntry>, Vec<IndexEntry>), Error> {
+    let (mut indices, mut binaries, mut tracks) = (
+        Vec::<IndexEntry>::new(), Vec::<PathBuf>::new(), Vec::<TrackEntry>::new()
+    );
+    let lines = input.lines();
+    for (i, line) in lines.enumerate() {
+        let mut tokens = Tokens::new(line, i + 1);
+        // Skip the line if it's empty.
+        let Some(first) = tokens.next() else {
+            continue;
+        };
+        match first? {
+            "FILE" => {
+                let path = folder
+                    .to_path_buf()
+                    .join(tokens.expect("filename")?);
 
-impl<'a> Parser<'a> {
-    fn new(input: &'a str) -> Self {
-        Self {
-            input,
-            indices: Vec::new(),
-            binaries: Vec::new(),
-            tracks: Vec::new(),
-        }
-    }
+                let format = tokens.expect("file format")?;
 
-    fn parse(&mut self) -> Result<(), Error> {
-        let lines = self.input.lines();
-        for (i, line) in lines.enumerate() {
-            let mut tokens = Tokens::new(line, i + 1);
-            // Skip the line if it's empty.
-            let Some(first) = tokens.next() else {
-                continue;
-            };
-            match first? {
-                "FILE" => {
-                    let path = PathBuf::from(tokens.expect("filename")?);
-                    let format = tokens.expect("file format")?;
-                    if format != "Binary" {
-                        return Err(Error::cue_err(
-                            tokens.line_num, &format!("Unsupported file format '{format}'")
-                        ));
-                    }
-                    let mut file = File::open(path)?;
-                    let mut data = Vec::new();
-                    file.read_to_end(&mut data)?;
-                    self.binaries.push(Binary {
-                        data: data.into_boxed_slice(),
-                        consumed: 0,
-                    });
-                }
-                "TRACK" => {
-                    let Some(binary) = self.binaries.len().checked_sub(1) else {
-                        return Err(Error::cue_err(
-                            tokens.line_num, "'TRACK' command before 'FILE' command"
-                        ));
-                    };
-                    let (num, format) = (
-                        tokens.expect_bcd("track numer")?,
-                        tokens.expect("track format")?,
-                    );
-                    let Some(mode) = TrackMode::from_str(format) else {
-                        return Err(Error::cue_err(
-                            tokens.line_num, &format!("Invalid track format '{format}'")
-                        ));
-                    };
-                    self.tracks.push(Track {
-                        mode, num, binary, start: Msf::ZERO
-                    });
-                }
-                "INDEX" => {
-                    let (num, start) = (
-                        tokens.expect_bcd("index number")?,
-                        tokens.expect_msf("index start")?,
-                    );
-                    let Some(track_idx) = self.tracks.len().checked_sub(1) else {
-                        return Err(Error::cue_err(
-                            tokens.line_num, "'Index' command before 'Track' command"
-                        ))
-                    };
-                    if self.indices.iter().rev()
-                        .take_while(|idx| idx.track == track_idx)
-                        .any(|idx| idx.num == num)
-                    {
-                        return Err(Error::cue_err(
-                            tokens.line_num, &format!("'Duplicate index '{num}'")
-                        ))
-                    }
-                    self.indices.push(CueIndex {
-                        num, start, line: tokens.line_num, track: self.tracks.len() - 1
-                    });
-                }
-                "REM" => {
-                    // 'REM' means it's a comment. Comments can contain metadata, but that is not
-                    // supported for now.
-                    continue;
-                }
-                cmd => {
+                if format != "BINARY" {
                     return Err(Error::cue_err(
-                        tokens.line_num, &format!("Invalid command '{cmd}'")
+                        tokens.line_num, &format!("Unsupported file format '{format}'")
                     ));
                 }
+
+                binaries.push(path);
+            }
+            "TRACK" => {
+                let Some(binary) = binaries.len().checked_sub(1) else {
+                    return Err(Error::cue_err(
+                        tokens.line_num, "'TRACK' command before 'FILE' command"
+                    ));
+                };
+                let (num, format) = (
+                    tokens.expect_bcd("track numer")?,
+                    tokens.expect("track format")?,
+                );
+                let Some(mode) = TrackMode::from_str(format) else {
+                    return Err(Error::cue_err(
+                        tokens.line_num, &format!("Invalid track format '{format}'")
+                    ));
+                };
+                tracks.push(TrackEntry {
+                    mode, num, binary, start: Msf::ZERO
+                });
+            }
+            "INDEX" => {
+                let (num, start) = (
+                    tokens.expect_bcd("index number")?,
+                    tokens.expect_msf("index start")?,
+                );
+                let Some(track) = tracks.len().checked_sub(1) else {
+                    return Err(Error::cue_err(
+                        tokens.line_num, "'Index' command before 'Track' command"
+                    ))
+                };
+                if indices.iter()
+                    .rev()
+                    .take_while(|idx| idx.track == track)
+                    .any(|idx| idx.num == num)
+                {
+                    return Err(Error::cue_err(
+                        tokens.line_num, &format!("'Duplicate index '{num}'")
+                    ));
+                }
+                indices.push(IndexEntry {
+                    num, start, line: tokens.line_num, track: tracks.len() - 1
+                });
+            }
+            "REM" => {
+                // 'REM' means it's a comment. Comments can contain metadata, but that is not
+                // supported for now.
+                continue;
+            }
+            cmd => {
+                return Err(Error::cue_err(
+                    tokens.line_num, &format!("Invalid command '{cmd}'")
+                ));
             }
         }
-        Ok(Default::default())
     }
+    Ok((binaries, tracks, indices))
 }
 
 struct Tokens<'a> {
@@ -153,7 +138,9 @@ impl<'a> Tokens<'a> {
         let mut mfs = self
             .expect(what)?
             .split(':')
-            .map(|token| token_to_bcd(self.line_num, token));
+            .map(|token| {
+                token_to_bcd(self.line_num, token)
+            });
         let mut expect = || mfs.next().unwrap_or(
             Err(Error::cue_err(self.line_num, "MFS should have format 'xx:xx:xx'")
         ));
@@ -170,7 +157,7 @@ impl<'a> Iterator for Tokens<'a> {
             return None;
         }
         // The next 'token' is a string.
-        let arg = if let Some(new) = self.line.strip_suffix('"') {
+        let arg = if let Some(new) = self.line.strip_prefix('"') {
             if let Some((arg, rest)) = new.split_once("\"") {
                 self.line = rest; 
                 Ok(arg)
@@ -204,29 +191,57 @@ fn token_to_bcd(line: usize, token: &str) -> Result<Bcd, Error> {
     })
 }
 
-pub fn parse_cue(input: &str) -> Result<(Vec<Binary>, Vec<Index>), Error> {
-    let mut parser = Parser::new(input);
-    parser.parse()?;
+pub fn parse_cue(input: &str, folder: &Path) -> Result<Cd, Error> {
+    let (binaries, track_entries, index_entries) = parse(input, folder)?;
 
-    // The absolute index for all files.
-    let mut abs = Msf::ZERO; 
+    // The absolute index for all files. Cue always skips the first 2 seconds.
+    let mut abs = Msf::from_sector(150).unwrap(); 
 
-    let mut indices = Vec::with_capacity(parser.indices.len());
-    let mut idx_iter = parser.indices.iter().map(|idx| {
-        (idx, &parser.tracks[idx.track])
+    let mut indices = Vec::with_capacity(index_entries.len() + 1);
+    let mut idx_iter = index_entries.iter().map(|idx| {
+        (idx, &track_entries[idx.track])
     });
 
-    for (i, bin) in &mut parser.binaries.enumerate() {
+    let binaries = binaries
+        .iter()
+        .map(|path| {
+            let mut data = Vec::new();
+            File::open(path)?.read_to_end(&mut data)?;
+            Ok(Binary {
+                data: data.into_boxed_slice()
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+
+    // Since cue files doesn't specify track 1's pregap, it get's added here if there is a track 1.
+    if let Some(track) = &track_entries.iter().find(|t| t.num == Bcd::ONE) {
+        indices.push(Index {
+            index: Bcd::ZERO,
+            track: Bcd::ZERO,
+            sector: abs.sector(),
+            format: track.mode.track_format(),
+            data: Storage::PreGap,
+        });
+    }
+
+    for (i, bin) in &mut binaries.iter().enumerate() {
         // Offset into 'bin'.
         let mut offset = 0;
 
         // The previous index.
-        let mut prev = None;
+        let mut prev: Option<(&IndexEntry, &TrackEntry)> = None;
 
-        for (idx, track) in idx_iter.take_while(|(_, t)| t.binary == i) {
-            let size = (idx.start - prev).sector() * track.mode.sector_size();
+        for (idx, track) in idx_iter.take_while_ref(|(_, t)| t.binary == i) {
+            let size = {
+                let prev_start = if let Some(prev) = prev {
+                    prev.0.start
+                } else {
+                    Msf::ZERO
+                };
+                (idx.start - prev_start).sector() * track.mode.sector_size()
+            };
 
-            if size > bin.size_left() {
+            if size > (bin.data.len() - offset) {
                 return Err(Error::cue_err(
                     idx.line, "Index goes past the end of the binary file"
                 ));
@@ -240,7 +255,7 @@ pub fn parse_cue(input: &str) -> Result<(Vec<Binary>, Vec<Index>), Error> {
             offset += size;
 
             let data = Storage::Binary {
-                index: track.binary, mode: bin.mode, offset
+                binary: track.binary, mode: track.mode, offset
             };
 
             indices.push(Index {
@@ -256,7 +271,7 @@ pub fn parse_cue(input: &str) -> Result<(Vec<Binary>, Vec<Index>), Error> {
         if let Some((idx, track)) = prev {
             let sector_size = track.mode.sector_size();
 
-            let bytes_left = bin.len() - offset;
+            let bytes_left = bin.data.len() - offset;
             let sectors_left = bytes_left / sector_size;
             
             // Check that the remaining space is aligned with the sector size.
@@ -272,5 +287,29 @@ pub fn parse_cue(input: &str) -> Result<(Vec<Binary>, Vec<Index>), Error> {
         }
     }
 
-    Ok((parser.binaries, indices))
+    Ok(Cd::new(IndexLookup::new(indices, abs.sector()), binaries))
+}
+
+#[test]
+fn parse_test() {
+    let source = r#"
+        FILE "crash_bandicoot.bin" BINARY
+            TRACK 01 MODE2/2352
+            INDEX 01 00:00:00        
+    "#;
+    let (binaries, tracks, indices) = parse(source, &PathBuf::new()).unwrap();
+
+    assert_eq!(binaries.len(), 1);
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(indices.len(), 1);
+
+    let binary = &binaries[0];
+    let track = &tracks[0];
+    let index = &indices[0];
+
+    assert_eq!(binary.to_str().unwrap(), "crash_bandicoot.bin");
+    assert_eq!(track.mode, TrackMode::Mode2Raw);
+    assert_eq!(track.num, Bcd::ONE);
+    assert_eq!(index.num, Bcd::ONE);
+    assert_eq!(index.start, Msf::ZERO);
 }
