@@ -3,7 +3,6 @@
 
 pub mod app;
 pub mod app_menu;
-pub mod config;
 pub mod cpu;
 pub mod fps;
 pub mod gpu;
@@ -12,6 +11,7 @@ pub mod mem;
 pub mod timer;
 pub mod vram;
 pub mod schedule;
+pub mod start_menu;
 
 use crate::render::{Renderer, SurfaceSize};
 
@@ -195,8 +195,7 @@ fn widget_style() -> egui::style::Widgets {
     }
 }
 
-const PERSIAN_ACCENT: egui::Color32 = egui::Color32::from_rgb(1, 172, 159);
-
-// const RED_ACCENT: egui::Color32 = egui::Color32::from_rgb(223, 0, 36);
+pub const PERSIAN_ACCENT: egui::Color32 = egui::Color32::from_rgb(1, 172, 159);
+pub const RED_ACCENT: egui::Color32 = egui::Color32::from_rgb(223, 0, 36);
 // const BLUE_ACCENT: egui::Color32 = egui::Color32::from_rgb(46, 109, 180);
 // const YELLOW_ACCENT: egui::Color32 = egui::Color32::from_rgb(243, 195, 0);

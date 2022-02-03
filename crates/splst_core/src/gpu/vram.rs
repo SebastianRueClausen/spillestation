@@ -1,5 +1,3 @@
-pub const VRAM_SIZE: usize = 1024 * 1024;
-
 /// VRAM consists of 512 lines of 2048 bytes each, which equals 1 megabyte.
 pub struct Vram {
     data: Box<[u8; Self::SIZE]>,
@@ -10,7 +8,7 @@ impl Vram {
 
     pub fn new() -> Self {
         Self {
-            data: Box::new([0x0; VRAM_SIZE]),
+            data: Box::new([0x0; Self::SIZE]),
         }
     }
 
@@ -43,9 +41,9 @@ impl Vram {
 }
 
 fn offset_16(x: i32, y: i32) -> usize {
-    (x * 2 + y * 2048) as usize & (VRAM_SIZE - 1)
+    (x * 2 + y * 2048) as usize & (Vram::SIZE - 1)
 }
 
 fn offset_24(x: i32, y: i32) -> usize {
-    (x * 3 + y * 2048) as usize & (VRAM_SIZE - 1)
+    (x * 3 + y * 2048) as usize & (Vram::SIZE - 1)
 }

@@ -7,7 +7,7 @@ pub mod irq;
 pub mod opcode;
 
 use splst_util::Bit;
-
+use splst_cdimg::CdImage;
 use crate::{Cycle, Debugger};
 use crate::bus::{Event, AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
 
@@ -114,8 +114,8 @@ pub struct Cpu {
 const PC_START_ADDRESS: u32 = 0xbfc00000;
 
 impl Cpu {
-    pub fn new(bios: Bios) -> Box<Self> {
-        let bus = Bus::new(bios);
+    pub fn new(bios: Bios, cd: Option<CdImage>) -> Box<Self> {
+        let bus = Bus::new(bios, cd);
         let icache = Box::new([CacheLine::default(); 1024]);
         Box::new(Cpu {
             last_pc: 0x0,

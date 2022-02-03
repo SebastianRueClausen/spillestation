@@ -4,7 +4,7 @@ use crate::bcd::Bcd;
 use crate::msf::Msf;
 use crate::index::{Index, IndexLookup, Storage, Binary};
 use crate::{Error, TrackMode};
-use crate::cd::Cd;
+use crate::cd::CdImage;
 
 use itertools::Itertools;
 
@@ -191,7 +191,7 @@ fn token_to_bcd(line: usize, token: &str) -> Result<Bcd, Error> {
     })
 }
 
-pub fn parse_cue(input: &str, folder: &Path) -> Result<Cd, Error> {
+pub fn parse_cue(input: &str, folder: &Path) -> Result<CdImage, Error> {
     let (binaries, track_entries, index_entries) = parse(input, folder)?;
 
     // The absolute index for all files. Cue always skips the first 2 seconds.
@@ -287,7 +287,7 @@ pub fn parse_cue(input: &str, folder: &Path) -> Result<Cd, Error> {
         }
     }
 
-    Ok(Cd::new(IndexLookup::new(indices, abs.sector()), binaries))
+    Ok(CdImage::new(IndexLookup::new(indices, abs.sector()), binaries))
 }
 
 #[test]

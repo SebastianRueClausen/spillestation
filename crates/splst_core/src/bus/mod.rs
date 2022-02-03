@@ -5,6 +5,7 @@ pub mod dma;
 pub mod ram;
 
 use splst_util::Bit;
+use splst_cdimg::CdImage;
 use crate::gpu::Gpu;
 use crate::cdrom::{CdRom, CdRomCmd};
 use crate::cpu::{Irq, IrqState, cop0::Exception};
@@ -41,7 +42,7 @@ pub struct Bus {
 }
 
 impl Bus {
-    pub fn new(bios: Bios) -> Self {
+    pub fn new(bios: Bios, cd: Option<CdImage>) -> Self {
         let mut schedule = Schedule::new();
         schedule.schedule_in(5_000, Event::RunGpu);
         schedule.schedule_in(7_000, Event::RunCdRom);
@@ -52,7 +53,7 @@ impl Bus {
             ram: Ram::new(),
             dma: Dma::new(),
             gpu: Gpu::new(),
-            cdrom: CdRom::new(),
+            cdrom: CdRom::new(cd),
             timers: Timers::new(),
             spu: Spu::new(),
             io_port: IoPort::new(),

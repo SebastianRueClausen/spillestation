@@ -10,6 +10,7 @@ opt-level = 3
 
 [dependencies]
 splst_util = { path = "../splst_util" }
+splst_cdimg = { path = "../splst_cdimg" }
 splst_asm = { path = "../splst_asm" }
 
 ultraviolet = { version = "0.8.1" }

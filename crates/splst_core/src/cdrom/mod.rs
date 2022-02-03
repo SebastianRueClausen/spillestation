@@ -3,6 +3,7 @@ mod fifo;
 mod decoder;
 
 use splst_util::Bit;
+use splst_cdimg::CdImage;
 use crate::cpu::Irq;
 use crate::bus::{Schedule, Event, AddrUnit, BusMap};
 
@@ -11,6 +12,7 @@ use fifo::Fifo;
 use std::fmt;
 
 pub struct CdRom {
+    cd: Option<CdImage>,
     state: DriveState,
     /// The index register. This decides what happens when the CPU writes to and
     /// loads from the CDROM.
@@ -29,8 +31,9 @@ pub struct CdRom {
 }
 
 impl CdRom {
-    pub fn new() -> Self {
+    pub fn new(cd: Option<CdImage>) -> Self {
         Self {
+            cd,
             state: DriveState::Idle,
             index: 0x0,
             irq_mask: 0x0,

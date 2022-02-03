@@ -6,6 +6,7 @@ resolver = "2"
 
 [dependencies]
 splst_core = { path = "../splst_core" }
+splst_cdimg = { path = "../splst_cdimg" }
 
 egui = "0.16"
 egui_wgpu_backend = "0.16"
@@ -21,4 +22,5 @@ toml = "0.5.8"
 native-dialog = "0.6.1"
 
 log = "*"
+either = "*"
 thiserror = "*"

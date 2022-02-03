@@ -1,7 +1,10 @@
 use directories_next::ProjectDirs;
 use serde::{Deserialize, Serialize};
-use std::{{io, io::Write, fs}, path::PathBuf};
 use thiserror::Error;
+
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::fs;
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -20,7 +23,6 @@ pub enum ConfigError {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Config {
-    /// Path to BIOS file.
     pub bios: String,
 }
 

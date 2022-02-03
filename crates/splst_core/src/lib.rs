@@ -12,6 +12,8 @@ pub mod gpu;
 pub mod timing;
 pub mod cpu;
 
+use splst_cdimg::CdImage;
+
 use std::time::Duration;
 
 pub use cpu::Cpu;
@@ -69,8 +71,8 @@ pub struct System {
 }
 
 impl System {
-    pub fn new(bios: Bios) -> Self {
-        Self { cpu: Cpu::new(bios), last_frame: 0 }
+    pub fn new(bios: Bios, cd: Option<CdImage>) -> Self {
+        Self { cpu: Cpu::new(bios, cd), last_frame: 0 }
     }
 
     fn maybe_draw_frame(&mut self, out: &mut impl VidOut) {

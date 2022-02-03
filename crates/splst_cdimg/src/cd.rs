@@ -1,16 +1,16 @@
 use crate::msf::Msf;
 use crate::bcd::Bcd;
 use crate::index::{IndexLookup, Storage, Binary};
-use crate::sector::Sector;
+use crate::sector::{SectorDescriptor, Sector};
 use crate::{Error, TrackFormat};
 
-pub struct Cd {
+pub struct CdImage {
     indices: IndexLookup<Storage>,
     binaries: Vec<Binary>,
     pub toc: Toc,
 }
 
-impl Cd {
+impl CdImage {
     pub(super) fn new(indices: IndexLookup<Storage>, binaries: Vec<Binary>) -> Self {
         let toc = indices.build_toc();
         Self { indices, binaries, toc }
@@ -50,18 +50,15 @@ impl Cd {
             Storage::PreGap => &[0x0; 2352],
         };
 
-        let mut sector = Sector {
+        let desc = SectorDescriptor {
             abs_msf: msf,
             track_msf,
             index: idx.index,
             track: idx.track,
-            format: idx.format,
-            data: data.into(),
+            format: idx.format
         };
 
-        sector.generate_cdrom_header();
-
-        Ok(sector)
+        Ok(Sector::new(&desc, data.into()))
     }
 }
 
