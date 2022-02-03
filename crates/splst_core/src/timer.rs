@@ -2,7 +2,8 @@ use splst_util::{Bit, BitSet};
 
 use crate::cpu::Irq;
 use crate::timing;
-use crate::bus::{Schedule, Event, BusMap};
+use crate::bus::BusMap;
+use crate::schedule::{Schedule, Event};
 use crate::Cycle;
 
 use std::fmt;

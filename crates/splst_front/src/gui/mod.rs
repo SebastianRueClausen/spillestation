@@ -196,6 +196,6 @@ fn widget_style() -> egui::style::Widgets {
 }
 
 pub const PERSIAN_ACCENT: egui::Color32 = egui::Color32::from_rgb(1, 172, 159);
-pub const RED_ACCENT: egui::Color32 = egui::Color32::from_rgb(223, 0, 36);
+// pub const RED_ACCENT: egui::Color32 = egui::Color32::from_rgb(223, 0, 36);
 // const BLUE_ACCENT: egui::Color32 = egui::Color32::from_rgb(46, 109, 180);
 // const YELLOW_ACCENT: egui::Color32 = egui::Color32::from_rgb(243, 195, 0);

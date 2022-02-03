@@ -9,7 +9,8 @@ pub mod opcode;
 use splst_util::Bit;
 use splst_cdimg::CdImage;
 use crate::{Cycle, Debugger};
-use crate::bus::{Event, AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
+use crate::bus::{AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
+use crate::schedule::Event;
 
 use cop0::{Cop0, Exception};
 use gte::Gte;

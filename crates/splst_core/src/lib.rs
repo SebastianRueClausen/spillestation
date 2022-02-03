@@ -6,6 +6,7 @@ extern crate log;
 mod cdrom;
 mod spu;
 mod io_port;
+pub mod schedule;
 pub mod timer;
 pub mod bus;
 pub mod gpu;

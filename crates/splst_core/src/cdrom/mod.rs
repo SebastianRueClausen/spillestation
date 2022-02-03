@@ -5,7 +5,8 @@ mod decoder;
 use splst_util::Bit;
 use splst_cdimg::CdImage;
 use crate::cpu::Irq;
-use crate::bus::{Schedule, Event, AddrUnit, BusMap};
+use crate::bus::{AddrUnit, BusMap};
+use crate::schedule::{Schedule, Event};
 
 use fifo::Fifo;
 
@@ -109,6 +110,11 @@ impl CdRom {
         }
     }
 
+    fn finish_cmd(&mut self, schedule: &mut Schedule, irq: Interrupt) {
+        self.response_fifo.push(self.drive_stat());
+        self.set_interrupt(schedule, irq);
+    }
+
     pub fn run(&mut self, schedule: &mut Schedule) {
         self.exec_cmd(schedule);
         schedule.schedule_in(10_000, Event::RunCdRom);
@@ -133,17 +139,19 @@ impl CdRom {
         if self.irq_flags != 0 {
             return;
         }
+
         if let Some(cmd) = self.cmd.take() {
-            debug!("CDROM command {:x}", cmd);
+            self.response_fifo.clear();
+            debug!("CDROM command {}", CdRomCmd(cmd));
             match cmd {
                 // Status.
                 0x01 => {
-                    self.response_fifo.push(self.drive_stat());
-                    self.set_interrupt(schedule, Interrupt::Ack);
+                    self.finish_cmd(schedule, Interrupt::Ack);
                 }
                 // Init.
                 0x0a => {
-                    self.response_fifo.push(self.drive_stat());
+                    self.finish_cmd(schedule, Interrupt::Ack);
+                    self.state = DriveState::Paused;
                     schedule.schedule_in(900_000, Event::CdRomResponse(CdRomCmd(0x0a)));
                 }
                 // Test command. It's behavior depent on the first argument.
@@ -157,17 +165,20 @@ impl CdRom {
                 }
                 // Get ID.
                 0x1a => {
+                    self.state = DriveState::Reading;
+                    self.finish_cmd(schedule, Interrupt::Ack);
                     self.response_fifo.push_slice(&[0x11, 0x80]);
-                    self.set_interrupt(schedule, Interrupt::Error);
                 }
                 // Read Table of Content.
                 0x1e => {
+                    debug!("Read table of content");
                     self.response_fifo.push(self.drive_stat());
                     // This might not take as long without a disc.
                     schedule.schedule_in(30_000_000, Event::CdRomResponse(CdRomCmd(0x1e)));
                 }
                 _ => todo!("CDROM Command: {:08x}", cmd),
             }
+
             self.arg_fifo.clear();
         }
     }
@@ -184,8 +195,16 @@ impl CdRom {
     }
 
     fn drive_stat(&self) -> u8 {
-        // This means that the drive cover is open.
-        0x10
+        if self.cd.is_none() {
+            // This means that the drive cover is open.
+            0x10
+        } else {
+            match self.state {
+                DriveState::Idle => 0,
+                DriveState::Paused => (1 << 1),
+                DriveState::Reading => (1 << 1) | (1 << 5),
+            }
+        }
     }
 }
 
@@ -208,12 +227,14 @@ impl fmt::Display for CdRomCmd {
 #[derive(Clone, Copy)]
 enum Interrupt {
     Ack = 0x3,
-    Error = 0x5,
+    // Error = 0x5,
 }
 
 #[derive(Clone, Copy)]
 enum DriveState {
     Idle,
+    Paused,
+    Reading,
 }
 
 impl BusMap for CdRom {

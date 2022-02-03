@@ -174,7 +174,7 @@ impl StartMenu {
                 ui.label(egui::WidgetText::RichText(
                     egui::RichText::new("Spillestation")
                         .text_style(egui::TextStyle::Heading)
-                        .color(super::RED_ACCENT)
+                        .color(egui::Color32::BLACK)
                 ));
             });
             ui.allocate_space(space);

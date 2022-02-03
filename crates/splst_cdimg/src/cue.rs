@@ -184,7 +184,7 @@ fn token_to_bcd(line: usize, token: &str) -> Result<Bcd, Error> {
         Error::cue_err(line, &format!("Invalid number: {err}"))
     });
     let num = num?;
-    Bcd::from_bcd(num).ok_or_else(|| {
+    Bcd::from_binary(num).ok_or_else(|| {
         Error::cue_err(line, &format!(
             "Invalid Track number '{num}' (Doesn't fit BCD format)"
         ))

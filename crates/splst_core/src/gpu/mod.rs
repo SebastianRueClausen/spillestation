@@ -7,7 +7,8 @@ pub mod vram;
 
 use splst_util::{Bit, BitSet};
 use crate::cpu::Irq;
-use crate::bus::{DmaChan, ChanDir, Schedule, Event, BusMap, AddrUnit};
+use crate::bus::{DmaChan, ChanDir, BusMap, AddrUnit};
+use crate::schedule::{Event, Schedule};
 use crate::timing;
 use crate::timer::Timers;
 use crate::{Cycle, DrawInfo};
