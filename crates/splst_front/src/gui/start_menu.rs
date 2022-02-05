@@ -3,11 +3,11 @@ use splst_cdimg::CdImage;
 use crate::Config;
 
 use native_dialog::FileDialog;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct StartMenu {
-    bios: Option<(String, Bios)>,
-    cd_image: Option<(String, CdImage)>,
+    bios: Option<(PathBuf, Bios)>,
+    cd_image: Option<(PathBuf, CdImage)>,
     error: Option<String>,
     bios_path: String,
     cd_path: String,
@@ -15,7 +15,7 @@ pub struct StartMenu {
 }
 
 impl StartMenu {
-    pub fn with_bios(bios: Bios, path: String) -> Self {
+    pub fn with_bios(bios: Bios, path: PathBuf) -> Self {
         Self {
             bios: Some((path, bios)),
             cd_image: None,
@@ -41,9 +41,14 @@ impl StartMenu {
         ui.group(|ui| {
             match self.bios {
                 Some((ref path, _)) => {
-                    ui.horizontal(|ui| {
+                    let filename = path.components()
+                        .last()
+                        .map(|c| c.as_os_str())
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy();
+                    let change = ui.horizontal(|ui| {
                         if !self.bios_in_config {
-                            ui.label("BIOS Loaded ✔");
+                            ui.label(format!("BIOS Loaded '{}' ✔", filename));
                             if ui.button("Save to Config File").clicked() {
                                 let res = Config::store(&Config {
                                     bios: path.clone()
@@ -54,9 +59,13 @@ impl StartMenu {
                                 }
                             }
                         } else {
-                            ui.label("BIOS loaded and saved in Config File ✔");
+                            ui.label(format!("BIOS loaded '{}' and saved in Config File ✔", filename));
                         }
+                        ui.button("Change").clicked()
                     });
+                    if change.inner {
+                        self.bios = None;
+                    }
                 }
                 None => {
                     ui.label("A BIOS must be loaded to use the Emulator");
@@ -80,7 +89,7 @@ impl StartMenu {
                         if ui.button("Load").clicked() {
                             match Bios::from_file(Path::new(&self.bios_path)) {
                                 Err(err) => self.error = Some(err.to_string()),
-                                Ok(bios) => self.bios = Some((self.bios_path.clone(), bios)),
+                                Ok(bios) => self.bios = Some((PathBuf::from(self.bios_path.clone()), bios)),
                             }
                         }
                     });
@@ -91,7 +100,18 @@ impl StartMenu {
 
             match self.cd_image {
                 Some((ref path, _)) => {
-                    ui.label(format!("Game Loaded '{path}' ✔"));
+                    let filename = path.components()
+                        .last()
+                        .map(|c| c.as_os_str())
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy();
+                    let change = ui.horizontal(|ui| {
+                        ui.label(format!("Game Loaded '{}' ✔", filename));
+                        ui.button("Change").clicked()
+                    });
+                    if change.inner {
+                        self.cd_image = None; 
+                    }
                 }
                 None => {
                     ui.label("No Game Loaded");
@@ -115,7 +135,7 @@ impl StartMenu {
                         if ui.button("Load").clicked() {
                             match splst_cdimg::open_cd(Path::new(&self.cd_path)) {
                                 Err(err) => self.error = Some(err.to_string()),
-                                Ok(cd) => self.cd_image = Some((self.cd_path.clone(), cd)),
+                                Ok(cd) => self.cd_image = Some((PathBuf::from(self.cd_path.clone()), cd)),
                             }
                         }
                     });

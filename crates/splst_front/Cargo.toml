@@ -22,5 +22,4 @@ toml = "0.5.8"
 native-dialog = "0.6.1"
 
 log = "*"
-either = "*"
 thiserror = "*"

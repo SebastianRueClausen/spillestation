@@ -1,3 +1,4 @@
+#![feature(vec_retain_mut)]
 //! The frontend of the emulator. Handles the window, input/output, rendering, GUI and controls the
 //! emulator itself.
 

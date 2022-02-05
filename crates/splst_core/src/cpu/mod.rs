@@ -1336,7 +1336,6 @@ mod tests {
                 addiu   $v1, $v1, 1
 
                 break 0
-
         "#);
         assert_eq!(cpu.read_reg(RegIdx::V0), (-1_i32) as u32);
         assert_eq!(cpu.read_reg(RegIdx::V1), 0);

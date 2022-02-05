@@ -23,7 +23,7 @@ pub enum ConfigError {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Config {
-    pub bios: String,
+    pub bios: PathBuf,
 }
 
 impl Config {
