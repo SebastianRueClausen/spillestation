@@ -52,12 +52,10 @@ pub(super) struct Cop0 {
 
 impl Cop0 {
     pub(super) fn new() -> Self {
-        Self {
-            regs: REGISTER_VALUES,
-        }
+        Self { regs: REGISTER_VALUES }
     }
 
-    /// Describes if the scrachpad is enabled.
+    /// If the scratchpad is enabled.
     pub(super) fn cache_isolated(&self) -> bool {
         self.regs[12].bit(16)
     }
@@ -108,12 +106,15 @@ impl Cop0 {
         } else {
             0x80000080
         }
+
+        // TODO IRQ state might have changed.
     }
 
     pub(super) fn exit_exception(&mut self) {
         let flags = self.regs[12].bit_range(0, 5);
-        self.regs[12] &= !0xf;
-        self.regs[12] |= flags >> 2;
+        self.regs[12] = self.regs[12].set_bit_range(0, 3, flags >> 2);
+
+        // TODO IRQ state might have changed.
     }
 }
 

@@ -214,11 +214,16 @@ impl BusMap for RamSize {
     const BUS_END: u32 = Self::BUS_BEGIN + 4 - 1;
 }
 
+#[derive(Clone, Copy)]
 pub struct CacheCtrl(u32);
 
 impl CacheCtrl {
-    pub fn icache_enabled(&self) -> bool {
+    pub fn icache_enabled(self) -> bool {
         self.0.bit(11)
+    }
+
+    pub fn tag_test_enabled(self) -> bool {
+        self.0.bit(2)
     }
 }
 

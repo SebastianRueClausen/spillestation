@@ -1,4 +1,17 @@
 //! Emulation of the MIPS R3000 used by the original Sony Playstation.
+//!
+//! TODO:
+//! * Perhaps checking for active interrupts isn't good enough, since writes to the COP0 cause and
+//!   active registers can change 'irq_active' status. Checking every cycle doesn't seem to do
+//!   anything for now, but herhaps there could be a problem.
+//!
+//! * The instruction cache could be represented more effeciently. Also support isolated cache
+//!   writes.
+//!
+//! * Implement the scratchpad. There might be correctness problems caused by the lack of the
+//!   scratchpad.
+//!
+//! * More testing of edge cases.
 
 pub mod cop0;
 mod gte;
@@ -153,6 +166,16 @@ impl Cpu {
         if !self.cop0.cache_isolated() {
             self.bus.store::<T>(addr, val)
         } else {
+            debug!("Storing to isolated cacheline at address {addr:0x}");
+
+            let offset = ((addr >> 4) & 0xff) as usize;
+            let _line = self.icache[offset];
+
+            if self.bus.cache_ctrl.tag_test_enabled() {
+                
+            } else {
+
+            }
             // TODO: Write to scratchpad.
             Ok(())
         }
