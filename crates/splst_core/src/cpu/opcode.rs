@@ -37,66 +37,97 @@ impl RegIdx {
 
     #[allow(dead_code)]
     pub const ZERO: Self = Self(0);
+
     #[allow(dead_code)]
     pub const AT: Self = Self(1);
+
     #[allow(dead_code)]
     pub const V0: Self = Self(2);
+
     #[allow(dead_code)]
     pub const V1: Self = Self(3);
+
     #[allow(dead_code)]
     pub const A0: Self = Self(4);
+
     #[allow(dead_code)]
     pub const A1: Self = Self(5);
+
     #[allow(dead_code)]
     pub const A2: Self = Self(6);
+
     #[allow(dead_code)]
     pub const A3: Self = Self(7);
+
     #[allow(dead_code)]
     pub const T0: Self = Self(8);
+
     #[allow(dead_code)]
     pub const T1: Self = Self(9);
+
     #[allow(dead_code)]
     pub const T2: Self = Self(10);
+
     #[allow(dead_code)]
     pub const T3: Self = Self(11);
+
     #[allow(dead_code)]
     pub const T4: Self = Self(12);
+
     #[allow(dead_code)]
     pub const T5: Self = Self(13);
+
     #[allow(dead_code)]
     pub const T6: Self = Self(14);
+
     #[allow(dead_code)]
     pub const T7: Self = Self(15);
+
     #[allow(dead_code)]
     pub const S0: Self = Self(16);
+
     #[allow(dead_code)]
     pub const S1: Self = Self(17);
+
     #[allow(dead_code)]
     pub const S2: Self = Self(18);
+
     #[allow(dead_code)]
     pub const S3: Self = Self(19);
+
     #[allow(dead_code)]
     pub const S4: Self = Self(20);
+
     #[allow(dead_code)]
     pub const S5: Self = Self(21);
+
     #[allow(dead_code)]
     pub const S6: Self = Self(22);
+
     #[allow(dead_code)]
     pub const S7: Self = Self(23);
+
     #[allow(dead_code)]
     pub const T8: Self = Self(24);
+
     #[allow(dead_code)]
     pub const T9: Self = Self(25);
+
     #[allow(dead_code)]
     pub const K0: Self = Self(26);
+
     #[allow(dead_code)]
     pub const K1: Self = Self(27);
+
     #[allow(dead_code)]
     pub const GP: Self = Self(28);
+
     #[allow(dead_code)]
     pub const SP: Self = Self(29);
+
     #[allow(dead_code)]
     pub const FP: Self = Self(30);
+
     #[allow(dead_code)]
     pub const RA: Self = Self(31);
 }
@@ -239,18 +270,20 @@ impl fmt::Display for Opcode {
             0x11 => write!(f, "cop1"),
             0x12 => write!(f, "cop2"),
             0x13 => write!(f, "cop3"),
-            0x20 => write!(f, "lb {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x21 => write!(f, "lh {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x22 => write!(f, "lwl {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x23 => write!(f, "lw {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x24 => write!(f, "lbu {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x25 => write!(f, "lhu {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x26 => write!(f, "lwr {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x28 => write!(f, "sb {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x29 => write!(f, "sh {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x2a => write!(f, "swl {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x2b => write!(f, "sw {} {} {}", self.rt(), self.rs(), self.signed_imm()),
-            0x2e => write!(f, "swr {} {} {}", self.rt(), self.rs(), self.signed_imm()),
+
+            0x20 => write!(f, "lb {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x21 => write!(f, "lh {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x22 => write!(f, "lwl {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x23 => write!(f, "lw {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x24 => write!(f, "lbu {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x25 => write!(f, "lhu {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x26 => write!(f, "lwr {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x28 => write!(f, "sb {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x29 => write!(f, "sh {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x2a => write!(f, "swl {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x2b => write!(f, "sw {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+            0x2e => write!(f, "swr {} {}({})", self.rt(), self.signed_imm(), self.rs()),
+
             0x30 => write!(f, "lwc0"),
             0x31 => write!(f, "lwc1"),
             0x32 => write!(f, "lwc2"),

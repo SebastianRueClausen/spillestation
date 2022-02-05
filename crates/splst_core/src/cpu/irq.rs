@@ -1,5 +1,6 @@
 use splst_util::Bit;
 use crate::bus::BusMap;
+use crate::schedule::{Event, Schedule};
 
 use std::fmt;
 
@@ -67,7 +68,8 @@ impl IrqState {
         self.mask.bit(irq as usize)
     }
 
-    pub fn store(&mut self, offset: u32, val: u32) {
+    pub fn store(&mut self, schedule: &mut Schedule, offset: u32, val: u32) {
+        schedule.schedule_now(Event::IrqCheck);
         match offset {
             0 => self.status &= val,
             4 => self.mask = val,

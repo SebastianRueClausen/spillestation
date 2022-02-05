@@ -81,8 +81,12 @@ pub enum IrTy<'a> {
     Swl(Register, Register, u32),
     Sw(Register, Register, u32),
     Swr(Register, Register, u32),
+
     Mfc0(Register, u32),
     Mtc0(Register, u32),
+
+    Mfc2(Register, u32),
+    Mtc2(Register, u32),
 
     /// A label in memory. Doesn't take space in the binary.
     Label(&'a str),

@@ -2,10 +2,18 @@
 //!
 //! todo:
 //! * Support for multiple files and global scoped labels.
+//!
 //! * More pseudo instructions / directives such as 'align'.
+//!
 //! * Macros.
+//!
 //! * Add an 'API' with functions for common operations on the system such as DMA transfers or GPU
 //!   commands.
+//!
+//! * Mfc0 / Mtc0 should take register arguments instead of immediate values for the second
+//!   argument. Problem is that it should only take numbered register arguments.
+//!
+//! * Check for overflow in immediate values.
 
 mod lex;
 mod parse;

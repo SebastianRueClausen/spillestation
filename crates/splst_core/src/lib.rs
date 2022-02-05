@@ -78,6 +78,7 @@ impl System {
 
     fn maybe_draw_frame(&mut self, out: &mut impl VidOut) {
         let gpu = self.cpu.bus().gpu();
+
         if self.last_frame < gpu.frame_count() {
             self.last_frame = gpu.frame_count();
             out.new_frame(&gpu.draw_info(), gpu.vram());
@@ -86,15 +87,14 @@ impl System {
 
     /// Run at full speed for a given amount of time.
     pub fn run(&mut self, time: Duration, out: &mut impl VidOut) {
-        // This is pretty bad, but since ['Duration'] can't be constant for now, it has to be
+        // Since ['Duration'] can't be constant for now, it has to be
         // calculated each run even though the number is constant.
         let cycle_time = Duration::from_secs(1) / timing::CPU_HZ as u32;
-        // Calculate the number the cycles to run.
-        let cycles = time.as_nanos() / (cycle_time.as_nanos() + 1);
-        // ['System::maybe_draw_frame'] only gets called every 16nth cycle. The system isn't
-        // that accurate anyways.
-        let outer = cycles / 16;
-        for _ in 0..outer {
+
+        let cycles = time.as_nanos() / cycle_time.as_nanos();
+        let end = self.cpu.bus().schedule.cycle() + cycles as u64;
+
+        while self.cpu.bus.schedule.cycle() <= end {
             for _ in 0..16 { 
                 self.cpu.step(&mut ());
             }
@@ -113,15 +113,27 @@ impl System {
         dbg: &mut impl Debugger,
     ) -> (Duration, StopReason) {
         let cycle_time = Duration::from_secs(1) / hz as u32;
-        while let Some(new) = time.checked_sub(cycle_time) {
-            time = new;
-            self.cpu.step(dbg);
+
+        loop {
+            let before = self.cpu.bus.schedule.cycle();
+
+            self.cpu.step(&mut ());
             self.maybe_draw_frame(out);
+
+            let cycles = self.cpu.bus.schedule.cycle() - before;
+
+            for _ in 0..cycles {
+                if let Some(new) = time.checked_sub(cycle_time) {
+                    time = new;
+                } else {
+                    return (time, StopReason::Time);
+                }
+            }
+                
             if dbg.should_stop() {
                 return (time, StopReason::Break);
             }
         }
-        (time, StopReason::Time)
     }
 
     /// Run for a given number of cycles in debug mode.

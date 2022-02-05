@@ -413,6 +413,14 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
                             self.reg()?,
                             self.comma()?.num()?,
                         ),
+                        "mfc2" => IrTy::Mfc2(
+                            self.reg()?,
+                            self.comma()?.num()?,
+                        ),
+                        "mtc2" => IrTy::Mtc2(
+                            self.reg()?,
+                            self.comma()?.num()?,
+                        ),
                         "nop" => IrTy::Nop,
                         "move" => IrTy::Move(
                             self.reg()?,

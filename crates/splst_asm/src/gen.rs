@@ -280,6 +280,12 @@ impl<'a> CodeGen<'a> {
             IrTy::Mtc0(rt, reg) => {
                 self.gen_ins(InsBuilder::op(0x10).cop_op(0x4).rt(rt).cop_reg(reg));
             }
+            IrTy::Mfc2(rt, reg) => {
+                self.gen_ins(InsBuilder::op(0x12).cop_op(0).rt(rt).cop_reg(reg));
+            }
+            IrTy::Mtc2(rt, reg) => {
+                self.gen_ins(InsBuilder::op(0x12).cop_op(0x4).rt(rt).cop_reg(reg));
+            }
             IrTy::Lb(rt, rs, val) => {
                 self.gen_ins(InsBuilder::op(0x20).rt(rt).rs(rs).imm(val));
             }
@@ -398,6 +404,7 @@ pub fn gen_machine_code<'a>(
 ) -> Result<Vec<u8>, Error> {
     let mut gen = CodeGen::new();
     let mut addr = base;
+
     for ins in text.iter().chain(data.iter()) {
         if let IrTy::Label(id) = ins.ty {
             if gen.labels.insert(id, addr).is_some() {
@@ -410,6 +417,7 @@ pub fn gen_machine_code<'a>(
             addr += ins.ty.size();
         }
     }
+
     // Generate text section and then data section.
     for ins in text.iter().chain(data.iter()) {
         gen.assemble_ir(ins)?;

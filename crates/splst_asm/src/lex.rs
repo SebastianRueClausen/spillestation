@@ -88,6 +88,10 @@ impl<'a> Lexer<'a> {
         self.chars.next()
     }
 
+    fn eat_n(&mut self, n: usize) -> Option<char> {
+        self.chars.nth(n - 1)
+    }
+
     /// Consume a single character if it matches 'c'.
     fn eat_char(&mut self, c: char) -> bool {
         if self.first() == c {
@@ -144,25 +148,21 @@ impl<'a> Lexer<'a> {
     /// Consume and parse a number. Doesn't handle unary '-' and expects 'first' to be valid digit.
     fn eat_num(&mut self) -> Result<u32, Error> {
         debug_assert!(self.first().is_ascii_digit());
-        let base = if self.first() == '0' {
+        let (base, eat_while): (u32, fn(char) -> bool) = if self.first() == '0' {
             if self.second() == 'x' {
-                self.eat();
-                self.eat();
-                16
+                self.eat_n(2);
+                (16, |c| c.is_ascii_hexdigit())
             } else if self.second() == 'b' {
-                self.eat();
-                self.eat();
-                2
+                self.eat_n(2);
+                (2, |c| matches!(c, '0' | '1'))
             } else {
-                10
+                (10, |c| c.is_ascii_digit())
             }
         } else {
-            10
+            (10, |c| c.is_ascii_digit())
         };
         let as_str = self.chars.as_str();
-        let eaten = self.eat_while(|c| {
-            c.is_ascii_digit()
-        });
+        let eaten = self.eat_while(eat_while);
         u32::from_str_radix(&as_str[0..eaten], base).map_err(|err| {
             self.err(&format!("Invalid number: {}", err))
         })

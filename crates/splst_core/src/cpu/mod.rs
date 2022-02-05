@@ -5,15 +5,13 @@
 //!   active registers can change 'irq_active' status. Checking every cycle doesn't seem to do
 //!   anything for now, but herhaps there could be a problem.
 //!
-//! * The instruction cache could be represented more effeciently. Also support isolated cache
-//!   writes.
-//!
-//! * Implement the scratchpad. There might be correctness problems caused by the lack of the
-//!   scratchpad.
+//! * Implement pipelineing for loads.
 //!
 //! * More testing of edge cases.
+//!
+//! * Test that store and load functions get's inlined properly to avoid branching on Exceptions.
 
-pub mod cop0;
+mod cop0;
 mod gte;
 
 pub mod irq;
@@ -22,7 +20,9 @@ pub mod opcode;
 use splst_util::Bit;
 use splst_cdimg::CdImage;
 use crate::{Cycle, Debugger};
-use crate::bus::{AddrUnit, Bus, Byte, HalfWord, Word, bios::Bios};
+use crate::bus::{BusMap, AddrUnit, Bus, Byte, HalfWord, Word};
+use crate::bus::bios::Bios;
+use crate::bus::scratchpad::ScratchPad;
 use crate::schedule::Event;
 
 use cop0::{Cop0, Exception};
@@ -35,12 +35,6 @@ pub use irq::{IrqState, Irq};
 struct DelaySlot {
     pub reg: RegIdx,
     pub val: u32,
-}
-
-#[derive(Default, Copy, Clone)]
-struct CacheLine {
-    pub tag: u32,
-    pub data: u32,
 }
 
 pub struct Cpu {
@@ -99,6 +93,9 @@ pub struct Cpu {
     /// - 30 - Frame pointer, or static variable.
     /// - 31 - Return address.
     pub registers: [u32; 32],
+
+    // pipeline: (RegIdx, Cycle), 
+
     /// # Load Delay Slot
     ///
     /// This is used to emulate the pipeline of the MIPS R3000. When loading data from the BUS,
@@ -119,7 +116,8 @@ pub struct Cpu {
     /// least 15% compared to branching, most likely because the branch predicter has a hard time.
     load_delay: DelaySlot,
     /// Memory sections KUSEG and KSEG0 are cached for instructions.
-    icache: Box<[CacheLine; 1024]>,
+    icache: Box<[ICacheLine; 0x100]>,
+    icache_misses: u64,
     pub bus: Bus,
     gte: Gte,
     cop0: Cop0,
@@ -130,7 +128,7 @@ const PC_START_ADDRESS: u32 = 0xbfc00000;
 impl Cpu {
     pub fn new(bios: Bios, cd: Option<CdImage>) -> Box<Self> {
         let bus = Bus::new(bios, cd);
-        let icache = Box::new([CacheLine::default(); 1024]);
+        let icache = Box::new([ICacheLine::valid(); 0x100]);
         Box::new(Cpu {
             last_pc: 0x0,
             pc: PC_START_ADDRESS,
@@ -141,13 +139,32 @@ impl Cpu {
             lo: 0x0,
             hi_lo_ready: 0x0,
             registers: [0x0; 32],
+            // pipeline: (RegIdx::ZERO, 0),
             load_delay: DelaySlot::default(),
             gte: Gte::new(),
             cop0: Cop0::new(),
             icache,
+            icache_misses: 0,
             bus,
         })
     }
+
+    /*
+    /// Skips forward in time if the CPU is going to access a register (read or write) that is
+    /// waiting for a previous data load.
+    fn access_reg(&mut self, idx: RegIdx) {
+        let (reg, cycle) = self.pipeline;
+
+        let same = idx == reg;
+
+        // This works since 'skip_to' ignores cycles less than the current cycle (take max of the
+        // two). So if the register doesn't match the register waiting for a load, it skips two
+        // cycle 0, which does nothing. Also if there isn't any loads in the pipeline, 'cycle' will
+        // be less than the current cycle, in which case this does nothing. This means that this
+        // should be branchless.
+        self.bus.schedule.skip_to(cycle * same as Cycle);
+    }
+    */
 
     fn read_reg(&self, idx: RegIdx) -> u32 {
         self.registers[idx.0 as usize]
@@ -158,36 +175,77 @@ impl Cpu {
         self.registers[0] = 0;
     }
 
+    /// Load data from the bus. Must not be called when loading code.
     fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
-        self.bus.load::<T>(addr)
+        if !T::is_aligned(addr) {
+            self.cop0.set_reg(8, addr);
+
+            return Err(Exception::AddressLoadError);
+        }
+
+        let addr = regioned_addr(addr); 
+
+        if let Some(offset) = ScratchPad::offset(addr) {
+            Ok(self.bus.scratchpad.load::<T>(offset))
+        } else {
+            self.bus.load::<T>(addr).ok_or(Exception::BusDataError)
+        }
+    }
+
+    fn load_code<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
+        if !T::is_aligned(addr) {
+            self.cop0.set_reg(8, addr);
+
+            return Err(Exception::AddressLoadError);
+        }
+
+        let addr = regioned_addr(addr);
+
+        self.bus.load::<T>(addr).ok_or(Exception::BusInstructionError)
     }
 
     fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) -> Result<(), Exception> {
-        if !self.cop0.cache_isolated() {
-            self.bus.store::<T>(addr, val)
-        } else {
-            debug!("Storing to isolated cacheline at address {addr:0x}");
+        if !T::is_aligned(addr) {
+            self.cop0.set_reg(8, addr);
 
-            let offset = ((addr >> 4) & 0xff) as usize;
-            let _line = self.icache[offset];
+            return Err(Exception::AddressStoreError);
+        }
+
+        let addr = regioned_addr(addr);
+
+        if !self.cop0.cache_isolated() {
+            self.bus.store::<T>(addr, val).ok_or(Exception::BusDataError)
+        } else if self.bus.cache_ctrl.icache_enabled() {
+            // There shouldn't be any reason to check alignment here i think.
+            
+            let line_idx = addr.bit_range(4, 11) as usize;
+            let mut line = self.icache[line_idx];
 
             if self.bus.cache_ctrl.tag_test_enabled() {
-                
+                line.invalidate();                
             } else {
-
+                let index = addr.bit_range(2, 3) as usize;
+                line.data[index] = val;
             }
-            // TODO: Write to scratchpad.
+
+            self.icache[line_idx] = line;
+
+            Ok(())
+        } else {
+            warn!("store with cache isolated but not enabled");
             Ok(())
         }
     }
 
     /// Add pending load. If there's already one pending, fetch it.
-    fn add_load_slot(&mut self, reg: RegIdx, val: u32) {
+    fn add_load(&mut self, reg: RegIdx, val: u32) {
+        // TODO: Make branchless just to be sure.
         let (sreg, sval) = if self.load_delay.reg != reg {
             (self.load_delay.reg, self.load_delay.val)
         } else {
             (RegIdx::ZERO, 0) 
         };
+
         self.set_reg(sreg, sval);
         self.load_delay = DelaySlot { reg, val };
     }
@@ -221,6 +279,7 @@ impl Cpu {
     fn jump(&mut self, address: u32) {
         self.next_pc = address;
         self.branched = true;
+
         if !Word::is_aligned(self.next_pc) {
             self.cop0.set_reg(8, self.next_pc);
             self.throw_exception(Exception::AddressLoadError);
@@ -230,9 +289,12 @@ impl Cpu {
     /// Start handeling an exception, and jumps to exception handling code in bios.
     fn throw_exception(&mut self, ex: Exception) {
         trace!("Exception thrown: {:?}", ex);
-        self.pc = self
-            .cop0
-            .enter_exception(self.last_pc, self.in_branch_delay, ex);
+        self.pc = self.cop0.enter_exception(
+            &mut self.bus.schedule,
+            self.last_pc,
+            self.in_branch_delay,
+            ex
+        );
         self.next_pc = self.pc.wrapping_add(4);
     }
 
@@ -253,7 +315,11 @@ impl Cpu {
 
     // Used fot debug.
     pub fn curr_ins(&mut self) -> Opcode {
-        Opcode::new(self.load::<Word>(self.pc).unwrap())
+        Opcode::new(self.load_code::<Word>(self.pc).unwrap())
+    }
+
+    pub fn icache_misses(&mut self) -> u64 {
+        self.icache_misses
     }
 
     /// Move the program counter to the next instruction. Returns the address of the next
@@ -264,60 +330,84 @@ impl Cpu {
         self.next_pc = self.next_pc.wrapping_add(4);
         self.in_branch_delay = self.branched;
         self.branched = false;
-        self.last_pc  
+        self.last_pc
+    }
+
+    fn fetch_cachline(
+        &mut self,
+        line: &mut ICacheLine,
+        idx: usize,
+        addr: u32
+    ) -> Result<(), Exception> {
+        self.bus.schedule.tick(4 - idx as u64);
+        for (i, j) in (idx..4).enumerate() {
+            line.data[j] = self.load_code::<Word>(addr + (i as u32 * 4))?;
+        }
+        Ok(())
+    }
+
+    /// Check if there is any irq pending and throw exception if there is.
+    fn check_irq(&mut self) {
+        if self.irq_pending() {
+            self.next_pc();
+            self.fetch_load_slot();
+            self.throw_exception(Exception::Interrupt);
+        }
     }
 
     /// Fetch and execute next instruction.
     pub fn step(&mut self, dbg: &mut impl Debugger) {
-        if let Some(event) = self.bus.schedule.pop_event() {
-            if let Event::IrqTrigger(irq) = event {
+        match self.bus.schedule.pop_event() {
+            // Run the next instruction if there is no event this cycle.
+            None => {
+                let addr = self.next_pc();
+
+                dbg.instruction_load(addr);
+
+                if addr_cached(addr) && self.bus.cache_ctrl.icache_enabled() {
+                    let tag = addr.bit_range(12, 30);
+                    let word_idx = addr.bit_range(2, 3) as usize;
+                    let line_idx = addr.bit_range(4, 11) as usize;
+
+                    let mut line = self.icache[line_idx];
+
+                    if line.tag() != tag || line.valid_word_idx() > word_idx {
+                        match self.fetch_cachline(&mut line, word_idx, addr) {
+                            Ok(()) => self.exec(dbg, Opcode::new(line.data[word_idx])),
+                            Err(exp) => self.throw_exception(exp),
+                        }
+
+                        line.set_tag(addr);
+
+                        self.icache[line_idx] = line;
+                        self.icache_misses += 1;
+                    } else {
+                        self.exec(dbg, Opcode::new(line.data[word_idx])); 
+                    }
+                } else {
+                    // Cache misses take about 4 cycles.
+                    self.bus.schedule.tick(4);
+                    match self.load_code::<Word>(addr) {
+                        Ok(val) => self.exec(dbg, Opcode::new(val)),
+                        Err(exp) => self.throw_exception(exp), 
+                    }
+                }
+                self.bus.schedule.tick(1);
+            }
+            Some(Event::IrqTrigger(irq)) => {
                 if self.irq_pending() {
                     warn!("IRQ pending when triggering IRQ of type: {}", irq);
                 }
+
                 self.bus.irq_state.trigger(irq);
-                if self.irq_pending() {
-                    self.next_pc();
-                    self.fetch_load_slot();
-                    self.throw_exception(Exception::Interrupt);
-                }
-            } else {
+                self.check_irq();
+            }
+            Some(Event::IrqCheck) => {
+                self.check_irq();
+            }
+            Some(event) => {
                 self.bus.handle_event(event);
             }
-        } else {
-            let addr = self.next_pc();
-            dbg.instruction_load(addr);
-            if addr < 0xa0000000 && self.bus.cache_ctrl.icache_enabled() {
-                let tag = ((addr & 0xfffff000) >> 12) | 0x80000000;
-                let index = ((addr & 0xffc) >> 2) as usize;
-                let cache = self.icache[index];
-                if cache.tag == tag {
-                    self.exec(dbg, Opcode::new(cache.data));
-                } else {
-                    match self.load::<Word>(addr) {
-                        Ok(data) => {
-                            self.icache[index] = CacheLine { tag, data };
-                            self.exec(dbg, Opcode::new(data));
-                        }
-                        Err(exp) if exp == Exception::AddressLoadError => {
-                            // This might not be correct. Accessing at an unaligned address when loading
-                            // an instruction could throw a BUS instruction error instead.
-                            self.throw_exception(exp);
-                        }
-                        Err(..) => {
-                            self.throw_exception(Exception::BusInstructionError);
-                        }
-                    }
-                }
-            } else {
-                // Cache misses take about 4 cycles.
-                self.bus.schedule.tick(4);
-                if let Ok(val) = self.load::<Word>(addr) {
-                    self.exec(dbg, Opcode::new(val));
-                } else {
-                    self.throw_exception(Exception::BusInstructionError);
-                }
-            }
-            self.bus.schedule.tick(1);
         }
     }
 
@@ -457,10 +547,15 @@ impl Cpu {
         self.set_reg(op.rd(), pc);
     }
 
+    // TODO: Add more syscall commands.
     fn syscall_trace(&mut self) {
         match self.read_reg(RegIdx::V0) {
-            1 => trace!("syscall: print {}", self.read_reg(RegIdx::A0)),
-            2 | 3 => warn!("syscall: print float"),
+            1 => {
+                trace!("syscall: print {}", self.read_reg(RegIdx::A0));
+            }
+            2 | 3 => {
+                warn!("syscall: print float");
+            }
             4 => {
                 let mut addr = self.read_reg(RegIdx::A0);
                 let mut print = String::new();
@@ -477,16 +572,24 @@ impl Cpu {
                 }
                 debug!("syscall: print \"{}\"", print);
             }
-            5 => debug!("syscall: read integer"),
-            6 | 7 => trace!("syscall: read float"),
+            5 => {
+                debug!("syscall: read integer")
+            }
+            6 | 7 => {
+                trace!("syscall: read float")
+            }
             8 => {
                 debug!("syscall: read string"); 
             }
             9 => {
                 debug!("syscall: allocate {} bytes", self.read_reg(RegIdx::A0));
             }
-            10 => debug!("syscall: terminate"),
-            val => debug!("syscall: type {}", val),
+            10 => {
+                debug!("syscall: terminate");
+            }
+            val => {
+                debug!("syscall: type {}", val)
+            }
         }
     }
 
@@ -570,7 +673,9 @@ impl Cpu {
     fn op_div(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs()) as i32;
         let rhs = self.read_reg(op.rt()) as i32;
+
         self.fetch_load_slot();
+
         if rhs == 0 {
             let lo: u32 = if lhs < 0 { 1 } else { 0xffff_ffff };
             self.add_pending_hi_lo(36, lhs as u32, lo);
@@ -585,7 +690,9 @@ impl Cpu {
     fn op_divu(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs());
         let rhs = self.read_reg(op.rt());
+
         self.fetch_load_slot();
+
         if rhs == 0 {
             self.add_pending_hi_lo(36, lhs, 0xffff_ffff);
         } else {
@@ -597,7 +704,9 @@ impl Cpu {
     fn op_add(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs()) as i32;
         let rhs = self.read_reg(op.rt()) as i32;
+
         self.fetch_load_slot();
+
         if let Some(val) = lhs.checked_add(rhs) {
             self.set_reg(op.rd(), val as u32);
         } else {
@@ -618,6 +727,7 @@ impl Cpu {
     fn op_sub(&mut self, op: Opcode) {
         let lhs = self.read_reg(op.rs()) as i32;
         let rhs = self.read_reg(op.rt()) as i32;
+
         if let Some(val) = lhs.checked_sub(rhs) {
             self.set_reg(op.rd(), val as u32);
         } else {
@@ -824,7 +934,7 @@ impl Cpu {
                 if reg > 15 {
                     self.throw_exception(Exception::ReservedInstruction);
                 } else {
-                    self.add_load_slot(op.rt(), self.cop0.read_reg(reg.into()));
+                    self.add_load(op.rt(), self.cop0.read_reg(reg.into()));
                 }
             }
             // MTC0 - Move to Co-Processor0.
@@ -835,7 +945,7 @@ impl Cpu {
             // RFE - Restore from exception.
             0x10 => {
                 self.fetch_load_slot();
-                self.cop0.exit_exception();
+                self.cop0.exit_exception(&mut self.bus.schedule);
             }
             _ => self.throw_exception(Exception::ReservedInstruction),
         }
@@ -857,7 +967,7 @@ impl Cpu {
                 // Load from COP2 data register.
                 0x0 => {
                     let val = self.gte.data_load(op.rd().0.into());
-                    self.add_load_slot(op.rt(), val);
+                    self.add_load(op.rt(), val);
                 }
                 // Load from COP2 control register.
                 0x2 => {
@@ -889,9 +999,14 @@ impl Cpu {
     /// LB - Load byte.
     fn op_lb(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+
         dbg.data_load(addr);
+
         match self.load::<Byte>(addr) {
-            Ok(val) => self.add_load_slot(op.rt(), (val as i8) as u32),
+            Ok(val) => {
+                let val = val as i8;
+                self.add_load(op.rt(), val as u32)
+            }
             Err(exp) => self.throw_exception(exp),
         }
     }
@@ -899,15 +1014,15 @@ impl Cpu {
     /// LH - Load half word.
     fn op_lh(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+
         dbg.data_load(addr);
+
         match self.load::<HalfWord>(addr) {
-            Ok(val) => self.add_load_slot(op.rt(), (val as i16) as u32),
-            Err(exp) => {
-                if let Exception::AddressLoadError = exp {
-                    self.cop0.set_reg(8, addr);
-                }
-                self.throw_exception(exp);
-            }
+            Err(exp) => self.throw_exception(exp),
+            Ok(val) => {
+                let val = val as i16;
+                self.add_load(op.rt(), val as u32)
+            },
         }
     }
 
@@ -920,14 +1035,19 @@ impl Cpu {
     /// address.
     fn op_lwl(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        dbg.data_load(addr);
+
+        let aligned = addr & !0x3;
+        dbg.data_load(aligned);
+
         let val = if self.load_delay.reg == op.rt() {
+            debug_assert_ne!(self.load_delay.reg, RegIdx::ZERO);
             self.load_delay.val
         } else {
             self.read_reg(op.rt())
         };
+
         // Get word containing unaligned address.
-        match self.load::<Word>(addr & !0x3) {
+        match self.load::<Word>(aligned) {
             Ok(word) => {
                 // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
                 let val = match addr & 0x3 {
@@ -937,7 +1057,7 @@ impl Cpu {
                     3 => word,
                     _ => unreachable!(),
                 };
-                self.add_load_slot(op.rt(), val);
+                self.add_load(op.rt(), val);
             }
             Err(exp) => {
                 // This should never be an alignment problem, so there should be no need to store
@@ -950,24 +1070,23 @@ impl Cpu {
     /// LW - Load word.
     fn op_lw(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+
         dbg.data_load(addr);
+
         match self.load::<Word>(addr) {
-            Ok(val) => self.add_load_slot(op.rt(), val),
-            Err(exp) => {
-                if let Exception::AddressLoadError = exp {
-                    self.cop0.set_reg(8, addr);
-                }
-                self.throw_exception(exp);
-            }
+            Ok(val) => self.add_load(op.rt(), val),
+            Err(exp) => self.throw_exception(exp),
         }
     }
 
     /// LBU - Load byte unsigned.
     fn op_lbu(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+
         dbg.data_load(addr);
+
         match self.load::<Byte>(addr) {
-            Ok(val) => self.add_load_slot(op.rt(), val),
+            Ok(val) => self.add_load(op.rt(), val),
             Err(exp) => self.throw_exception(exp),
         }
     }
@@ -975,15 +1094,12 @@ impl Cpu {
     /// LHU - Load half word unsigned.
     fn op_lhu(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+
         dbg.data_load(addr);
-        match self.load::<Byte>(addr) {
-            Ok(val) => self.add_load_slot(op.rt(), val),
-            Err(exp) => {
-                if let Exception::AddressLoadError = exp {
-                    self.cop0.set_reg(8, addr);
-                }
-                self.throw_exception(exp);
-            }
+
+        match self.load::<HalfWord>(addr) {
+            Ok(val) => self.add_load(op.rt(), val),
+            Err(exp) => self.throw_exception(exp),
         }
     }
 
@@ -992,13 +1108,18 @@ impl Cpu {
     /// See 'op_lwl'.
     fn op_lwr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        dbg.data_load(addr);
+
+        let aligned = addr & !0x3;
+        dbg.data_load(aligned);
+
         let val = if self.load_delay.reg == op.rt() {
+            debug_assert_ne!(self.load_delay.reg, RegIdx::ZERO);
             self.load_delay.val
         } else {
             self.read_reg(op.rt())
         };
-        match self.load::<Word>(addr & !0x3) {
+
+        match self.load::<Word>(aligned) {
             Ok(word) => {
                 let val = match addr & 0x3 {
                     0 => word,
@@ -1007,7 +1128,7 @@ impl Cpu {
                     3 => (val & 0xffff_ff00) | (word >> 24),
                     _ => unreachable!(),
                 };
-                self.add_load_slot(op.rt(), val);
+                self.add_load(op.rt(), val);
             }
             Err(exp) => self.throw_exception(exp),
         }
@@ -1016,9 +1137,12 @@ impl Cpu {
     /// SB - Store byte.
     fn op_sb(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+
         dbg.data_store(addr);
+
         let val = self.read_reg(op.rt());
         self.fetch_load_slot();
+
         if let Err(exp) = self.store::<Byte>(addr, val) {
             self.throw_exception(exp);
         }
@@ -1027,14 +1151,14 @@ impl Cpu {
     /// SH - Store half word.
     fn op_sh(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+
         dbg.data_store(addr);
+
         let val = self.read_reg(op.rt());
         self.fetch_load_slot();
+
         if let Err(exp) = self.store::<HalfWord>(addr, val) {
-            if let Exception::AddressStoreError = exp {
-                self.cop0.set_reg(8, addr);
-            }
-            self.throw_exception(Exception::AddressStoreError);
+            self.throw_exception(exp);
         }
     }
 
@@ -1044,25 +1168,28 @@ impl Cpu {
     /// as 'op_lwl' and 'op_lwr'.
     fn op_swl(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        dbg.data_store(addr);
+
         let val = self.read_reg(op.rt());
+
         // Get address of whole word containing unaligned address.
         let aligned = addr & !3;
+        dbg.data_store(aligned);
+        dbg.data_load(aligned);
+
         match self.load::<Word>(aligned) {
             Ok(word) => {
                 let val = match addr & 3 {
                     0 => (word & 0xffff_ff00) | (val >> 24),
                     1 => (word & 0xffff_0000) | (val >> 16),
                     2 => (word & 0xff00_0000) | (val >> 8),
-                    3 => word,
+                    3 => val,
                     _ => unreachable!(),
                 };
+
                 self.fetch_load_slot();
+
                 if let Err(exp) = self.store::<Word>(aligned, val) {
-                    if let Exception::AddressStoreError = exp {
-                        self.cop0.set_reg(8, addr);
-                    }
-                    self.throw_exception(Exception::AddressStoreError);
+                    self.throw_exception(exp);
                 }
             }
             Err(exp) => self.throw_exception(exp),
@@ -1073,14 +1200,14 @@ impl Cpu {
     /// Store word from target register at address from source register + signed immediate value.
     fn op_sw(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+
         dbg.data_store(addr);
+
         let val = self.read_reg(op.rt());
         self.fetch_load_slot();
+
         if let Err(exp) = self.store::<Word>(addr, val) {
-            if let Exception::AddressStoreError = exp {
-                self.cop0.set_reg(8, addr);
-            }
-            self.throw_exception(Exception::AddressStoreError);
+            self.throw_exception(exp);
         }
     }
 
@@ -1089,24 +1216,27 @@ impl Cpu {
     /// See 'op_swl'.
     fn op_swr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
-        dbg.data_store(addr);
+
         let val = self.read_reg(op.rt());
+
         let aligned = addr & !3;
+        dbg.data_store(aligned);
+        dbg.data_load(aligned);
+
         match self.load::<Word>(aligned) {
             Ok(word) => {
                 let val = match addr & 3 {
-                    0 => word,
+                    0 => val,
                     1 => (word & 0x0000_00ff) | (val << 8),
                     2 => (word & 0x0000_ffff) | (val << 16),
                     3 => (word & 0x00ff_ffff) | (val << 24),
                     _ => unreachable!(),
                 };
+
                 self.fetch_load_slot();
+
                 if let Err(exp) = self.store::<Word>(aligned, val) {
-                    if let Exception::AddressStoreError = exp {
-                        self.cop0.set_reg(8, addr);
-                    }
-                    self.throw_exception(Exception::AddressStoreError);
+                    self.throw_exception(exp);
                 }
             }
             Err(exp) => self.throw_exception(exp),
@@ -1160,6 +1290,51 @@ impl Cpu {
     }
 }
 
+/// Instructions in KUSEG and KUSEG0 are cached in the instruction cache.
+fn addr_cached(addr: u32) -> bool {
+    (addr >> 29) <= 4
+}
+
+#[inline]
+pub fn regioned_addr(addr: u32) -> u32 {
+    const REGION_MAP: [u32; 8] = [
+        0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x7fff_ffff, 0x1fff_ffff, 0xffff_ffff,
+        0xffff_ffff,
+    ];
+    addr & REGION_MAP[(addr >> 29) as usize]
+}
+
+#[derive(Clone, Copy)]
+struct ICacheLine {
+    tag: u32,
+    data: [u32; 4],
+}
+
+impl ICacheLine {
+    fn valid() -> Self {
+        Self {
+            tag: 0x0,
+            data: [0xdeadbeef; 4],
+        }
+    }
+
+    fn tag(&self) -> u32 {
+        self.tag.bit_range(12, 30)
+    }
+
+    fn valid_word_idx(&self) -> usize {
+        self.tag.bit_range(2, 4) as usize
+    }
+
+    fn set_tag(&mut self, pc: u32) {
+        self.tag = pc & 0x7fff_f00c;
+    }
+
+    fn invalidate(&mut self) {
+        self.tag |= 0x10;
+    }
+}
+
 pub const REGISTER_NAMES: [&str; 32] = [
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6",
     "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp", "fp",
@@ -1169,6 +1344,7 @@ pub const REGISTER_NAMES: [&str; 32] = [
 #[cfg(test)]
 mod tests {
     use crate::bus::bios::Bios;
+    use crate::bus::Word;
 
     use super::opcode::RegIdx;
     use super::Cpu;
@@ -1180,7 +1356,7 @@ mod tests {
             if ins.op() == 0x0 && ins.special() == 0xd {
                 break;
             }
-            cpu.step();
+            cpu.step(&mut ());
         }
     }
 
@@ -1191,7 +1367,7 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
         let bios = Bios::from_code(base, &code);
-        let mut cpu = Cpu::new(bios);
+        let mut cpu = Cpu::new(bios, None);
         run_cpu(&mut cpu);
         cpu
     }
@@ -1234,6 +1410,50 @@ mod tests {
     }
 
     #[test]
+    fn branch_delay_1() {
+        let cpu = run(r#"
+                beq     $0, $0, part1
+                beq     $0, $0, part2
+                addi    $3, $0, 1
+            part1:
+                addi    $1, $0, 1
+                beq     $0, $0, end
+                nop
+            part2:
+                addi    $2, $0, 1
+            end:
+                nop
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::new(1)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::new(2)), 0);
+        assert_eq!(cpu.read_reg(RegIdx::new(3)), 0);
+    }
+
+    #[test]
+    fn load_cancel() {
+        let cpu = run(r#"
+            li      $t1, 1
+            nop
+
+            sw      $t1, 0($0)
+
+            li      $1, 2
+            nop
+
+            mfc0    $1, 12
+            lw      $1, 0($0)
+            mfc0    $1, 15
+            lw      $1, 0($0)
+            lw      $1, 0($0)
+            addiu   $2, $1, 0
+            break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::new(1)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::new(2)), 2);
+    }
+
+    #[test]
     fn load_delay() {
         let cpu = run(r#"
                 li      $v0, 42
@@ -1260,6 +1480,26 @@ mod tests {
                 break   0
         "#);
         assert_eq!(cpu.read_reg(RegIdx::V0), 1024);
+    }
+
+    #[test]
+    fn sign_extension() {
+        let cpu = run(r#"
+                li      $t3, 0x8080
+                sw      $t3, 0($0)
+
+                lh      $1, 0($0)
+                lhu     $2, 0($0)
+                lb      $3, 0($0)
+                lbu     $4, 0($0)
+                nop
+
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::new(1)), 0xffff_8080);
+        assert_eq!(cpu.read_reg(RegIdx::new(2)), 0x0000_8080);
+        assert_eq!(cpu.read_reg(RegIdx::new(3)), 0xffff_ff80);
+        assert_eq!(cpu.read_reg(RegIdx::new(4)), 0x0000_0080);
     }
 
     #[test]
@@ -1350,6 +1590,51 @@ mod tests {
     }
 
     #[test]
+    fn bgezal() {
+        let cpu = run(r#"
+                li      $5, -1
+                move    $1, $0
+                move    $31, $0
+                bltzal  $0, nottaken0
+                nop
+                li      $1, 1
+            nottaken0:
+                sltu    $2, $0, $31
+                li      $3, -1
+                move    $31, $0
+                bgezal  $3, nottaken1
+                nop
+                li      $3, 1
+            nottaken1:
+                sltu    $4, $0, $31
+                li      $5, -1
+                move    $31, $0
+                bltzal  $5, taken0
+                nop
+                li      $5, 1
+            taken0:
+                sltu    $6, $0, $31
+                move    $7, $0
+                move    $31, $0
+                bgezal  $0, taken1
+                nop
+                li      $7, 1
+            taken1:
+                sltu    $8, $0, $31
+
+                break   0
+        "#);
+        assert_eq!(cpu.read_reg(RegIdx::new(1)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::new(2)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::new(3)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::new(4)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::new(5)), (-1_i32) as u32);
+        assert_eq!(cpu.read_reg(RegIdx::new(6)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::new(7)), 0);
+        assert_eq!(cpu.read_reg(RegIdx::new(8)), 1);
+    }
+
+    #[test]
     fn addiu() {
         let cpu = run(r#"
                 li      $v0, 0
@@ -1362,5 +1647,208 @@ mod tests {
         "#);
         assert_eq!(cpu.read_reg(RegIdx::V0), (-1_i32) as u32);
         assert_eq!(cpu.read_reg(RegIdx::V1), 0);
+    }
+
+    #[test]
+    fn lwl_lwr() {
+        let cpu = run(r#"
+                li      $t1, 0x76543210
+                sw      $t1, 0($0)
+
+                li      $t1, 0xfedcba98
+                sw      $t1, 4($0)
+
+                lwr     $1, 0($0)
+                lwl     $1, 3($0)
+                lwr     $2, 1($0)
+                lwl     $2, 4($0)
+                lwr     $3, 2($0)
+                lwl     $3, 5($0)
+                lwr     $4, 3($0)
+                lwl     $4, 6($0)
+                lwr     $5, 4($0)
+                lwl     $5, 7($0)
+                lwl     $6, 3($0)
+                lwr     $6, 0($0)
+                lwl     $7, 4($0)
+                lwr     $7, 1($0)
+                lwl     $8, 5($0)
+                lwr     $8, 2($0)
+                lwl     $9, 6($0)
+                lwr     $9, 3($0)
+                lwl     $10, 7($0)
+                lwr     $10, 4($0)
+                addiu   $11, $0, -1
+                lwl     $11, 0($0)
+                addiu   $12, $0, -1
+                lwr     $12, 0($0)
+                addiu   $13, $0, -1
+                lwl     $13, 1($0)
+                addiu   $14, $0, -1
+                lwr     $14, 1($0)
+                addiu   $15, $0, -1
+                lwl     $15, 2($0)
+                addiu   $16, $0, -1
+                lwr     $16, 2($0)
+                addiu   $17, $0, -1
+                lwl     $17, 3($0)
+                addiu   $18, $0, -1
+                lwr     $18, 3($0)
+                nop
+                break   0
+        "#);
+
+        let values: [u32; 18] = [
+            0x76543210,
+            0x98765432,
+            0xba987654,
+            0xdcba9876,
+            0xfedcba98,
+            0x76543210,
+            0x98765432,
+            0xba987654,
+            0xdcba9876,
+            0xfedcba98,
+            0x10ffffff,
+            0x76543210,
+            0x3210ffff,
+            0xff765432,
+            0x543210ff,
+            0xffff7654,
+            0x76543210,
+            0xffffff76,
+        ];
+
+        for (i, val) in values.iter().enumerate() {
+            assert_eq!(cpu.read_reg(RegIdx::new(i as u32 + 1)), *val);
+        }
+    }
+
+    #[test]
+    fn lwl_lwr_1() {
+        let cpu = run(r#"
+                li      $t1, 0x76543210
+                sw      $t1, 0($0)
+
+                li      $t1, 0xfedcba98
+                sw      $t1, 4($0)
+
+                addiu       $1, $0, -1
+                lwr         $1, 2($0)
+                lwl         $1, 5($0)
+                move        $2, $1
+                addiu       $3, $0, -1
+                lwr         $3, 2($0)
+                nop
+                lwl         $3, 5($0)
+                move        $4, $3
+                addiu       $5, $0, -1
+                lwl         $5, 5($0)
+                nop
+                lwr         $5, 2($0)
+                move        $6, $5
+                addiu       $7, $0, -1
+                lw          $7, 4($0)
+                lwl         $7, 2($0)
+                move        $8, $7
+                addiu       $9, $0, -1
+                lw          $9, 4($0)
+                nop
+                lwl         $9, 2($0)
+                move        $10, $9
+                addiu       $11, $0, -1
+                lw          $11, 4($0)
+                lwr         $11, 2($0)
+                move        $12, $11
+                addiu       $13, $0, -1
+                lw          $13, 4($0)
+                nop
+                lwr         $13, 2($0)
+                move        $14, $13
+                lui         $15, 0x67e
+                ori         $15, $15, 0x67e
+                mtc2        $15, 25
+                addiu       $15, $0, -1
+                mfc2        $15, 25
+                lwl         $15, 1($0)
+                move        $16, $15
+                addiu       $17, $0, -1
+                mfc2        $17, 25
+                nop
+                lwr         $17, 1($0)
+                move        $18, $17
+                nop 
+
+                break       0
+        "#);
+
+        let values: [u32; 18] = [
+            0xba987654,
+            0xffffffff,
+            0xba987654,
+            0xffff7654,
+            0xba987654,
+            0xba98ffff,
+            0x54321098,
+            0xffffffff,
+            0x54321098,
+            0xfedcba98,
+            0xfedc7654,
+            0xffffffff,
+            0xfedc7654,
+            0xfedcba98,
+            0x3210067e,
+            0xffffffff,
+            0x06765432,
+            0x067e067e,
+        ];
+
+        for (i, val) in values.iter().enumerate() {
+            assert_eq!(cpu.read_reg(RegIdx::new(i as u32 + 1)), *val);
+        }
+    }
+
+    #[test]
+    fn swl_swr() {
+        let mut cpu = run(r#"
+                li      $1, 0
+                li      $2, 0x76543210
+                li      $3, 0xfedcba98
+
+                sw      $2, 0($1)
+                swl     $3, 0($1)
+                addiu   $1, $1, 4
+                sw      $2, 0($1)
+                swl     $3, 1($1)	
+                addiu   $1, $1, 4
+                sw      $2, 0($1)
+                swl     $3, 2($1)	
+                addiu   $1, $1, 4
+                sw      $2, 0($1)
+                swl     $3, 3($1)
+                addiu   $1, $1, 4
+                sw      $2, 0($1)
+                swr     $3, 0($1)
+                addiu   $1, $1, 4
+                sw      $2, 0($1)
+                swr     $3, 1($1)	
+                addiu   $1, $1, 4
+                sw      $2, 0($1)
+                swr     $3, 2($1)	
+                addiu   $1, $1, 4
+                sw      $2, 0($1)
+                swr     $3, 3($1)
+
+                break   0
+        "#);
+
+        assert_eq!(cpu.load::<Word>(0).unwrap(), 0x765432fe);
+        assert_eq!(cpu.load::<Word>(4).unwrap(), 0x7654fedc);
+        assert_eq!(cpu.load::<Word>(8).unwrap(), 0x76fedcba);
+        assert_eq!(cpu.load::<Word>(12).unwrap(), 0xfedcba98);
+        assert_eq!(cpu.load::<Word>(16).unwrap(), 0xfedcba98);
+        assert_eq!(cpu.load::<Word>(20).unwrap(), 0xdcba9810);
+        assert_eq!(cpu.load::<Word>(24).unwrap(), 0xba983210);
+        assert_eq!(cpu.load::<Word>(28).unwrap(), 0x98543210);
     }
 }

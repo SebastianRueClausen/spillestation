@@ -105,6 +105,7 @@ impl Gte {
 
     pub fn data_store(&mut self, reg: u32, val: u32) {
         match reg {
+            n @ 24..=27 => self.mac[n as usize - 24] = val as i32,
             30 => {
                 self.lzcs = val;
                 // 'val' is in this case a signed 32 bit int. If bit 31 is set, it's a negative
@@ -122,6 +123,7 @@ impl Gte {
 
     pub fn data_load(&mut self, reg: u32) -> u32 {
         match reg {
+            n @ 24..=27 => self.mac[n as usize - 24] as u32,
             30 => self.lzcs,
             31 => self.lzcr.into(),
             _ => todo!("GTE data load in reg: {}", reg),

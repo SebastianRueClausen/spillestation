@@ -1,5 +1,8 @@
 //! Emulating Direct Memory Access chip. Used to transfer data between devices. The CPU halts when
 //! this is running, but the CPU can be allowed to run in intervals called chopping.
+//!
+//! TODO:
+//! * Add timings for transfers.
 
 use splst_util::{Bit, BitSet};
 
@@ -282,6 +285,7 @@ impl IrqReg {
         let result = self.force_irq()
             || self.master_irq_enabled()
             && self.0.bit_range(24, 30) != 0;
+
         if result {
             if !self.master_irq_flag() {
                 self.0 = self.0.set_bit(31, true);
@@ -337,6 +341,7 @@ impl Dma {
     pub fn load(&self, offset: u32) -> u32 {
         let channel = offset.bit_range(4, 6);
         let reg = offset.bit_range(0, 3);
+
         match channel {
             0..=6 => self.channels[channel as usize].load(reg),
             7 => match reg {
@@ -351,6 +356,7 @@ impl Dma {
     pub fn store(&mut self, schedule: &mut Schedule, offset: u32, value: u32) {
         let channel = offset.bit_range(4, 6);
         let reg = offset.bit_range(0, 3);
+
         match channel {
             0..=6 => self.channels[channel as usize].store(reg, value),
             7 => match reg {

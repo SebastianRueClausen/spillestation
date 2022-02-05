@@ -15,7 +15,7 @@ pub struct CpuStatus {
     registers: [String; 32],
     /// Fields which aren't a registers, such as the PC and the disassembled instruction current being
     /// run.
-    fields: [String; 4],
+    fields: [String; 5],
 }
 
 impl CpuStatus {
@@ -27,6 +27,7 @@ impl CpuStatus {
         write!(&mut self.fields[1], "{:08x}", cpu.lo)?;
         write!(&mut self.fields[2], "{:08x}", cpu.pc)?;
         write!(&mut self.fields[3], "{}", cpu.curr_ins())?;
+        write!(&mut self.fields[4], "{}", cpu.icache_misses())?;
         Ok(())
     }
 }
@@ -440,4 +441,4 @@ fn show_bps(ui: &mut egui::Ui, bps: &mut Vec<BreakPoint>, kind: &str) {
     });
 }
 
-const FIELD_LABELS: [&str; 4] = ["hi", "lo", "pc", "ins"];
+const FIELD_LABELS: [&str; 5] = ["hi", "lo", "pc", "ins", "icache misses"];

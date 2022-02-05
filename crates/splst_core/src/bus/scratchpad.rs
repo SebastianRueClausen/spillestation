@@ -1,10 +1,10 @@
+use super::raw::{RawMem};
 use super::{AddrUnit, BusMap};
-use super::raw::RawMem;
 
-pub struct Ram(RawMem<{Self::SIZE}>);
+pub struct ScratchPad(RawMem<{Self::SIZE}>);
 
-impl Ram {
-    const SIZE: usize = 2 * 1024 * 1024;
+impl ScratchPad {
+    const SIZE: usize = 1024;
 
     pub fn new() -> Self {
         Self(RawMem::new())
@@ -21,7 +21,7 @@ impl Ram {
     }
 }
 
-impl BusMap for Ram {
-    const BUS_BEGIN: u32 = 0x0;
-    const BUS_END: u32 = Self::SIZE as u32 - 1;
+impl BusMap for ScratchPad {
+    const BUS_BEGIN: u32 = 0x1f80_0000;
+    const BUS_END: u32 = Self::BUS_BEGIN + 1024 - 1;
 }

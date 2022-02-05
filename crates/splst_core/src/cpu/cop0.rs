@@ -4,6 +4,7 @@
 //! but that isn't used by the playstation 1.
 
 use splst_util::{Bit, BitSet};
+use crate::schedule::{Schedule, Event};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Exception {
@@ -29,7 +30,7 @@ pub enum Exception {
     ArithmeticOverflow = 0xc,
 }
 
-pub(super) struct Cop0 {
+pub struct Cop0 {
     /// # COP0 registers
     ///
     /// Most aren't used by any game, so it would maybe be a better idea just to
@@ -51,12 +52,12 @@ pub(super) struct Cop0 {
 }
 
 impl Cop0 {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self { regs: REGISTER_VALUES }
     }
 
     /// If the scratchpad is enabled.
-    pub(super) fn cache_isolated(&self) -> bool {
+    pub fn cache_isolated(&self) -> bool {
         self.regs[12].bit(16)
     }
 
@@ -65,22 +66,28 @@ impl Cop0 {
         self.regs[12].bit(22)
     }
 
-    pub(super) fn irq_enabled(&self) -> bool {
+    pub fn irq_enabled(&self) -> bool {
         self.regs[12].bit(0)
     }
 
-    pub(super) fn set_reg(&mut self, reg: u32, value: u32) {
+    pub fn set_reg(&mut self, reg: u32, value: u32) {
         self.regs[reg as usize] = value;
     }
 
-    pub(super) fn read_reg(&self, reg: u32) -> u32 {
+    pub fn read_reg(&self, reg: u32) -> u32 {
         if reg == 8 {
             trace!("Bad virtual address register read");
         }
         self.regs[reg as usize]
     }
 
-    pub(super) fn enter_exception(&mut self, last_pc: u32, in_delay: bool, ex: Exception) -> u32 {
+    pub fn enter_exception(
+        &mut self,
+        schedule: &mut Schedule,
+        last_pc: u32,
+        in_delay: bool,
+        ex: Exception
+    ) -> u32 {
         // Remember bits 0..5 of the status register, which keep track of interrupt and
         // kernel/user mode flags. Bits 0..1 keep track of the current flags, bits 2..3 keeps
         // track of the last flags, and bits 4..5 the ones before that.
@@ -99,6 +106,10 @@ impl Cop0 {
         };
         self.regs[13] = self.regs[13].set_bit(31, bit31);
         self.regs[14] = addr;
+
+        // IRQ state might have changed.
+        schedule.schedule_now(Event::IrqCheck);
+
         // Set PC to the exception handler. The exception handler address depend on BEV flag in
         // COP0 status register.
         if self.bev_in_ram() {
@@ -106,15 +117,13 @@ impl Cop0 {
         } else {
             0x80000080
         }
-
-        // TODO IRQ state might have changed.
     }
 
-    pub(super) fn exit_exception(&mut self) {
+    pub fn exit_exception(&mut self, schedule: &mut Schedule) {
         let flags = self.regs[12].bit_range(0, 5);
         self.regs[12] = self.regs[12].set_bit_range(0, 3, flags >> 2);
 
-        // TODO IRQ state might have changed.
+        schedule.schedule_now(Event::IrqCheck);
     }
 }
 

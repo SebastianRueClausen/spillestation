@@ -1,21 +1,32 @@
 //! Represent the memory of the playstation 1.
+//!
+//! TODO:
+//! * Add a debug peek funktion to read from devices without side effects. For now reading data
+//!   through the debugger could potentially have side effects.
+//!
+//! * Make ['AddrUnit'] a trait implemented on u8, u16 and u32 and make devices return and take the
+//!   actual primtive being loaded or stored. This also allows the compiler to infer the type.
 
 pub mod bios;
 pub mod dma;
 pub mod ram;
+pub mod scratchpad;
+mod raw;
 
 use splst_util::Bit;
 use splst_cdimg::CdImage;
+use crate::Cycle;
 use crate::schedule::{Event, Schedule};
 use crate::gpu::Gpu;
 use crate::cdrom::CdRom;
-use crate::cpu::{IrqState, cop0::Exception};
+use crate::cpu::IrqState;
 use crate::timer::Timers;
 use crate::spu::Spu;
 use crate::io_port::IoPort;
 use bios::Bios;
 use dma::Dma;
 use ram::Ram;
+use scratchpad::ScratchPad;
 
 pub use dma::{DmaChan, ChanStat, ChanDir};
 
@@ -23,6 +34,7 @@ pub struct Bus {
     pub cache_ctrl: CacheCtrl,
     pub irq_state: IrqState,
     pub schedule: Schedule,
+    pub scratchpad: ScratchPad,
     bios: Bios,
     ram: Ram,
     dma: Dma,
@@ -38,12 +50,15 @@ pub struct Bus {
 impl Bus {
     pub fn new(bios: Bios, cd: Option<CdImage>) -> Self {
         let mut schedule = Schedule::new();
+
         schedule.schedule_in(5_000, Event::RunGpu);
         schedule.schedule_in(7_000, Event::RunCdRom);
+
         Self {
             bios,
             schedule,
             irq_state: IrqState::new(),
+            scratchpad: ScratchPad::new(),
             ram: Ram::new(),
             dma: Dma::new(),
             gpu: Gpu::new(),
@@ -57,79 +72,93 @@ impl Bus {
         }
     }
 
-    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
-        if !T::is_aligned(addr) {
-            return Err(Exception::AddressLoadError);
-        }
-        let addr = to_region(addr);
-        match addr {
+    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Option<u32> {
+        let val = match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
-                Ok(self.ram.load::<T>(addr))
+                self.schedule.tick(3);
+                self.ram.load::<T>(addr)
             }
             Bios::BUS_BEGIN..=Bios::BUS_END => {
-                Ok(self.bios.load::<T>(addr - Bios::BUS_BEGIN))
+                self.schedule.tick(6 * T::WIDTH as Cycle);
+                self.bios.load::<T>(addr - Bios::BUS_BEGIN)
             }
             MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
-                Ok(self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN))
+                self.schedule.tick(3);
+                self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN)
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
-                Ok(self.ram_size.0)
+                self.schedule.tick(3);
+                self.ram_size.0
             }
             CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
-                Ok(self.cache_ctrl.0)
+                self.schedule.tick(2);
+                self.cache_ctrl.0
             }
             EXP1_BEGIN..=EXP1_END => {
-                Ok(0xff)
-            },
+                self.schedule.tick(7 * T::WIDTH as Cycle);
+                0xff
+            }
             EXP2_BEGIN..=EXP2_END => {
-                Ok(0xff)
+                self.schedule.tick(10 * T::WIDTH as Cycle);
+                0xff
             }
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
-                Ok(self.irq_state.load(addr - IrqState::BUS_BEGIN))
+                self.schedule.tick(3);
+                self.irq_state.load(addr - IrqState::BUS_BEGIN)
             }
             Dma::BUS_BEGIN..=Dma::BUS_END => {
+                self.schedule.tick(3);
                 self.run_dma();
-                Ok(self.dma.load(addr - Dma::BUS_BEGIN))
+                self.dma.load(addr - Dma::BUS_BEGIN)
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
-                Ok(self.cdrom.load::<T>(addr - CdRom::BUS_BEGIN))
+                self.schedule.tick(6);
+                self.cdrom.load::<T>(addr - CdRom::BUS_BEGIN)
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
-                Ok(self.spu.load(addr - Spu::BUS_BEGIN))
+                let time = match T::WIDTH {
+                    4 => 39,
+                    _ => 18, 
+                };
+                self.schedule.tick(time);
+                self.spu.load(addr - Spu::BUS_BEGIN)
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
-                Ok(self.timers.load(
+                self.schedule.tick(3);
+                self.timers.load(
                     &mut self.schedule,
                     addr - Timers::BUS_BEGIN,
-                ))
+                )
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
-                Ok(self.gpu.load::<T>(addr - Gpu::BUS_BEGIN))
+                self.schedule.tick(3);
+                self.gpu.load::<T>(addr - Gpu::BUS_BEGIN)
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_BEGIN => {
-                Ok(self.io_port.load(addr - IoPort::BUS_BEGIN))
+                self.schedule.tick(3);
+                self.io_port.load(addr - IoPort::BUS_BEGIN)
             }
             _ => {
                 warn!("BUS data error when loading");
-                Err(Exception::BusDataError)
+                return None;
             }
-        }
+        };
+        Some(val)
     }
 
-    pub fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) -> Result<(), Exception>{
-        if !T::is_aligned(addr) {
-            return Err(Exception::AddressStoreError);
-        }
-        let addr = to_region(addr);
+    pub fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) -> Option<()> {
         match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
                 self.ram.store::<T>(addr, val)
             }
-            MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
-                self.mem_ctrl.store(addr - MemCtrl::BUS_BEGIN, val)
+            ScratchPad::BUS_BEGIN..=ScratchPad::BUS_END => {
+                self.scratchpad.store::<T>(addr - ScratchPad::BUS_BEGIN, val)
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
                 self.ram_size.0 = val
+            }
+            MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
+                self.mem_ctrl.store(addr - MemCtrl::BUS_BEGIN, val)
             }
             CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
                 self.cache_ctrl.0 = val
@@ -140,7 +169,11 @@ impl Bus {
             EXP1_BEGIN..=EXP1_END => {}
             EXP2_BEGIN..=EXP2_END => {}
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
-                self.irq_state.store(addr - IrqState::BUS_BEGIN, val)
+                self.irq_state.store(
+                    &mut self.schedule,
+                    addr - IrqState::BUS_BEGIN,
+                    val
+                )
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
                 self.timers.store(
@@ -172,10 +205,10 @@ impl Bus {
             }
             _ => {
                 warn!("BUS data error when storing at address {:?}", addr);
-                return Err(Exception::BusDataError);
+                return None;
             }
         }
-        Ok(()) 
+        Some(()) 
     }
 
     pub fn gpu(&self) -> &Gpu {
@@ -195,7 +228,7 @@ impl Bus {
             Event::RunDmaChan(port) => self.run_dma_chan(port),
             Event::TimerIrqEnable(id) => self.timers.enable_irq_master_flag(id),
             Event::RunTimer(id) => self.timers.run_timer(&mut self.schedule, id),
-            Event::IrqTrigger(..) => unreachable!(),
+            Event::IrqTrigger(..) | Event::IrqCheck => unreachable!(),
         }
     }
 }
@@ -203,8 +236,19 @@ impl Bus {
 pub trait BusMap {
     /// The first address in the range.
     const BUS_BEGIN: u32;
+
     /// The last address included in the range.
     const BUS_END: u32;
+
+    /// Get the offset into the mapped range from absolute address (Which has been masked to the
+    /// region). Returns 'None' if the address isn't in the mapped range.
+    fn offset(addr: u32) -> Option<u32> {
+        if (Self::BUS_BEGIN..=Self::BUS_END).contains(&addr) {
+            Some(addr - Self::BUS_BEGIN)
+        } else {
+            None
+        }
+    }
 }
 
 struct RamSize(u32);
@@ -298,14 +342,6 @@ impl AddrUnit for Word {
     fn is_aligned(address: u32) -> bool {
         (address & 0x3) == 0
     }
-}
-
-pub fn to_region(address: u32) -> u32 {
-    const REGION_MAP: [u32; 8] = [
-        0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x7fff_ffff, 0x1fff_ffff, 0xffff_ffff,
-        0xffff_ffff,
-    ];
-    address & REGION_MAP[(address >> 29) as usize]
 }
 
 const EXP1_BEGIN: u32 = 0x1f00_0000;
