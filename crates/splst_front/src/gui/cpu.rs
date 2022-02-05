@@ -136,17 +136,17 @@ struct BreakPoint {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BreakPointTy {
-    InsLoad,
-    DataLoad,
-    DataStore,
+    Ins,
+    Load,
+    Store,
 }
 
 impl BreakPointTy {
     fn name(self) -> &'static str {
         match self {
-            BreakPointTy::InsLoad => "Instruction Load",
-            BreakPointTy::DataLoad => "Data Load",
-            BreakPointTy::DataStore => "Data store",
+            BreakPointTy::Ins => "Instruction Load",
+            BreakPointTy::Load => "Data Load",
+            BreakPointTy::Store => "Data store",
         }
     }
 }
@@ -160,19 +160,19 @@ struct Break {
 /// Keeps track of all breakpoints and used as ['Debugger'] by the system. 
 #[derive(Default)]
 struct BreakPoints {
-    ins_loads: Vec<BreakPoint>,
-    data_loads: Vec<BreakPoint>,
-    data_stores: Vec<BreakPoint>,
+    ins: Vec<BreakPoint>,
+    loads: Vec<BreakPoint>,
+    stores: Vec<BreakPoint>,
     /// Keeps track of all breaks that has accured, but hasn't been reported.
     breaks: Vec<Break>,
 }
 
 impl Debugger for BreakPoints {
     fn instruction_load(&mut self, addr: u32) {
-        self.ins_loads.retain(|bp| {
+        self.ins.retain(|bp| {
             if bp.addr == addr {
                 self.breaks.push(Break {
-                    kind: BreakPointTy::InsLoad,
+                    kind: BreakPointTy::Ins,
                     addr,
                 });
                 bp.retain
@@ -183,10 +183,10 @@ impl Debugger for BreakPoints {
     }
 
     fn data_load(&mut self, addr: u32) {
-        self.data_loads.retain(|bp| {
+        self.loads.retain(|bp| {
             if bp.addr == addr {
                 self.breaks.push(Break {
-                    kind: BreakPointTy::DataLoad,
+                    kind: BreakPointTy::Load,
                     addr,
                 });
                 bp.retain
@@ -197,10 +197,10 @@ impl Debugger for BreakPoints {
     }
 
     fn data_store(&mut self, addr: u32) {
-        self.data_stores.retain(|bp| {
+        self.stores.retain(|bp| {
             if bp.addr == addr {
                 self.breaks.push(Break {
-                    kind: BreakPointTy::DataStore,
+                    kind: BreakPointTy::Store,
                     addr,
                 });
                 bp.retain
@@ -227,7 +227,7 @@ impl Default for BreakPointAdd {
     fn default() -> Self {
         Self {
             addr: String::new(),
-            kind: BreakPointTy::InsLoad,
+            kind: BreakPointTy::Ins,
             retain: false,
         }
     }
@@ -240,72 +240,65 @@ impl Default for BreakPointAdd {
 pub struct CpuCtrl {
     mode: RunMode,
     /// Message shown when a break point has been hit.
-    break_message: Option<String>,
-    break_points: BreakPoints,
-    break_add: BreakPointAdd,
+    bp_msg: Option<String>,
+    bps: BreakPoints,
+    bp_add: BreakPointAdd,
 }
 
 impl CpuCtrl {
-    /// Show the breakpoint section.
-    fn show_breakpoint(&mut self, ui: &mut egui::Ui) {
+    /// Show the breakpoints section.
+    fn show_breakpoints(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add_sized(
                     [120.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.break_add.addr),
+                    egui::TextEdit::singleline(&mut self.bp_add.addr),
                 );
                 egui::ComboBox::from_id_source("type_combo")
-                    .selected_text(self.break_add.kind.name())
+                    .selected_text(self.bp_add.kind.name())
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
-                            &mut self.break_add.kind,
-                            BreakPointTy::InsLoad,
-                            BreakPointTy::InsLoad.name(),
+                            &mut self.bp_add.kind,
+                            BreakPointTy::Ins,
+                            BreakPointTy::Ins.name(),
                         );
                         ui.selectable_value(
-                            &mut self.break_add.kind,
-                            BreakPointTy::DataLoad,
-                            BreakPointTy::DataLoad.name(),
+                            &mut self.bp_add.kind,
+                            BreakPointTy::Load,
+                            BreakPointTy::Load.name(),
                         );
                         ui.selectable_value(
-                            &mut self.break_add.kind,
-                            BreakPointTy::DataStore,
-                            BreakPointTy::DataStore.name(),
+                            &mut self.bp_add.kind,
+                            BreakPointTy::Store,
+                            BreakPointTy::Store.name(),
                         );
                     });
-                ui.checkbox(&mut self.break_add.retain, "Retain");
+
+                ui.checkbox(&mut self.bp_add.retain, "Retain");
+
                 if ui.input().key_pressed(egui::Key::Enter) || ui.button("Add").clicked() {
                     // Parse the string as address in hex.
-                    if let Ok(addr) = u32::from_str_radix(&self.break_add.addr, 16) {
-                        let vec = match self.break_add.kind {
-                            BreakPointTy::InsLoad => &mut self.break_points.ins_loads,
-                            BreakPointTy::DataLoad => &mut self.break_points.data_loads,
-                            BreakPointTy::DataStore => &mut self.break_points.data_stores,
+                    if let Ok(addr) = u32::from_str_radix(&self.bp_add.addr, 16) {
+                        let vec = match self.bp_add.kind {
+                            BreakPointTy::Ins => &mut self.bps.ins,
+                            BreakPointTy::Load => &mut self.bps.loads,
+                            BreakPointTy::Store => &mut self.bps.stores,
                         };
                         vec.push(BreakPoint {
-                            name: self.break_add.addr.clone(),
-                            retain: self.break_add.retain,
+                            name: self.bp_add.addr.clone(),
+                            retain: self.bp_add.retain,
                             addr,
                         });
-                        self.break_add.addr.clear();
+                        self.bp_add.addr.clear();
                     } else {
-                        self.break_message = Some(
-                            format!("Invalid Breakpoint Address: {}", self.break_add.addr)
+                        self.bp_msg = Some(
+                            format!("Invalid Breakpoint Address: {}", self.bp_add.addr)
                         );
                     }
                 }
             });
-            ui.separator();
 
-            let ins = self.break_points.ins_loads
-                .iter_mut()
-                .map(|bp| (bp, BreakPointTy::InsLoad));
-            let data_loads = self.break_points.data_loads
-                .iter_mut()
-                .map(|bp| (bp, BreakPointTy::DataLoad));
-            let data_stores = self.break_points.data_stores
-                .iter_mut()
-                .map(|bp| (bp, BreakPointTy::DataStore));
+            ui.separator();
 
             egui::Grid::new("breakpoint_grid")
                 .min_col_width(100.0)
@@ -315,12 +308,9 @@ impl CpuCtrl {
                     ui.label("Retain");
                     ui.end_row();
 
-                    for (bp, ty) in ins.chain(data_loads).chain(data_stores) {
-                        ui.label(&bp.name);
-                        ui.label(ty.name());
-                        ui.checkbox(&mut bp.retain, "");
-                        ui.end_row();
-                    }
+                    show_bps(ui, &mut self.bps.ins, BreakPointTy::Ins.name());
+                    show_bps(ui, &mut self.bps.loads, BreakPointTy::Load.name());
+                    show_bps(ui, &mut self.bps.stores, BreakPointTy::Store.name());
                 });
         });
     }
@@ -336,8 +326,8 @@ impl App for CpuCtrl {
             RunMode::Step { ref mut stepped, amount } => {
                 if *stepped {
                     *stepped = false;
-                    self.break_message = None;
-                    sys.step_debug(amount, renderer, &mut self.break_points)
+                    self.bp_msg = None;
+                    sys.step_debug(amount, renderer, &mut self.bps)
                 } else {
                     StopReason::Time 
                 }
@@ -345,14 +335,9 @@ impl App for CpuCtrl {
             RunMode::Run { speed, ref mut remainder } => {
                 // Clear the break message if running, since the user must have clicked run again
                 // after a breakpoint.
-                self.break_message = None;
+                self.bp_msg = None;
                 let time = *remainder + dt;
-                let (rem, stop) = sys.run_debug(
-                    speed,
-                    time,
-                    renderer,
-                    &mut self.break_points
-                );
+                let (rem, stop) = sys.run_debug( speed, time, renderer, &mut self.bps);
                 *remainder = rem;
                 stop
             }
@@ -361,33 +346,30 @@ impl App for CpuCtrl {
         if stop == StopReason::Break {
             self.mode = RunMode::default_step();
 
-            let mut message = String::new();
-            for b in self.break_points.breaks.drain(..) {
-                let line = match b.kind {
-                    BreakPointTy::InsLoad => {
-                        format!("Broke loading instruction at '{:08x}'\n", b.addr)
-                    }
-                    BreakPointTy::DataLoad => {
-                        format!("Broke loading data at '{:08x}'\n", b.addr)
-                    }
-                    BreakPointTy::DataStore => {
-                        format!("Broke storing data to '{:08x}'\n", b.addr)
-                    }
-                };
-                message.push_str(&line);
-            }
-
-            self.break_message = Some(message);
+            let message: String = self.bps.breaks.drain(..)
+                .map(|b| {
+                    let kind = match b.kind {
+                        BreakPointTy::Ins => "loading instruction",
+                        BreakPointTy::Load => "loading data",
+                        BreakPointTy::Store => "storing data",
+                    };
+                    format!("Broke {kind} at '{:08x}'\n", b.addr)
+                })
+                .collect();
+            
+            self.bp_msg = Some(message);
         }
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
         let was_step = matches!(self.mode, RunMode::Step { .. });
         let mut is_step = was_step;
+
         ui.horizontal(|ui| {
             ui.selectable_value(&mut is_step, true, "Step");
             ui.selectable_value(&mut is_step, false, "Run");
         });
+
         if was_step != is_step {
             if is_step {
                 self.mode = RunMode::default_step();
@@ -395,7 +377,9 @@ impl App for CpuCtrl {
                 self.mode = RunMode::default_run();
             }
         }
+
         ui.separator();
+
         match self.mode {
             RunMode::Step { ref mut amount, ref mut stepped } => {
                 let suffix = match amount {
@@ -421,12 +405,15 @@ impl App for CpuCtrl {
                 );
             }
         }
+
         ui.separator();
-        if let Some(ref msg) = self.break_message {
+
+        if let Some(ref msg) = self.bp_msg {
             ui.label(msg);
         }
+
         ui.collapsing("Breakpoints", |ui| {
-            self.show_breakpoint(ui);
+            self.show_breakpoints(ui);
         });
     }
 
@@ -440,6 +427,17 @@ impl App for CpuCtrl {
                 self.show(ui);
             });
     }
+}
+
+fn show_bps(ui: &mut egui::Ui, bps: &mut Vec<BreakPoint>, kind: &str) {
+    bps.retain_mut(|bp| {
+        ui.label(&bp.name);
+        ui.label(kind);
+        ui.checkbox(&mut bp.retain, "");
+        let retain = !ui.button("Remove").clicked();
+        ui.end_row();
+        retain
+    });
 }
 
 const FIELD_LABELS: [&str; 4] = ["hi", "lo", "pc", "ins"];
