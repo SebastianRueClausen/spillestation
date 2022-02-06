@@ -4,23 +4,18 @@ use splst_util::Bit;
 
 use std::ops::Index;
 
-const FIFO_SIZE: usize = 16;
-
-/// Since the commands of the Playstations GPU aren't one word like the CPU, a buffer
-/// is used to store the words until it has a full command. This is done using a queue/fifo. The
-/// first word recives must be an instruction, since the instruction determines the length of
-/// the command. It then checks after each push if the length of the buffer is equal to the length
-/// of the instruction stored in the first slot. If it is, the command get's executed by the GPU.
 pub struct Fifo {
-    data: [u32; FIFO_SIZE],
+    data: [u32; Self::SIZE],
     head: u32,
     tail: u32,
 }
 
 impl Fifo {
+    const SIZE: usize = 16;
+
     pub fn new() -> Self {
         Self {
-            data: [0x0; FIFO_SIZE],
+            data: [0x0; Self::SIZE],
             head: 0,
             tail: 0,
         }
@@ -35,7 +30,7 @@ impl Fifo {
     }
 
     pub fn is_full(&self) -> bool {
-        self.len() == FIFO_SIZE
+        self.len() == Self::SIZE
     }
 
     pub fn clear(&mut self) {
@@ -47,7 +42,7 @@ impl Fifo {
             warn!("Pushing to a full GPU FIFO");
             panic!();
         }
-        self.data[self.head as usize & (FIFO_SIZE - 1)] = value;
+        self.data[self.head as usize & (Self::SIZE - 1)] = value;
         self.head = self.head.wrapping_add(1);
     }
 
@@ -82,19 +77,26 @@ impl Index<usize> for Fifo {
 
     fn index(&self, index: usize) -> &Self::Output {
         debug_assert!(index < self.len());
-        &self.data[self.tail.wrapping_add(index as u32) as usize & (FIFO_SIZE - 1)]
+        &self.data[self.tail.wrapping_add(index as u32) as usize & (Self::SIZE - 1)]
     }
 }
 
 /// Number of words in each GP0 command.
 const CMD_LEN: [u8; 0x100] = [
-    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    4, 4, 4, 4, 7, 7, 7, 7, 5, 5, 5, 5, 9, 9, 9, 9, 6, 6, 6, 6, 9, 9, 9, 9, 8, 8, 8, 8, 12, 12, 12,
-    12, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 3, 3, 3, 3, 4, 4, 4, 4, 2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3,
-    3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1,
+    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    4, 4, 4, 4, 7, 7, 7, 7, 5, 5, 5, 5, 9, 9, 9, 9,
+    6, 6, 6, 6, 9, 9, 9, 9, 8, 8, 8, 8, 12, 12, 12, 12,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    3, 3, 3, 3, 4, 4, 4, 4, 2, 2, 2, 2, 3, 3, 3, 3,
+    2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 ];

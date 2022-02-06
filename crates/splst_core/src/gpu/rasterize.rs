@@ -111,7 +111,7 @@ impl Gpu {
     }
 
     // Calculate the amount of cycles to draw a triangle.
-    fn calc_triangle_draw_time<Shade, Tex, Trans>(&self, pixels_drawn: u64) -> Cycle
+    fn calc_triangle_draw_time<Shade, Tex, Trans>(&self, pixels: u64) -> Cycle
     where
         Shade: Shading,
         Tex: Textureing,
@@ -124,17 +124,18 @@ impl Gpu {
         //
         // TODO: How much time does transparency take?
         let cycles = match (Shade::IS_SHADED, Tex::IS_TEXTURED) {
-            (true, true) => 500 + pixels_drawn * 2,
-            (false, true) => 300 + pixels_drawn * 2,
-            (true, false) => 180 + pixels_drawn * 2,
+            (true, true) => 400 + pixels * 2,
+            (false, true) => 300 + pixels * 2,
+            (true, false) => 180 + pixels * 2,
             (false, false) => {
                 if Trans::IS_TRANSPARENT {
-                    (pixels_drawn * 3) / 2
+                    (pixels * 3) / 2
                 } else {
-                    pixels_drawn
+                    pixels
                 }
             }
         };
+
         if !self.status.draw_to_displayed() && self.status.interlaced480() {
             cycles / 2
         } else {
@@ -161,35 +162,43 @@ impl Gpu {
         v3: &Vertex,
     ) -> Cycle {
         let points = [v1.point, v2.point, v3.point];
+
         // Calculate bounding box.
         let max = Point {
             x: i32::max(points[0].x, i32::max(points[1].x, points[2].x)),
-            y: i32::max(points[1].y, i32::max(points[1].y, points[2].y)),
+            y: i32::max(points[0].y, i32::max(points[1].y, points[2].y)),
         };
+
         let min = Point {
             x: i32::min(points[0].x, i32::min(points[1].x, points[2].x)),
             y: i32::min(points[0].y, i32::min(points[1].y, points[2].y)),
         };
+
         // Clip screen bounds.
         let max = Point {
             x: i32::max(max.x, self.draw_area_right as i32),
             y: i32::max(max.y, self.draw_area_top as i32),
         };
+
         let min = Point {
             x: i32::min(min.x, self.draw_area_left as i32),
             y: i32::min(min.y, self.draw_area_bottom as i32),
         };
+
         // This is to keep track of how many pixels gets drawn to calculate timing.
         let mut pixels_drawn: u64 = 0;
+
         // Loop through all points in the bounding box, and draw the pixel if it's inside the
         // triangle.
         for y in min.y..=max.y {
             for x in min.x..=max.x {
                 let p = Point::new(x, y);
                 let res = barycentric(&points, &p);
+
                 if res.x < 0.0 || res.y < 0.0 || res.z < 0.0 {
                     continue;
                 }
+
                 // If the triangle is shaded, we interpolate between the colors of each vertex.
                 // Otherwise the shade is just the base color/shade.
                 let shade = if Shade::IS_SHADED {
@@ -216,10 +225,13 @@ impl Gpu {
                             + v2.texcoord.v as f32 * res.y
                             + v3.texcoord.v as f32 * res.z) as u8,
                     };
+
                     let texel = self.load_texel(params, uv);
+
                     if texel.is_invisible() {
                         continue;
                     }
+
                     // If the triangle is not textured raw, the texture color get's blended with the
                     // shade. Otherwise it doesn't.
                     let texture_color = if Tex::IS_RAW {
@@ -227,6 +239,7 @@ impl Gpu {
                     } else {
                         texel.as_color().shade_blend(shade)
                     };
+
                     // If both the triangle and the texel is transparent, the texture color
                     // get's blended with the background using the blending function specified in
                     // the status register.
@@ -251,11 +264,13 @@ impl Gpu {
                         shade
                     }
                 };
+
                 let color = if self.status.dithering_enabled() {
                     color.dither(p)
                 } else {
                     color
                 };
+
                 pixels_drawn += 1;
                 self.draw_pixel(p, color);
             }
@@ -283,12 +298,15 @@ fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
         (points[1].x - points[0].x) as f32,
         (points[0].x - p.x) as f32,
     );
+
     let v2 = Vec3::new(
         (points[2].y - points[0].y) as f32,
         (points[1].y - points[0].y) as f32,
         (points[0].y - p.y) as f32,
     );
+
     let u = v1.cross(v2);
+
     if f32::abs(u.z) < 1.0 {
         Vec3::new(-1.0, 1.0, 1.0)
     } else {

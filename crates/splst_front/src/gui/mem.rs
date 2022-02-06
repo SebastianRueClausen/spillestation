@@ -66,18 +66,22 @@ impl App for MemView {
         // The start address must be 4-byte aligned. This is a hacky way to round down to next
         // multiple of 4.
         let start_addr = ((self.start_addr + 4) & !3) - 4;
+
         for (i, addr) in self.addresses.iter_mut().enumerate() {
             addr.clear();
             write!(addr, "{:06x}:\t", start_addr + 4 * i as u32).unwrap();
         }
+
         match self.mode {
             Mode::Instruction(ref mut ins) => {
                 for (i, ins) in ins.iter_mut().enumerate() {
                     ins.clear();
                     let addr = start_addr + (i * 4) as u32;
                     match system.cpu.bus_mut().load::<Word>(addr) {
-                        Some(val) => write!(ins, "{}", Opcode::new(val)).unwrap(),
                         None => write!(ins, "??").unwrap(),
+                        Some((val, _)) => {
+                            write!(ins, "{}", Opcode::new(val)).unwrap()
+                        }
                     }
                 }
             }
@@ -87,7 +91,7 @@ impl App for MemView {
                     for (j, col) in row.iter_mut().enumerate() {
                         let addr = (i * 4 + j) as u32 + start_addr;
                         match system.cpu.bus_mut().load::<Byte>(addr) {
-                            Some(val) => {
+                            Some((val, _)) => {
                                 as_text[j] = val as u8;
                                 col[0] = HEX_ASCII[((val >> 4) & 0xf) as usize];
                                 col[1] = HEX_ASCII[(val & 0xf) as usize];
@@ -108,37 +112,53 @@ impl App for MemView {
     fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let mut was_ins = matches!(self.mode, Mode::Instruction(..));
+
             if ui.selectable_value(&mut was_ins, false, "Value").clicked() {
                 self.mode = Mode::new_value();
             }
+
             if ui.selectable_value(&mut was_ins, true, "Instruction").clicked() {
                 self.mode = Mode::new_instruction();
             }
         });
+
         ui.separator();
+
         ui.horizontal(|ui| {
-            let input = egui::TextEdit::singleline(&mut self.addr_input);
-            ui.add_sized([120.0, 20.0], input);
+            ui.add_sized(
+                [120.0, 20.0],
+                egui::TextEdit::singleline(&mut self.addr_input),
+            );
+
             let find = ui.button("Find").clicked();
+
             if ui.button("⬆").clicked() || ui.input().key_pressed(egui::Key::ArrowUp) {
                 self.start_addr = self.start_addr.saturating_sub(4);
             }
+
             if ui.button("⬇").clicked() || ui.input().key_pressed(egui::Key::ArrowDown) {
                 self.start_addr = self.start_addr.saturating_add(4);
             }
+
             if ui.input().key_pressed(egui::Key::Enter) || find {
-                if let Ok(addr) = u32::from_str_radix(&self.addr_input, 16) {
-                    self.start_addr = addr;     
-                    self.addr_input_msg = None;
-                } else {
-                    self.addr_input_msg = Some(format!("Invalid Address"))
+                self.addr_input_msg = match u32::from_str_radix(&self.addr_input, 16) {
+                    Ok(addr) => {
+                        self.start_addr = addr;
+                        None
+                    }
+                    Err(err) => {
+                        Some(format!("Invalid Address: {}", err)) 
+                    }
                 };
             }
+
             if let Some(ref msg) = self.addr_input_msg {
                 ui.label(msg);
             }
         });
+
         ui.separator();
+
         match self.mode {
             Mode::Instruction(ref ins) => {
                 egui::Grid::new("instruction_grid").show(ui, |ui| {
@@ -165,7 +185,9 @@ impl App for MemView {
                                 ui.end_row();
                             }
                         });
+
                     ui.separator();
+
                     egui::Grid::new("text_grid")
                         .striped(true)
                         .spacing([0.0, 0.0])

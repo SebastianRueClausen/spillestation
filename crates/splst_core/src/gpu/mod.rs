@@ -320,7 +320,7 @@ impl Status {
             false => ColorDepth::B15,
             true => ColorDepth::B24,
         }
-    }
+    } 
 
     /// # Vertical interlacing
     ///
@@ -524,8 +524,17 @@ impl Gpu {
         }
     }
 
-    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> u32 {
+    pub fn load<T: AddrUnit>(
+        &mut self,
+        addr: u32,
+        schedule: &mut Schedule,
+        timers: &mut Timers
+    ) -> u32 {
         debug_assert_eq!(T::WIDTH, 4);
+       
+        schedule.unschedule(Event::RunGpu);
+        self.run(schedule, timers);     
+
         match addr {
             0 => self.gpu_read(),
             4 => self.status_read(),
@@ -551,6 +560,7 @@ impl Gpu {
     pub fn dma_block_ready(&self) -> bool {
         match self.state {
             State::VramStore(..) => !self.fifo.is_full(),
+            State::Drawing | State::VramLoad(..) => false,
             State::Idle => {
                 if let Some(cmd) = self.fifo.next_cmd() {
                     // If the command is a line or polygon command, the dma ready flag get's
@@ -565,7 +575,6 @@ impl Gpu {
                     true
                 }
             }
-            State::Drawing | State::VramLoad(..) => false,
         }
     }
 
@@ -580,7 +589,9 @@ impl Gpu {
                 DmaDir::CpuToGp0 => self.status.dma_block_ready(),
                 DmaDir::VramToCpu => self.status.vram_to_cpu_ready(),
             });
+
         trace!("GPU status load");
+
         self.status.0
     }
 
@@ -597,20 +608,21 @@ impl Gpu {
                 }
             }
             State::VramStore(ref mut tran) => {
-                let val = self.fifo.pop();
-                for (lo, hi) in [(0, 15), (16, 31)] {
-                    let value = val.bit_range(lo, hi) as u16;
-                    self.vram.store_16(tran.x, tran.y, value);
-                    tran.next();
-                }
-                if tran.is_done() {
-                    self.state = State::Idle;
+                if !self.fifo.is_empty() {
+                    let val = self.fifo.pop();
+
+                    for (lo, hi) in [(0, 15), (16, 31)] {
+                        let value = val.bit_range(lo, hi) as u16;
+                        self.vram.store_16(tran.x, tran.y, value);
+                        tran.next();
+                    }
+
+                    if tran.is_done() {
+                        self.state = State::Idle;
+                    }
                 }
             }
-            State::VramLoad(..) => {
-                warn!("GPU state is VramLoad when trying to execute command");
-            }
-            State::Drawing => (),
+            State::Drawing | State::VramLoad(..) => (),
         }
     }
 
@@ -640,7 +652,10 @@ impl Gpu {
     pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
         self.try_run_cmd(schedule);
 
-        self.timing.scanline_prog += timing::cpu_to_gpu_cycles(schedule.cycle() - self.timing.last_run);
+        self.timing.scanline_prog += timing::cpu_to_gpu_cycles(
+            schedule.cycle() - self.timing.last_run
+        );
+
         self.timing.last_run = schedule.cycle();
 
         // If the progress is less than a single scanline.
@@ -710,6 +725,7 @@ impl Gpu {
                 }
             }
         }
+
         // The the current line being displayed in VRAM. It's used here to determine
         // the value of bit 31 of 'status'.
         let line_offset = if self.status.interlaced480() {
@@ -722,10 +738,11 @@ impl Gpu {
         } else {
             self.timing.scanline as u16
         };
+
         let vram_line = self.display_vram_y_start + line_offset;
         self.status.0 = self.status.0.set_bit(31, vram_line.bit(0));
 
-        schedule.schedule_in(10_000, Event::RunGpu);
+        schedule.schedule_in(5_000, Event::RunGpu);
     }
 
     fn gp1_store(&mut self, val: u32) {
@@ -798,7 +815,9 @@ impl Gpu {
     }
 
     fn gp0_exec(&mut self, schedule: &mut Schedule) {
-        let cycles = match self.fifo[0].bit_range(24, 31) {
+        let cmd = self.fifo[0].bit_range(24, 31);
+
+        let cycles = match cmd {
             // GP0(00) - Nop.
             0x0 => {
                 self.fifo.pop();
@@ -813,16 +832,19 @@ impl Gpu {
             // GP0(02) - Fill rectanlge in VRAM.
             0x2 => {
                 let color = Color::from_cmd(self.fifo.pop());
+
                 let val = self.fifo.pop() as i32;
                 let start = Point {
                     x: val & 0x3f0,
                     y: (val >> 16) & 0x3ff,
                 };
+
                 let val = self.fifo.pop() as i32;
                 let dim = Point {
                     x: ((val & 0x3ff) + 0xf) & !0xf,
                     y: (val >> 16) & 0x1ff,
                 };
+
                 self.fill_rect(color, start, dim); 
                 0    
             }
@@ -838,7 +860,7 @@ impl Gpu {
                     .set_bit_range(0, 10, val.bit_range(0, 10))
                     .set_bit(15, val.bit(11));
                 self.rect_tex_x_flip = val.bit(12);
-                self.rect_tex_x_flip = val.bit(13);
+                self.rect_tex_y_flip = val.bit(13);
                 0
             }
             // GP0(e2) - Texture window setting.
@@ -912,6 +934,7 @@ impl Gpu {
                 let y = pos.bit_range(16, 31) as i32;
                 let w = dim.bit_range(00, 15) as i32;
                 let h = dim.bit_range(16, 31) as i32;
+
                 self.state = State::VramStore(MemTransfer::new(x, y, w, h));
                 0
             }
@@ -928,6 +951,7 @@ impl Gpu {
             }
             cmd => unimplemented!("Invalid GP0 command {:08x}.", cmd),
         };
+
         if cycles != 0 {
             self.state = State::Drawing;
             schedule.schedule_in(cycles, Event::GpuCmdDone);
@@ -1051,14 +1075,17 @@ impl Gpu {
     fn gp0_line(&mut self) {
         warn!("Drawing line");
         self.fifo.pop();
+
         let start = Point::from_cmd(self.fifo.pop()).with_offset(
             self.draw_x_offset as i32,
             self.draw_y_offset as i32,
         );
+
         let end = Point::from_cmd(self.fifo.pop()).with_offset(
             self.draw_x_offset as i32,
             self.draw_y_offset as i32,
         );
+
         self.draw_line(start, end);
     }
 }

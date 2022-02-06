@@ -305,9 +305,11 @@ impl Timer {
     fn trigger_irq(&mut self, schedule: &mut Schedule) {
         if self.mode.irq_repeat() || !self.has_triggered {
             self.has_triggered = true;
+
             if self.mode.master_irq_flag() {
                 schedule.schedule_now(Event::IrqTrigger(self.id.irq_kind()));
             }
+
             if self.mode.irq_toggle_mode() {
                 // In toggle mode, the irq master flag is toggled each IRQ.
                 self.mode.set_master_irq_flag(!self.mode.master_irq_flag());   
@@ -341,11 +343,13 @@ impl Timer {
             (value, true) => {
                 let prev_counter = self.counter;
                 self.counter = value;
+
                 // If the target is between the counter before the overflow and the counter has
                 // overflown, then the clock must have overflown.
                 if self.target > prev_counter {
                     self.target_reached(schedule);
                 }
+
                 if self.mode.irq_on_overflow() {
                     self.trigger_irq(schedule);
                 }
@@ -367,12 +371,15 @@ impl Timer {
         if !self.mode.irq_repeat() && self.has_triggered {
             return None;
         }
+
         if self.mode.clock_source(self.id) == ClockSource::Hblank {
             return None;
         }
+
         if self.mode.sync_enabled() && self.mode.sync_mode(self.id) == SyncMode::Stop {
             return None;
         }
+
         // Find some kind of target to aim at. It would be possible to calculate the exact cycle
         // and account for overflow and such, but that would likely be more costly than just
         // predicting the next overflow or target and run at that.
@@ -385,6 +392,7 @@ impl Timer {
         } else {
             u16::MAX
         };
+
         let ticks_left = target - self.counter;
         Some(self.clock_source().ticks_to_cycles(ticks_left.into()))
     }
@@ -419,9 +427,12 @@ impl Timers {
 
     pub fn load(&mut self, schedule: &mut Schedule, offset: u32) -> u32 {
         let id = TimerId::from_value(offset.bit_range(4, 5));
+
         self.update_timer(schedule, id);
+
         let (tmr, _) = &mut self.timers[id as usize];
         let val = tmr.load(offset);
+
         if let Some(cycles) = tmr.predict_next_irq() {
             schedule.schedule_in(cycles, Event::RunTimer(id));
         }
@@ -430,9 +441,12 @@ impl Timers {
 
     pub fn store(&mut self, schedule: &mut Schedule, offset: u32, val: u32) {
         let id = TimerId::from_value(offset.bit_range(4, 5));
+
         self.update_timer(schedule, id);
+
         let (tmr, _) = &mut self.timers[id as usize];
         tmr.store(offset, val);
+
         if let Some(cycles) = tmr.predict_next_irq() {
             schedule.unschedule(Event::RunTimer(id));
             schedule.schedule_in(cycles, Event::RunTimer(id));
@@ -444,7 +458,9 @@ impl Timers {
     fn update_timer(&mut self, schedule: &mut Schedule, id: TimerId) {
         let (tmr, last_update) = &mut self.timers[id as usize];
         let cycles = schedule.cycle() - *last_update;
+
         *last_update = schedule.cycle();
+
         if tmr.clock_source() != ClockSource::Hblank {
             tmr.run(schedule, tmr.clock_source().cycles_to_ticks(cycles));
         }
@@ -456,7 +472,9 @@ impl Timers {
 
     pub fn run_timer(&mut self, schedule: &mut Schedule, id: TimerId) {
         self.update_timer(schedule, id);
+
         let (tmr, _) = &mut self.timers[id as usize];
+
         if let Some(cycles) = tmr.predict_next_irq() {
             schedule.unschedule(Event::RunTimer(id));
             schedule.schedule_in(cycles, Event::RunTimer(id));
@@ -470,6 +488,7 @@ impl Timers {
 
     pub fn hblank(&mut self, schedule: &mut Schedule, count: u64) {
         let (tmr1, _) = &mut self.timers[1];
+
         if let ClockSource::Hblank = tmr1.clock_source() {
             tmr1.run(schedule, count);
         }

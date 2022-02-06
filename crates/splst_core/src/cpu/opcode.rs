@@ -30,11 +30,19 @@ use std::fmt;
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
 pub struct RegIdx(pub u8);
 
-impl RegIdx {
-    pub fn new(idx: u32) -> Self {
-        Self(idx as u8)
+impl From<u32> for RegIdx {
+    fn from(val: u32) -> Self {
+        Self(val as u8)
     }
+}
 
+impl From<u8> for RegIdx {
+    fn from(val: u8) -> Self {
+        Self(val)
+    }
+}
+
+impl RegIdx {
     #[allow(dead_code)]
     pub const ZERO: Self = Self(0);
 
@@ -184,17 +192,17 @@ impl Opcode {
 
     /// Destination register.
     pub fn rd(self) -> RegIdx {
-        RegIdx::new(self.0.bit_range(11, 15))
+        RegIdx::from(self.0.bit_range(11, 15))
     }
 
     /// Target register.
     pub fn rt(self) -> RegIdx {
-        RegIdx::new(self.0.bit_range(16, 20))
+        RegIdx::from(self.0.bit_range(16, 20))
     }
 
     /// Source register.
     pub fn rs(self) -> RegIdx {
-        RegIdx::new(self.0.bit_range(21, 25))
+        RegIdx::from(self.0.bit_range(21, 25))
     }
 
     /// Branch if greater or equal zero. Used by BCONDZ to determine the type of branching.

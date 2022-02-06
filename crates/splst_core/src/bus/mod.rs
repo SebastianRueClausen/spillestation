@@ -72,78 +72,73 @@ impl Bus {
         }
     }
 
-    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Option<u32> {
-        let val = match addr {
+    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Option<(u32, Cycle)> {
+        let (val, time) = match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
-                self.schedule.tick(3);
-                self.ram.load::<T>(addr)
+                (self.ram.load::<T>(addr), 3)
             }
             Bios::BUS_BEGIN..=Bios::BUS_END => {
-                self.schedule.tick(6 * T::WIDTH as Cycle);
-                self.bios.load::<T>(addr - Bios::BUS_BEGIN)
+                let time = 6 * T::WIDTH as Cycle;
+                (self.bios.load::<T>(addr - Bios::BUS_BEGIN), time)
             }
             MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
-                self.schedule.tick(3);
-                self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN)
+                (self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN), 3)
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
-                self.schedule.tick(3);
-                self.ram_size.0
+                (self.ram_size.0, 3)
             }
             CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
-                self.schedule.tick(2);
-                self.cache_ctrl.0
+                (self.cache_ctrl.0, 2)
             }
             EXP1_BEGIN..=EXP1_END => {
-                self.schedule.tick(7 * T::WIDTH as Cycle);
-                0xff
+                let time = 7 * T::WIDTH as Cycle;
+                (0xff, time)
             }
             EXP2_BEGIN..=EXP2_END => {
-                self.schedule.tick(10 * T::WIDTH as Cycle);
-                0xff
+                let time = 10 * T::WIDTH as Cycle;
+                (0xff, time)
             }
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
-                self.schedule.tick(3);
-                self.irq_state.load(addr - IrqState::BUS_BEGIN)
+                (self.irq_state.load(addr - IrqState::BUS_BEGIN), 3)
             }
             Dma::BUS_BEGIN..=Dma::BUS_END => {
-                self.schedule.tick(3);
                 self.run_dma();
-                self.dma.load(addr - Dma::BUS_BEGIN)
+                (self.dma.load(addr - Dma::BUS_BEGIN), 3)
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
-                self.schedule.tick(6);
-                self.cdrom.load::<T>(addr - CdRom::BUS_BEGIN)
+                (self.cdrom.load::<T>(addr - CdRom::BUS_BEGIN), 6)
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
                 let time = match T::WIDTH {
                     4 => 39,
                     _ => 18, 
                 };
-                self.schedule.tick(time);
-                self.spu.load(addr - Spu::BUS_BEGIN)
+                (self.spu.load(addr - Spu::BUS_BEGIN), time)
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
-                self.schedule.tick(3);
-                self.timers.load(
+                let val = self.timers.load(
                     &mut self.schedule,
                     addr - Timers::BUS_BEGIN,
-                )
+                );
+                (val, 3)
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
-                self.schedule.tick(3);
-                self.gpu.load::<T>(addr - Gpu::BUS_BEGIN)
+                let val = self.gpu.load::<T>(
+                    addr - Gpu::BUS_BEGIN,
+                    &mut self.schedule,
+                    &mut self.timers,
+                );
+                (val, 3)
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_BEGIN => {
-                self.schedule.tick(3);
-                self.io_port.load(addr - IoPort::BUS_BEGIN)
+                (self.io_port.load(addr - IoPort::BUS_BEGIN), 3)
             }
             _ => {
                 warn!("BUS data error when loading");
                 return None;
             }
         };
-        Some(val)
+        Some((val, time))
     }
 
     pub fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) -> Option<()> {
@@ -223,12 +218,21 @@ impl Bus {
         match event {
             Event::RunCdRom => self.cdrom.run(&mut self.schedule),
             Event::CdRomResponse(cmd) => self.cdrom.reponse(cmd),
-            Event::RunGpu => self.gpu.run(&mut self.schedule, &mut self.timers),
-            Event::GpuCmdDone => self.gpu.cmd_done(),
+            Event::RunGpu => {
+                self.gpu.run(&mut self.schedule, &mut self.timers)
+            }
+            Event::GpuCmdDone => {
+                self.gpu.cmd_done();
+                // self.schedule.unschedule(Event::RunGpu);
+                // self.gpu.run(&mut self.schedule, &mut self.timers);
+            }
             Event::RunDmaChan(port) => self.run_dma_chan(port),
             Event::TimerIrqEnable(id) => self.timers.enable_irq_master_flag(id),
             Event::RunTimer(id) => self.timers.run_timer(&mut self.schedule, id),
-            Event::IrqTrigger(..) | Event::IrqCheck => unreachable!(),
+            Event::IrqTrigger(..) | Event::IrqCheck => {
+                // They should be caught by the CPU.
+                unreachable!()
+            }
         }
     }
 }

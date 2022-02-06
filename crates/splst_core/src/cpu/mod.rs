@@ -5,8 +5,6 @@
 //!   active registers can change 'irq_active' status. Checking every cycle doesn't seem to do
 //!   anything for now, but herhaps there could be a problem.
 //!
-//! * Implement pipelineing for loads.
-//!
 //! * More testing of edge cases.
 //!
 //! * Test that store and load functions get's inlined properly to avoid branching on Exceptions.
@@ -17,24 +15,25 @@ mod gte;
 pub mod irq;
 pub mod opcode;
 
-use splst_util::Bit;
-use splst_cdimg::CdImage;
-use crate::{Cycle, Debugger};
-use crate::bus::{BusMap, AddrUnit, Bus, Byte, HalfWord, Word};
 use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
+use crate::bus::{AddrUnit, Bus, BusMap, Byte, HalfWord, Word};
 use crate::schedule::Event;
+use crate::{Cycle, Debugger};
+use splst_cdimg::CdImage;
+use splst_util::Bit;
 
 use cop0::{Cop0, Exception};
 use gte::Gte;
 
+pub use irq::{Irq, IrqState};
 pub use opcode::{Opcode, RegIdx};
-pub use irq::{IrqState, Irq};
 
 #[derive(Default, Clone, Copy)]
 struct DelaySlot {
-    pub reg: RegIdx,
-    pub val: u32,
+    reg: RegIdx,
+    ready: Cycle,
+    val: u32,
 }
 
 pub struct Cpu {
@@ -57,7 +56,7 @@ pub struct Cpu {
     /// To emulate this, 'next_pc' is get's changed when branching instead of 'pc', which works
     /// well besides when entering and expception.
     pub next_pc: u32,
-    /// Set to true if the current instruction is executed in the branch delay slot, in other words
+    /// Set to true if the current instruction is executed in the branch delay slot, ie.
     /// if the previous instruction branched.
     ///
     /// It's used when entering an exception. If the CPU is in a delay slot, it has to return one
@@ -75,8 +74,6 @@ pub struct Cpu {
     /// result is being calculated, but if the result is being read before it's ready, the CPU will
     /// wait before continuing.
     hi_lo_ready: Cycle,
-    /// # General Purpose Registers
-    ///
     /// All registers of the MIPS R3000 are essentially general purpose besides $r0 which always
     /// contains the value 0. They are however used for specific purposes depending on convention.
     ///
@@ -93,14 +90,7 @@ pub struct Cpu {
     /// - 30 - Frame pointer, or static variable.
     /// - 31 - Return address.
     pub registers: [u32; 32],
-
-    // pipeline: (RegIdx, Cycle), 
-
     /// # Load Delay Slot
-    ///
-    /// This is used to emulate the pipeline of the MIPS R3000. When loading data from the BUS,
-    /// it's not immediately ready to be read from the register, because fetching data takes more
-    /// than a single cycle. Unlike modern CPUs, this doesn't wait or handle that automatically.
     ///
     /// When loading a value from the BUS to a register, the value is ready in the register after
     /// the next instruction has read the registers, but before it has written to them. This is
@@ -108,12 +98,18 @@ pub struct Cpu {
     /// data needed from the registers, but after writing to any. If the load delay slot
     /// alreay contains a pending load to the same register when a load instruction tries to add a
     /// new pending load, it ignores the first load.
-    /// 
+    ///
     /// This field contains the value and register index of any pending loads. It takes advantage
     /// of the fact that the $r0 register always contains the value 0 to avoid branching every
     /// instruction. If there is any pending load, it writes the data to the register, if there
-    /// isn't any load, it writes 0 to the $r0 register. This seems to speeds up the CPU at
-    /// least 15% compared to branching, most likely because the branch predicter has a hard time.
+    /// isn't any load, it writes to the $r0 register which does nothing.
+    ///
+    /// The 'ready' field contains the cycle when the delayed load is ready to be read. Loads can
+    /// execute in the background while the processor is doing calculations or loading instructions
+    /// from memory. However, if an instruction is reading from or writing to the register in the
+    /// pipeline or starting a new load from memory, then the processor will sync and pause until
+    /// the load is done. This is only for loading from memory. Loading from the Coprocessors takes
+    /// can run while the loading from memory.
     load_delay: DelaySlot,
     /// Memory sections KUSEG and KSEG0 are cached for instructions.
     icache: Box<[ICacheLine; 0x100]>,
@@ -139,7 +135,6 @@ impl Cpu {
             lo: 0x0,
             hi_lo_ready: 0x0,
             registers: [0x0; 32],
-            // pipeline: (RegIdx::ZERO, 0),
             load_delay: DelaySlot::default(),
             gte: Gte::new(),
             cop0: Cop0::new(),
@@ -148,23 +143,6 @@ impl Cpu {
             bus,
         })
     }
-
-    /*
-    /// Skips forward in time if the CPU is going to access a register (read or write) that is
-    /// waiting for a previous data load.
-    fn access_reg(&mut self, idx: RegIdx) {
-        let (reg, cycle) = self.pipeline;
-
-        let same = idx == reg;
-
-        // This works since 'skip_to' ignores cycles less than the current cycle (take max of the
-        // two). So if the register doesn't match the register waiting for a load, it skips two
-        // cycle 0, which does nothing. Also if there isn't any loads in the pipeline, 'cycle' will
-        // be less than the current cycle, in which case this does nothing. This means that this
-        // should be branchless.
-        self.bus.schedule.skip_to(cycle * same as Cycle);
-    }
-    */
 
     fn read_reg(&self, idx: RegIdx) -> u32 {
         self.registers[idx.0 as usize]
@@ -176,17 +154,19 @@ impl Cpu {
     }
 
     /// Load data from the bus. Must not be called when loading code.
-    fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
+    fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<(u32, Cycle), Exception> {
+        self.bus.schedule.skip_to(self.load_delay.ready);
+
         if !T::is_aligned(addr) {
             self.cop0.set_reg(8, addr);
 
             return Err(Exception::AddressLoadError);
         }
 
-        let addr = regioned_addr(addr); 
+        let addr = regioned_addr(addr);
 
         if let Some(offset) = ScratchPad::offset(addr) {
-            Ok(self.bus.scratchpad.load::<T>(offset))
+            Ok((self.bus.scratchpad.load::<T>(offset), 0))
         } else {
             self.bus.load::<T>(addr).ok_or(Exception::BusDataError)
         }
@@ -195,41 +175,44 @@ impl Cpu {
     fn load_code<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
         if !T::is_aligned(addr) {
             self.cop0.set_reg(8, addr);
-
             return Err(Exception::AddressLoadError);
         }
 
         let addr = regioned_addr(addr);
 
-        self.bus.load::<T>(addr).ok_or(Exception::BusInstructionError)
+        self.bus
+            .load::<T>(addr)
+            .map(|(val, time)| {
+                self.bus.schedule.tick(time);
+                val
+            })
+            .ok_or(Exception::BusInstructionError)
     }
 
     fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) -> Result<(), Exception> {
         if !T::is_aligned(addr) {
             self.cop0.set_reg(8, addr);
-
             return Err(Exception::AddressStoreError);
         }
 
         let addr = regioned_addr(addr);
 
         if !self.cop0.cache_isolated() {
-            self.bus.store::<T>(addr, val).ok_or(Exception::BusDataError)
+            self.bus
+                .store::<T>(addr, val)
+                .ok_or(Exception::BusDataError)
         } else if self.bus.cache_ctrl.icache_enabled() {
-            // There shouldn't be any reason to check alignment here i think.
-            
             let line_idx = addr.bit_range(4, 11) as usize;
             let mut line = self.icache[line_idx];
 
             if self.bus.cache_ctrl.tag_test_enabled() {
-                line.invalidate();                
+                line.invalidate();
             } else {
                 let index = addr.bit_range(2, 3) as usize;
                 line.data[index] = val;
             }
 
             self.icache[line_idx] = line;
-
             Ok(())
         } else {
             warn!("store with cache isolated but not enabled");
@@ -237,17 +220,50 @@ impl Cpu {
         }
     }
 
-    /// Add pending load. If there's already one pending, fetch it.
-    fn add_load(&mut self, reg: RegIdx, val: u32) {
-        // TODO: Make branchless just to be sure.
-        let (sreg, sval) = if self.load_delay.reg != reg {
-            (self.load_delay.reg, self.load_delay.val)
-        } else {
-            (RegIdx::ZERO, 0) 
-        };
+    /// Add a load from memory to the CPU pipeline. It fetches the pending load from the pipeline
+    /// if there is any. If the pipeline already contains a load to the same register, then the
+    /// value get's replaced with the new one, effectively throwing away the old value.
+    ///
+    /// When loading from memory the CPU has to wait for the previous load to be done before the
+    /// new load can begin.
+    fn pipeline_bus_load(&mut self, reg: RegIdx, val: u32, time: Cycle) {
+        // Check if the current load in the pipeline is different from the new one. If there aren't
+        // any loads then 'self.load_delay.reg' points to the zero register.
+        let diff = (self.load_delay.reg != reg) as u8;
 
-        self.set_reg(sreg, sval);
-        self.load_delay = DelaySlot { reg, val };
+        // If the load in the pipeline is the same as 'reg' then 'lreg' points to the zero
+        // register, meaning writing to it would do nothing.
+        let lreg = RegIdx::from(self.load_delay.reg.0 * diff);
+
+        // This works since 'skip_to' ignores cycles less than the current cycle (take max of the
+        // two).
+        self.bus.schedule.skip_to(self.load_delay.ready);
+        self.set_reg(lreg, self.load_delay.val);
+
+        let ready = self.bus.schedule.cycle() + time;
+        self.load_delay = DelaySlot { reg, val, ready };
+    }
+
+    /// Almost the same as 'pipeline_bus_load' but doesn't have to wait for any previous loads to
+    /// come in. It will however still execute the next instruction in the load delay slot.
+    fn pipeline_cop_load(&mut self, reg: RegIdx, val: u32) {
+        let diff = (self.load_delay.reg != reg) as u8;
+
+        let lreg = RegIdx::from(self.load_delay.reg.0 * diff);
+
+        self.set_reg(lreg, self.load_delay.val);
+        self.load_delay = DelaySlot { reg, val, ready: 0 };
+    }
+
+    /// Access a register, meaning that it's either gonna be get written to or read from. If there
+    /// is a load in the pipeline to the same register, the processor has to wait for it to be
+    /// done.
+    fn access_reg(&mut self, reg: RegIdx) -> RegIdx {
+        let same = self.load_delay.reg == reg;
+        self.bus
+            .schedule
+            .skip_to(self.load_delay.ready * same as Cycle);
+        reg
     }
 
     /// Fetch pending load if there is any.
@@ -275,7 +291,7 @@ impl Cpu {
         self.branched = true;
     }
 
-    /// Jump to absolute.
+    /// Jump to absolute address.
     fn jump(&mut self, address: u32) {
         self.next_pc = address;
         self.branched = true;
@@ -293,7 +309,7 @@ impl Cpu {
             &mut self.bus.schedule,
             self.last_pc,
             self.in_branch_delay,
-            ex
+            ex,
         );
         self.next_pc = self.pc.wrapping_add(4);
     }
@@ -302,6 +318,7 @@ impl Cpu {
         let active = (self.bus.irq_state.active() as u32) << 10;
         let cause = self.cop0.read_reg(13) | active;
         let active = self.cop0.read_reg(12) & cause & 0xffff00;
+
         self.cop0.irq_enabled() && active != 0
     }
 
@@ -313,7 +330,6 @@ impl Cpu {
         &mut self.bus
     }
 
-    // Used fot debug.
     pub fn curr_ins(&mut self) -> Opcode {
         Opcode::new(self.load_code::<Word>(self.pc).unwrap())
     }
@@ -337,7 +353,7 @@ impl Cpu {
         &mut self,
         line: &mut ICacheLine,
         idx: usize,
-        addr: u32
+        addr: u32,
     ) -> Result<(), Exception> {
         self.bus.schedule.tick(4 - idx as u64);
         for (i, j) in (idx..4).enumerate() {
@@ -372,6 +388,8 @@ impl Cpu {
                     let mut line = self.icache[line_idx];
 
                     if line.tag() != tag || line.valid_word_idx() > word_idx {
+                        self.bus.schedule.skip_to(self.load_delay.ready);
+
                         match self.fetch_cachline(&mut line, word_idx, addr) {
                             Ok(()) => self.exec(dbg, Opcode::new(line.data[word_idx])),
                             Err(exp) => self.throw_exception(exp),
@@ -382,14 +400,17 @@ impl Cpu {
                         self.icache[line_idx] = line;
                         self.icache_misses += 1;
                     } else {
-                        self.exec(dbg, Opcode::new(line.data[word_idx])); 
+                        self.exec(dbg, Opcode::new(line.data[word_idx]));
                     }
                 } else {
+                    self.bus.schedule.skip_to(self.load_delay.ready);
+
                     // Cache misses take about 4 cycles.
                     self.bus.schedule.tick(4);
+
                     match self.load_code::<Word>(addr) {
                         Ok(val) => self.exec(dbg, Opcode::new(val)),
-                        Err(exp) => self.throw_exception(exp), 
+                        Err(exp) => self.throw_exception(exp),
                     }
                 }
                 self.bus.schedule.tick(1);
@@ -493,58 +514,93 @@ impl Cpu {
 impl Cpu {
     /// SLL - Shift left logical.
     fn op_sll(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rt()) << op.shift();
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let val = self.read_reg(rt) << op.shift();
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val);
+        self.set_reg(rd, val);
     }
 
     /// SRL - Shift right logical. Same as SRA, but unsigned.
     fn op_srl(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rt()) >> op.shift();
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let val = self.read_reg(rt) >> op.shift();
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val);
+        self.set_reg(rd, val);
     }
 
     /// SRA - Shift right arithmetic.
     fn op_sra(&mut self, op: Opcode) {
-        let val = (self.read_reg(op.rt()) as i32) >> op.shift();
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let val = self.read_reg(rt) as i32;
+        let val = val >> op.shift();
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val as u32);
+        self.set_reg(rd, val as u32);
     }
 
     /// SLLV - Shift left logical variable.
     fn op_sllv(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rt()) << (self.read_reg(op.rs()) & 0x1f);
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+        let rs = self.access_reg(op.rs());
+
+        let val = self.read_reg(rt) << self.read_reg(rs).bit_range(0, 4);
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val);
+        self.set_reg(rd, val);
     }
 
     /// SRLV - Shift right logical variable.
     fn op_srlv(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rt()) >> (self.read_reg(op.rs()) & 0x1f);
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+        let rs = self.access_reg(op.rs());
+
+        let val = self.read_reg(rt) >> self.read_reg(rs).bit_range(0, 4);
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val as u32);
+        self.set_reg(rd, val);
     }
 
     /// SRAV - Shift right arithmetic variable.
     fn op_srav(&mut self, op: Opcode) {
-        let val = (self.read_reg(op.rt()) as i32) >> (self.read_reg(op.rs()) & 0x1f);
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+        let rs = self.access_reg(op.rs());
+
+        let val = self.read_reg(rt) as i32;
+        let val = val >> self.read_reg(rs).bit_range(0, 4);
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val as u32);
+        self.set_reg(rd, val as u32);
     }
 
     /// JR - Jump register.
     fn op_jr(&mut self, op: Opcode) {
-        self.jump(self.read_reg(op.rs()));
+        let rs = self.access_reg(op.rs());
+
+        self.jump(self.read_reg(rs));
         self.fetch_load_slot();
     }
 
     /// JALR - Jump and link register.
     fn op_jalr(&mut self, op: Opcode) {
         let pc = self.next_pc;
-        self.jump(self.read_reg(op.rs()));
+        let rs = self.access_reg(op.rs());
+        let rd = self.access_reg(op.rd());
+
+        self.jump(self.read_reg(rs));
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), pc);
+        self.set_reg(rd, pc);
     }
 
     // TODO: Add more syscall commands.
@@ -561,11 +617,11 @@ impl Cpu {
                 let mut print = String::new();
                 loop {
                     let c = match self.load::<Byte>(addr) {
-                        Ok(val) => (val as u8) as char,
+                        Ok((val, _)) => (val as u8) as char,
                         Err(_) => break,
                     };
                     if c == '\n' {
-                        break
+                        break;
                     }
                     print.push(c);
                     addr += 1;
@@ -579,7 +635,7 @@ impl Cpu {
                 trace!("syscall: read float")
             }
             8 => {
-                debug!("syscall: read string"); 
+                debug!("syscall: read string");
             }
             9 => {
                 debug!("syscall: allocate {} bytes", self.read_reg(RegIdx::A0));
@@ -610,27 +666,38 @@ impl Cpu {
 
     /// MFHI - Move from high.
     fn op_mfhi(&mut self, op: Opcode) {
+        let rd = self.access_reg(op.rd());
+
         self.fetch_pending_hi_lo();
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), self.hi);
+        self.set_reg(rd, self.hi);
     }
 
     /// MTHI - Move to high.
     fn op_mthi(&mut self, op: Opcode) {
-        self.hi = self.read_reg(op.rs());
+        let rs = self.access_reg(op.rs());
+
+        self.hi = self.read_reg(rs);
         self.fetch_load_slot();
     }
 
     /// MFLO - Move from low.
     fn op_mflo(&mut self, op: Opcode) {
+        let rd = self.access_reg(op.rd());
+
         self.fetch_pending_hi_lo();
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), self.lo);
+        self.set_reg(rd, self.lo);
     }
 
     /// MTLO - Move to low.
     fn op_mtlo(&mut self, op: Opcode) {
-        self.lo = self.read_reg(op.rs());
+        let rs = self.access_reg(op.rs());
+
+        self.lo = self.read_reg(rs);
+
         self.fetch_load_slot();
     }
 
@@ -639,29 +706,41 @@ impl Cpu {
     /// Multiplication takes different amount of cycles to complete dependent on the size of the
     /// inputs numbers.
     fn op_mult(&mut self, op: Opcode) {
-        let lhs = self.read_reg(op.rs()) as i32;
-        let rhs = self.read_reg(op.rt()) as i32;
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let lhs = self.read_reg(rs) as i32;
+        let rhs = self.read_reg(rt) as i32;
+
         let cycles = match if lhs < 0 { !lhs } else { lhs }.leading_zeros() {
             00..=11 => 13,
             12..=20 => 9,
             _ => 7,
         };
+
         let val = i64::from(lhs) * i64::from(rhs);
         let val = val as u64;
+
         self.fetch_load_slot();
         self.add_pending_hi_lo(cycles, (val >> 32) as u32, val as u32);
     }
 
     /// MULTU - Unsigned multiplication.
     fn op_multu(&mut self, op: Opcode) {
-        let lhs = self.read_reg(op.rs());
-        let rhs = self.read_reg(op.rt());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let lhs = self.read_reg(rs);
+        let rhs = self.read_reg(rt);
+
         let cycles = match lhs {
             0x00000000..=0x000007ff => 13,
             0x00000800..=0x000fffff => 9,
             _ => 7,
         };
+
         let val = u64::from(lhs) * u64::from(rhs);
+
         self.fetch_load_slot();
         self.add_pending_hi_lo(cycles, (val >> 32) as u32, val as u32);
     }
@@ -671,8 +750,11 @@ impl Cpu {
     /// It always takes 36 cycles to complete. It doesn't throw an expception if dividing by 0, but
     /// instead returns garbage values.
     fn op_div(&mut self, op: Opcode) {
-        let lhs = self.read_reg(op.rs()) as i32;
-        let rhs = self.read_reg(op.rt()) as i32;
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let lhs = self.read_reg(rs) as i32;
+        let rhs = self.read_reg(rt) as i32;
 
         self.fetch_load_slot();
 
@@ -682,14 +764,20 @@ impl Cpu {
         } else if rhs == -1 && lhs as u32 == 0x8000_0000 {
             self.add_pending_hi_lo(36, 0, 0x8000_0000);
         } else {
-            self.add_pending_hi_lo(36, (lhs % rhs) as u32, (lhs / rhs) as u32);
+            let hi = lhs % rhs;
+            let lo = lhs / rhs;
+
+            self.add_pending_hi_lo(36, hi as u32, lo as u32);
         }
     }
 
     /// DIVU - Unsigned division.
     fn op_divu(&mut self, op: Opcode) {
-        let lhs = self.read_reg(op.rs());
-        let rhs = self.read_reg(op.rt());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let lhs = self.read_reg(rs);
+        let rhs = self.read_reg(rt);
 
         self.fetch_load_slot();
 
@@ -702,13 +790,17 @@ impl Cpu {
 
     /// ADD - Add signed.
     fn op_add(&mut self, op: Opcode) {
-        let lhs = self.read_reg(op.rs()) as i32;
-        let rhs = self.read_reg(op.rt()) as i32;
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let lhs = self.read_reg(rs) as i32;
+        let rhs = self.read_reg(rt) as i32;
 
         self.fetch_load_slot();
 
         if let Some(val) = lhs.checked_add(rhs) {
-            self.set_reg(op.rd(), val as u32);
+            self.set_reg(rd, val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
         }
@@ -716,20 +808,32 @@ impl Cpu {
 
     /// ADDU - Add unsigned.
     fn op_addu(&mut self, op: Opcode) {
-        let lhs = self.read_reg(op.rs());
-        let rhs = self.read_reg(op.rt());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let lhs = self.read_reg(rs);
+        let rhs = self.read_reg(rt);
+
         let val = lhs.wrapping_add(rhs);
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val);
+        self.set_reg(rd, val);
     }
 
     /// SUB - Signed subtraction.
     fn op_sub(&mut self, op: Opcode) {
-        let lhs = self.read_reg(op.rs()) as i32;
-        let rhs = self.read_reg(op.rt()) as i32;
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let lhs = self.read_reg(rs) as i32;
+        let rhs = self.read_reg(rt) as i32;
+
+        self.fetch_load_slot();
 
         if let Some(val) = lhs.checked_sub(rhs) {
-            self.set_reg(op.rd(), val as u32);
+            self.set_reg(rd, val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
         }
@@ -737,55 +841,92 @@ impl Cpu {
 
     /// SUBU - Subtract unsigned.
     fn op_subu(&mut self, op: Opcode) {
-        let lhs = self.read_reg(op.rs());
-        let rhs = self.read_reg(op.rt());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let lhs = self.read_reg(rs);
+        let rhs = self.read_reg(rt);
+
         let val = lhs.wrapping_sub(rhs);
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val);
+        self.set_reg(rd, val);
     }
 
     /// AND - Bitwise and.
     fn op_and(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) & self.read_reg(op.rt());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let val = self.read_reg(rs) & self.read_reg(rt);
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val);
+        self.set_reg(rd, val);
     }
 
     /// OR - Bitwise or.
     fn op_or(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) | self.read_reg(op.rt());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let val = self.read_reg(rs) | self.read_reg(rt);
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val);
+        self.set_reg(rd, val);
     }
 
     /// XOR - Bitwise exclusive or.
     fn op_xor(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) ^ self.read_reg(op.rt());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let val = self.read_reg(rs) ^ self.read_reg(rt);
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val);
+        self.set_reg(rd, val);
     }
 
     /// NOR - Bitwise not or.
     fn op_nor(&mut self, op: Opcode) {
-        let val = !(self.read_reg(op.rs()) | self.read_reg(op.rt()));
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let val = !(self.read_reg(rs) | self.read_reg(rt));
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val);
+        self.set_reg(rd, val);
     }
 
     /// SLT - Set if less than.
     fn op_slt(&mut self, op: Opcode) {
-        let lhs = self.read_reg(op.rs()) as i32;
-        let rhs = self.read_reg(op.rt()) as i32;
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let lhs = self.read_reg(rs) as i32;
+        let rhs = self.read_reg(rt) as i32;
+
         let val = lhs < rhs;
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val as u32);
+        self.set_reg(rd, val as u32);
     }
 
     /// SLTU - Set if less than unsigned.
     fn op_sltu(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) < self.read_reg(op.rt());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+        let rd = self.access_reg(op.rd());
+
+        let val = self.read_reg(rs) < self.read_reg(rt);
+
         self.fetch_load_slot();
-        self.set_reg(op.rd(), val as u32);
+        self.set_reg(rd, val as u32);
     }
 
     /// BCONDZ - Conditional branching.
@@ -793,23 +934,29 @@ impl Cpu {
     /// Multiple conditional branch instructions combined into on opcode. If bit 16 of the opcode
     /// is set, then it set's the return value register. If bits 17..20 of the opcode equals 0x80,
     /// then it branches if the value is greater than or equal to zero, otherwise it branches if
-    /// the values is less than zero. 
+    /// the values is less than zero.
     ///
     /// - BLTZ - Branch if less than zero.
     /// - BLTZAL - Branch if less than zero and set return register.
     /// - BGEZ - Branch if greater than or equal to zero.
     /// - BGEZAL - Branch if greater than or equal to zero and set return register.
     fn op_bcondz(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) as i32;
+        let rs = self.access_reg(op.rs());
+
+        let val = self.read_reg(rs) as i32;
         let cond = (val < 0) as u32;
+
         // If the instruction is to test greater or equal zero, we just
         // xor cond, since that's the oposite result.
         let cond = cond ^ op.bgez() as u32;
+
         self.fetch_load_slot();
+
         // Set return register if required.
         if op.update_ra_on_branch() {
-            self.set_reg(RegIdx::new(31), self.next_pc);
+            self.set_reg(RegIdx::RA, self.next_pc);
         }
+
         if cond != 0 {
             self.branch(op.signed_imm());
         }
@@ -818,56 +965,77 @@ impl Cpu {
     /// J - Jump.
     fn op_j(&mut self, op: Opcode) {
         self.jump((self.pc & 0xf000_0000) | ((op.target() << 2) & 0x0ffffffc));
+
         self.fetch_load_slot();
     }
 
     /// JAL - Jump and link.
     fn op_jal(&mut self, op: Opcode) {
         let pc = self.next_pc;
+
         self.op_j(op);
         self.set_reg(RegIdx::RA, pc);
     }
 
     /// BEQ - Branch if equal.
     fn op_beq(&mut self, op: Opcode) {
-        if self.read_reg(op.rs()) == self.read_reg(op.rt()) {
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        if self.read_reg(rs) == self.read_reg(rt) {
             self.branch(op.signed_imm());
         }
+
         self.fetch_load_slot();
     }
 
     /// BNE - Branch if not equal.
     fn op_bne(&mut self, op: Opcode) {
-        if self.read_reg(op.rs()) != self.read_reg(op.rt()) {
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        if self.read_reg(rs) != self.read_reg(rt) {
             self.branch(op.signed_imm());
         }
+
         self.fetch_load_slot();
     }
 
     /// BLEZ - Branch if less than or equal to zero.
     fn op_blez(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) as i32;
+        let rs = self.access_reg(op.rs());
+        let val = self.read_reg(rs) as i32;
+
         if val <= 0 {
             self.branch(op.signed_imm());
         }
+
         self.fetch_load_slot();
     }
 
     /// BGTZ - Branch if greater than zero.
     fn op_bgtz(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) as i32;
+        let rs = self.access_reg(op.rs());
+        let val = self.read_reg(rs) as i32;
+
         if val > 0 {
             self.branch(op.signed_imm());
         }
+
         self.fetch_load_slot();
     }
 
     /// ADDI - Add immediate signed.
     fn op_addi(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) as i32;
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let val = self.read_reg(rs) as i32;
+
         self.fetch_load_slot();
+
         if let Some(val) = val.checked_add(op.signed_imm() as i32) {
-            self.set_reg(op.rt(), val as u32);
+            self.set_reg(rt, val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
         }
@@ -878,51 +1046,77 @@ impl Cpu {
     /// Actually adding a signed int to target register, not unsigned.
     /// Unsigned in this case just means wrapping on overflow.
     fn op_addiu(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let val = self.read_reg(rs).wrapping_add(op.signed_imm());
+
         self.fetch_load_slot();
-        self.set_reg(op.rt(), val);
+        self.set_reg(rt, val);
     }
 
     /// SLTI - Set if less than immediate signed.
     fn op_slti(&mut self, op: Opcode) {
-        let val = (self.read_reg(op.rs()) as i32) < (op.signed_imm() as i32);
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let val = (self.read_reg(rs) as i32) < (op.signed_imm() as i32);
+
         self.fetch_load_slot();
-        self.set_reg(op.rt(), val as u32);
+        self.set_reg(rt, val as u32);
     }
 
     /// SLTUI - Set if less than immediate unsigned.
     fn op_sltui(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) < op.signed_imm();
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let val = self.read_reg(rs) < op.signed_imm();
+
         self.fetch_load_slot();
-        self.set_reg(op.rt(), val as u32);
+        self.set_reg(rt, val as u32);
     }
 
     /// ANDI - Bitwise and immediate.
     fn op_andi(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) & op.imm();
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let val = self.read_reg(rs) & op.imm();
+
         self.fetch_load_slot();
-        self.set_reg(op.rt(), val);
+        self.set_reg(rt, val);
     }
 
     /// ORI - Bitwise or immediate.
     fn op_ori(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) | op.imm();
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let val = self.read_reg(rs) | op.imm();
+
         self.fetch_load_slot();
-        self.set_reg(op.rt(), val);
+        self.set_reg(rt, val);
     }
 
     /// XORI - Bitwise exclusive Or immediate.
     fn op_xori(&mut self, op: Opcode) {
-        let val = self.read_reg(op.rs()) ^ op.imm();
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let val = self.read_reg(rs) ^ op.imm();
+
         self.fetch_load_slot();
-        self.set_reg(op.rt(), val);
+        self.set_reg(rt, val);
     }
 
     /// LUI - Load upper immediate.
     fn op_lui(&mut self, op: Opcode) {
+        let rt = self.access_reg(op.rt());
         let val = op.imm() << 16;
+
         self.fetch_load_slot();
-        self.set_reg(op.rt(), val);
+        self.set_reg(rt, val);
     }
 
     /// COP0 - Coprocessor0 instruction.
@@ -931,23 +1125,30 @@ impl Cpu {
             // MFC0 - Move from Co-Processor0.
             0x0 => {
                 let reg = op.rd().0;
+                let rt = self.access_reg(op.rt());
+
                 if reg > 15 {
                     self.throw_exception(Exception::ReservedInstruction);
                 } else {
-                    self.add_load(op.rt(), self.cop0.read_reg(reg.into()));
+                    self.pipeline_cop_load(rt, self.cop0.read_reg(reg.into()));
                 }
             }
             // MTC0 - Move to Co-Processor0.
             0x4 => {
+                let rt = self.access_reg(op.rt());
+
                 self.fetch_load_slot();
-                self.cop0.set_reg(op.rd().0.into(), self.read_reg(op.rt()));
+                self.cop0.set_reg(op.rd().0.into(), self.read_reg(rt));
             }
             // RFE - Restore from exception.
             0x10 => {
                 self.fetch_load_slot();
                 self.cop0.exit_exception(&mut self.bus.schedule);
             }
-            _ => self.throw_exception(Exception::ReservedInstruction),
+            _ => {
+                unreachable!();
+                // self.throw_exception(Exception::ReservedInstruction)
+            }
         }
     }
 
@@ -960,14 +1161,18 @@ impl Cpu {
     /// COP2 - GME instruction.
     fn op_cop2(&mut self, op: Opcode) {
         let cop = op.cop_op();
+
         if cop.bit(4) {
+            self.fetch_load_slot();
             self.gte.cmd(op.0);
         } else {
             match cop {
                 // Load from COP2 data register.
                 0x0 => {
+                    let rt = self.access_reg(op.rt());
                     let val = self.gte.data_load(op.rd().0.into());
-                    self.add_load(op.rt(), val);
+
+                    self.pipeline_cop_load(rt, val);
                 }
                 // Load from COP2 control register.
                 0x2 => {
@@ -975,17 +1180,21 @@ impl Cpu {
                 }
                 // Store to COP2 data register.
                 0x4 => {
-                    let val = self.read_reg(op.rt());
+                    let rt = self.access_reg(op.rt());
+                    let val = self.read_reg(rt);
+
                     self.fetch_load_slot();
                     self.gte.data_store(op.rd().0.into(), val);
                 }
                 // Store to COP2 control register.
                 0x6 => {
-                    let val = self.read_reg(op.rt());
+                    let rt = self.access_reg(op.rt());
+                    let val = self.read_reg(rt);
+
                     self.fetch_load_slot();
                     self.gte.ctrl_store(op.rd().0.into(), val);
                 }
-               _ => unreachable!(),
+                _ => unreachable!(),
             }
         }
     }
@@ -998,14 +1207,17 @@ impl Cpu {
 
     /// LB - Load byte.
     fn op_lb(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         dbg.data_load(addr);
 
         match self.load::<Byte>(addr) {
-            Ok(val) => {
+            Ok((val, time)) => {
                 let val = val as i8;
-                self.add_load(op.rt(), val as u32)
+                self.pipeline_bus_load(rt, val as u32, time)
             }
             Err(exp) => self.throw_exception(exp),
         }
@@ -1013,16 +1225,19 @@ impl Cpu {
 
     /// LH - Load half word.
     fn op_lh(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         dbg.data_load(addr);
 
         match self.load::<HalfWord>(addr) {
             Err(exp) => self.throw_exception(exp),
-            Ok(val) => {
+            Ok((val, time)) => {
                 let val = val as i16;
-                self.add_load(op.rt(), val as u32)
-            },
+                self.pipeline_bus_load(rt, val as u32, time)
+            }
         }
     }
 
@@ -1034,21 +1249,24 @@ impl Cpu {
     /// base value and the loaded word, where the combination depend on the alignment of the
     /// address.
     fn op_lwl(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
 
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
         let aligned = addr & !0x3;
+
         dbg.data_load(aligned);
 
-        let val = if self.load_delay.reg == op.rt() {
+        let val = if self.load_delay.reg == rt {
             debug_assert_ne!(self.load_delay.reg, RegIdx::ZERO);
             self.load_delay.val
         } else {
-            self.read_reg(op.rt())
+            self.read_reg(rt)
         };
 
         // Get word containing unaligned address.
         match self.load::<Word>(aligned) {
-            Ok(word) => {
+            Ok((word, time)) => {
                 // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
                 let val = match addr & 0x3 {
                     0 => (val & 0x00ff_ffff) | (word << 24),
@@ -1057,7 +1275,8 @@ impl Cpu {
                     3 => word,
                     _ => unreachable!(),
                 };
-                self.add_load(op.rt(), val);
+
+                self.pipeline_bus_load(rt, val, time);
             }
             Err(exp) => {
                 // This should never be an alignment problem, so there should be no need to store
@@ -1069,36 +1288,45 @@ impl Cpu {
 
     /// LW - Load word.
     fn op_lw(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         dbg.data_load(addr);
 
         match self.load::<Word>(addr) {
-            Ok(val) => self.add_load(op.rt(), val),
+            Ok((val, time)) => self.pipeline_bus_load(rt, val, time),
             Err(exp) => self.throw_exception(exp),
         }
     }
 
     /// LBU - Load byte unsigned.
     fn op_lbu(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         dbg.data_load(addr);
 
         match self.load::<Byte>(addr) {
-            Ok(val) => self.add_load(op.rt(), val),
+            Ok((val, time)) => self.pipeline_bus_load(rt, val, time),
             Err(exp) => self.throw_exception(exp),
         }
     }
 
     /// LHU - Load half word unsigned.
     fn op_lhu(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         dbg.data_load(addr);
 
         match self.load::<HalfWord>(addr) {
-            Ok(val) => self.add_load(op.rt(), val),
+            Ok((val, time)) => self.pipeline_bus_load(rt, val, time),
             Err(exp) => self.throw_exception(exp),
         }
     }
@@ -1107,20 +1335,23 @@ impl Cpu {
     ///
     /// See 'op_lwl'.
     fn op_lwr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         let aligned = addr & !0x3;
         dbg.data_load(aligned);
 
-        let val = if self.load_delay.reg == op.rt() {
+        let val = if self.load_delay.reg == rt {
             debug_assert_ne!(self.load_delay.reg, RegIdx::ZERO);
             self.load_delay.val
         } else {
-            self.read_reg(op.rt())
+            self.read_reg(rt)
         };
 
         match self.load::<Word>(aligned) {
-            Ok(word) => {
+            Ok((word, time)) => {
                 let val = match addr & 0x3 {
                     0 => word,
                     1 => (val & 0xff00_0000) | (word >> 8),
@@ -1128,7 +1359,8 @@ impl Cpu {
                     3 => (val & 0xffff_ff00) | (word >> 24),
                     _ => unreachable!(),
                 };
-                self.add_load(op.rt(), val);
+
+                self.pipeline_bus_load(rt, val, time);
             }
             Err(exp) => self.throw_exception(exp),
         }
@@ -1136,11 +1368,14 @@ impl Cpu {
 
     /// SB - Store byte.
     fn op_sb(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         dbg.data_store(addr);
 
-        let val = self.read_reg(op.rt());
+        let val = self.read_reg(rt);
         self.fetch_load_slot();
 
         if let Err(exp) = self.store::<Byte>(addr, val) {
@@ -1150,11 +1385,14 @@ impl Cpu {
 
     /// SH - Store half word.
     fn op_sh(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         dbg.data_store(addr);
 
-        let val = self.read_reg(op.rt());
+        let val = self.read_reg(rt);
         self.fetch_load_slot();
 
         if let Err(exp) = self.store::<HalfWord>(addr, val) {
@@ -1167,17 +1405,21 @@ impl Cpu {
     /// This is used to store words to addresses which aren't 32-aligned. It's the  same idea
     /// as 'op_lwl' and 'op_lwr'.
     fn op_swl(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
 
-        let val = self.read_reg(op.rt());
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+
+        let val = self.read_reg(rt);
 
         // Get address of whole word containing unaligned address.
         let aligned = addr & !3;
+
         dbg.data_store(aligned);
         dbg.data_load(aligned);
 
         match self.load::<Word>(aligned) {
-            Ok(word) => {
+            Ok((word, time)) => {
                 let val = match addr & 3 {
                     0 => (word & 0xffff_ff00) | (val >> 24),
                     1 => (word & 0xffff_0000) | (val >> 16),
@@ -1186,6 +1428,7 @@ impl Cpu {
                     _ => unreachable!(),
                 };
 
+                self.bus.schedule.tick(time);
                 self.fetch_load_slot();
 
                 if let Err(exp) = self.store::<Word>(aligned, val) {
@@ -1199,11 +1442,14 @@ impl Cpu {
     /// SW - Store word.
     /// Store word from target register at address from source register + signed immediate value.
     fn op_sw(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
+
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         dbg.data_store(addr);
 
-        let val = self.read_reg(op.rt());
+        let val = self.read_reg(rt);
         self.fetch_load_slot();
 
         if let Err(exp) = self.store::<Word>(addr, val) {
@@ -1215,16 +1461,20 @@ impl Cpu {
     ///
     /// See 'op_swl'.
     fn op_swr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
-        let addr = self.read_reg(op.rs()).wrapping_add(op.signed_imm());
+        let rs = self.access_reg(op.rs());
+        let rt = self.access_reg(op.rt());
 
-        let val = self.read_reg(op.rt());
+        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+
+        let val = self.read_reg(rt);
 
         let aligned = addr & !3;
+
         dbg.data_store(aligned);
         dbg.data_load(aligned);
 
         match self.load::<Word>(aligned) {
-            Ok(word) => {
+            Ok((word, time)) => {
                 let val = match addr & 3 {
                     0 => val,
                     1 => (word & 0x0000_00ff) | (val << 8),
@@ -1233,6 +1483,7 @@ impl Cpu {
                     _ => unreachable!(),
                 };
 
+                self.bus.schedule.tick(time);
                 self.fetch_load_slot();
 
                 if let Err(exp) = self.store::<Word>(aligned, val) {
@@ -1298,7 +1549,13 @@ fn addr_cached(addr: u32) -> bool {
 #[inline]
 pub fn regioned_addr(addr: u32) -> u32 {
     const REGION_MAP: [u32; 8] = [
-        0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0x7fff_ffff, 0x1fff_ffff, 0xffff_ffff,
+        0xffff_ffff,
+        0xffff_ffff,
+        0xffff_ffff,
+        0xffff_ffff,
+        0x7fff_ffff,
+        0x1fff_ffff,
+        0xffff_ffff,
         0xffff_ffff,
     ];
     addr & REGION_MAP[(addr >> 29) as usize]
@@ -1425,9 +1682,9 @@ mod tests {
                 nop
                 break   0
         "#);
-        assert_eq!(cpu.read_reg(RegIdx::new(1)), 1);
-        assert_eq!(cpu.read_reg(RegIdx::new(2)), 0);
-        assert_eq!(cpu.read_reg(RegIdx::new(3)), 0);
+        assert_eq!(cpu.read_reg(RegIdx::from(1_u8)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::from(2_u8)), 0);
+        assert_eq!(cpu.read_reg(RegIdx::from(3_u8)), 0);
     }
 
     #[test]
@@ -1449,8 +1706,8 @@ mod tests {
             addiu   $2, $1, 0
             break   0
         "#);
-        assert_eq!(cpu.read_reg(RegIdx::new(1)), 1);
-        assert_eq!(cpu.read_reg(RegIdx::new(2)), 2);
+        assert_eq!(cpu.read_reg(RegIdx::from(1_u8)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::from(2_u8)), 2);
     }
 
     #[test]
@@ -1496,10 +1753,10 @@ mod tests {
 
                 break   0
         "#);
-        assert_eq!(cpu.read_reg(RegIdx::new(1)), 0xffff_8080);
-        assert_eq!(cpu.read_reg(RegIdx::new(2)), 0x0000_8080);
-        assert_eq!(cpu.read_reg(RegIdx::new(3)), 0xffff_ff80);
-        assert_eq!(cpu.read_reg(RegIdx::new(4)), 0x0000_0080);
+        assert_eq!(cpu.read_reg(RegIdx::from(1_u32)), 0xffff_8080);
+        assert_eq!(cpu.read_reg(RegIdx::from(2_u32)), 0x0000_8080);
+        assert_eq!(cpu.read_reg(RegIdx::from(3_u32)), 0xffff_ff80);
+        assert_eq!(cpu.read_reg(RegIdx::from(4_u32)), 0x0000_0080);
     }
 
     #[test]
@@ -1624,14 +1881,14 @@ mod tests {
 
                 break   0
         "#);
-        assert_eq!(cpu.read_reg(RegIdx::new(1)), 1);
-        assert_eq!(cpu.read_reg(RegIdx::new(2)), 1);
-        assert_eq!(cpu.read_reg(RegIdx::new(3)), 1);
-        assert_eq!(cpu.read_reg(RegIdx::new(4)), 1);
-        assert_eq!(cpu.read_reg(RegIdx::new(5)), (-1_i32) as u32);
-        assert_eq!(cpu.read_reg(RegIdx::new(6)), 1);
-        assert_eq!(cpu.read_reg(RegIdx::new(7)), 0);
-        assert_eq!(cpu.read_reg(RegIdx::new(8)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::from(1_u32)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::from(2_u32)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::from(3_u32)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::from(4_u32)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::from(5_u32)), (-1_i32) as u32);
+        assert_eq!(cpu.read_reg(RegIdx::from(6_u32)), 1);
+        assert_eq!(cpu.read_reg(RegIdx::from(7_u32)), 0);
+        assert_eq!(cpu.read_reg(RegIdx::from(8_u32)), 1);
     }
 
     #[test]
@@ -1699,28 +1956,13 @@ mod tests {
         "#);
 
         let values: [u32; 18] = [
-            0x76543210,
-            0x98765432,
-            0xba987654,
-            0xdcba9876,
-            0xfedcba98,
-            0x76543210,
-            0x98765432,
-            0xba987654,
-            0xdcba9876,
-            0xfedcba98,
-            0x10ffffff,
-            0x76543210,
-            0x3210ffff,
-            0xff765432,
-            0x543210ff,
-            0xffff7654,
-            0x76543210,
-            0xffffff76,
+            0x76543210, 0x98765432, 0xba987654, 0xdcba9876, 0xfedcba98, 0x76543210, 0x98765432,
+            0xba987654, 0xdcba9876, 0xfedcba98, 0x10ffffff, 0x76543210, 0x3210ffff, 0xff765432,
+            0x543210ff, 0xffff7654, 0x76543210, 0xffffff76,
         ];
 
         for (i, val) in values.iter().enumerate() {
-            assert_eq!(cpu.read_reg(RegIdx::new(i as u32 + 1)), *val);
+            assert_eq!(cpu.read_reg(RegIdx::from(i as u32 + 1)), *val);
         }
     }
 
@@ -1783,28 +2025,13 @@ mod tests {
         "#);
 
         let values: [u32; 18] = [
-            0xba987654,
-            0xffffffff,
-            0xba987654,
-            0xffff7654,
-            0xba987654,
-            0xba98ffff,
-            0x54321098,
-            0xffffffff,
-            0x54321098,
-            0xfedcba98,
-            0xfedc7654,
-            0xffffffff,
-            0xfedc7654,
-            0xfedcba98,
-            0x3210067e,
-            0xffffffff,
-            0x06765432,
-            0x067e067e,
+            0xba987654, 0xffffffff, 0xba987654, 0xffff7654, 0xba987654, 0xba98ffff, 0x54321098,
+            0xffffffff, 0x54321098, 0xfedcba98, 0xfedc7654, 0xffffffff, 0xfedc7654, 0xfedcba98,
+            0x3210067e, 0xffffffff, 0x06765432, 0x067e067e,
         ];
 
         for (i, val) in values.iter().enumerate() {
-            assert_eq!(cpu.read_reg(RegIdx::new(i as u32 + 1)), *val);
+            assert_eq!(cpu.read_reg(RegIdx::from(i as u32 + 1)), *val);
         }
     }
 
@@ -1842,13 +2069,13 @@ mod tests {
                 break   0
         "#);
 
-        assert_eq!(cpu.load::<Word>(0).unwrap(), 0x765432fe);
-        assert_eq!(cpu.load::<Word>(4).unwrap(), 0x7654fedc);
-        assert_eq!(cpu.load::<Word>(8).unwrap(), 0x76fedcba);
-        assert_eq!(cpu.load::<Word>(12).unwrap(), 0xfedcba98);
-        assert_eq!(cpu.load::<Word>(16).unwrap(), 0xfedcba98);
-        assert_eq!(cpu.load::<Word>(20).unwrap(), 0xdcba9810);
-        assert_eq!(cpu.load::<Word>(24).unwrap(), 0xba983210);
-        assert_eq!(cpu.load::<Word>(28).unwrap(), 0x98543210);
+        assert_eq!(cpu.load::<Word>(0).unwrap().0, 0x765432fe);
+        assert_eq!(cpu.load::<Word>(4).unwrap().0, 0x7654fedc);
+        assert_eq!(cpu.load::<Word>(8).unwrap().0, 0x76fedcba);
+        assert_eq!(cpu.load::<Word>(12).unwrap().0, 0xfedcba98);
+        assert_eq!(cpu.load::<Word>(16).unwrap().0, 0xfedcba98);
+        assert_eq!(cpu.load::<Word>(20).unwrap().0, 0xdcba9810);
+        assert_eq!(cpu.load::<Word>(24).unwrap().0, 0xba983210);
+        assert_eq!(cpu.load::<Word>(28).unwrap().0, 0x98543210);
     }
 }
