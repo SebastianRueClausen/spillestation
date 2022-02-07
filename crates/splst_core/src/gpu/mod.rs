@@ -531,10 +531,7 @@ impl Gpu {
         timers: &mut Timers
     ) -> u32 {
         debug_assert_eq!(T::WIDTH, 4);
-       
-        schedule.unschedule(Event::RunGpu);
-        self.run(schedule, timers);     
-
+        self.run_internal(schedule, timers);     
         match addr {
             0 => self.gpu_read(),
             4 => self.status_read(),
@@ -649,7 +646,14 @@ impl Gpu {
         self.state = State::Idle;
     }
 
+    /// Run and schedule next run.
     pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
+        self.run_internal(schedule, timers);
+        schedule.schedule_in(5_000, Event::RunGpu);
+    }
+
+    /// Emulate the period since the last time the GPU run. It 
+    pub fn run_internal(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
         self.try_run_cmd(schedule);
 
         self.timing.scanline_prog += timing::cpu_to_gpu_cycles(
@@ -658,7 +662,8 @@ impl Gpu {
 
         self.timing.last_run = schedule.cycle();
 
-        // If the progress is less than a single scanline.
+        // If the progress is less than a single scanline. This is just to have a fast path to
+        // allow running the GPU often without a big performance loss.
         if self.timing.scanline_prog < self.timing.cycles_per_scln {
             let in_hblank = self.timing.scanline_prog >= timing::HSYNC_CYCLES;
 
@@ -674,7 +679,6 @@ impl Gpu {
             self.timing.scanline_prog %= self.timing.cycles_per_scln;
 
             // At there must have been atleast a single Hblank, this calculates the amount.
-            //
             // If the GPU wasn't in Hblank, it must have entered since then, which adds one to the
             // count. We know it's going to enter into Hblank on each scanline, except the current
             // one it's on, which is represented by 'in_hblank'.
@@ -741,8 +745,6 @@ impl Gpu {
 
         let vram_line = self.display_vram_y_start + line_offset;
         self.status.0 = self.status.0.set_bit(31, vram_line.bit(0));
-
-        schedule.schedule_in(5_000, Event::RunGpu);
     }
 
     fn gp1_store(&mut self, val: u32) {
@@ -832,19 +834,16 @@ impl Gpu {
             // GP0(02) - Fill rectanlge in VRAM.
             0x2 => {
                 let color = Color::from_cmd(self.fifo.pop());
-
                 let val = self.fifo.pop() as i32;
                 let start = Point {
                     x: val & 0x3f0,
                     y: (val >> 16) & 0x3ff,
                 };
-
                 let val = self.fifo.pop() as i32;
                 let dim = Point {
                     x: ((val & 0x3ff) + 0xf) & !0xf,
                     y: (val >> 16) & 0x1ff,
                 };
-
                 self.fill_rect(color, start, dim); 
                 0    
             }
@@ -934,7 +933,6 @@ impl Gpu {
                 let y = pos.bit_range(16, 31) as i32;
                 let w = dim.bit_range(00, 15) as i32;
                 let h = dim.bit_range(16, 31) as i32;
-
                 self.state = State::VramStore(MemTransfer::new(x, y, w, h));
                 0
             }
@@ -1010,7 +1008,9 @@ impl Gpu {
                 };
             }
         }
-        let cycles = self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
+        let cycles = self.draw_triangle::<Shade, Tex, Trans>(
+            color, &params, &verts[0], &verts[1], &verts[2]
+        );
         timing::gpu_to_cpu_cycles(cycles)
     }
 
@@ -1067,8 +1067,12 @@ impl Gpu {
                 };
             }
         }
-        let tri1 = self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[0], &verts[1], &verts[2]);
-        let tri2 = self.draw_triangle::<Shade, Tex, Trans>(color, &params, &verts[1], &verts[2], &verts[3]);
+        let tri1 = self.draw_triangle::<Shade, Tex, Trans>(
+            color, &params, &verts[0], &verts[1], &verts[2],
+        );
+        let tri2 = self.draw_triangle::<Shade, Tex, Trans>(
+            color, &params, &verts[1], &verts[2], &verts[3]
+        );
         timing::gpu_to_cpu_cycles(tri1 + tri2)
     }
 

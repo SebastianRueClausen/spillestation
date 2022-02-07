@@ -64,7 +64,12 @@ impl Texel {
     }
 }
 
-const DITHER_LUT: [[i32; 4]; 4] = [[-4, 0, -3, 1], [2, -2, 3, -1], [-3, 1, -4, 0], [3, -1, 2, -2]];
+const DITHER_LUT: [[i32; 4]; 4] = [
+    [-4, 0, -3, 1],
+    [2, -2, 3, -1],
+    [-3, 1, -4, 0],
+    [3, -1, 2, -2]
+];
 
 /// Depth of the color can be either 16 or 24 bits.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]

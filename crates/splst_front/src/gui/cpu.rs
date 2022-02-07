@@ -23,11 +23,13 @@ impl CpuStatus {
         for (show, value) in self.registers.iter_mut().zip(cpu.registers.iter()) {
             write!(show, "{}", value)?;
         }
+
         write!(&mut self.fields[0], "{:08x}", cpu.hi)?;
         write!(&mut self.fields[1], "{:08x}", cpu.lo)?;
         write!(&mut self.fields[2], "{:08x}", cpu.pc)?;
         write!(&mut self.fields[3], "{}", cpu.curr_ins())?;
         write!(&mut self.fields[4], "{}", cpu.icache_misses())?;
+
         Ok(())
     }
 }
@@ -38,12 +40,9 @@ impl App for CpuStatus {
     }
 
     fn update_tick(&mut self, _: Duration, system: &mut System, _: &mut Renderer) {
-        self.fields
-            .iter_mut()
-            .for_each(|field| field.clear());
-        self.registers
-            .iter_mut()
-            .for_each(|register| register.clear());
+        self.fields.iter_mut()
+            .chain(self.registers.iter_mut())
+            .for_each(|f| f.clear());
         if let Err(err) = self.write_fields(&mut system.cpu) {
             eprintln!("{}", err);
         }
@@ -338,7 +337,7 @@ impl App for CpuCtrl {
                 // after a breakpoint.
                 self.bp_msg = None;
                 let time = *remainder + dt;
-                let (rem, stop) = sys.run_debug( speed, time, renderer, &mut self.bps);
+                let (rem, stop) = sys.run_debug(speed, time, renderer, &mut self.bps);
                 *remainder = rem;
                 stop
             }

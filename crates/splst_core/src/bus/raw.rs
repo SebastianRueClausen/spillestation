@@ -1,4 +1,3 @@
-use splst_util::Bit;
 use super::AddrUnit;
 
 pub struct RawMem<const SIZE: usize> {
@@ -14,8 +13,7 @@ impl<const SIZE: usize> RawMem<SIZE> {
 
     #[inline]
     pub fn load<T: AddrUnit>(&mut self, offset: u32) -> u32 {
-        // Make sure RAM is mirrorred four time.
-        let offset = offset.bit_range(0, 20) as usize;
+        let offset = offset as usize;
         (0..T::WIDTH).fold(0, |value, byte| {
             value | (self.data[offset + byte] as u32) << (8 * byte)
         })
@@ -23,9 +21,9 @@ impl<const SIZE: usize> RawMem<SIZE> {
 
     #[inline]
     pub fn store<T: AddrUnit>(&mut self, offset: u32, val: u32) {
-        let offset = offset.bit_range(0, 20) as usize;
-        for i in 0..T::WIDTH {
-            self.data[offset + i] = (val >> (8 * i)) as u8;
+        let offset = offset as usize;
+        for byte in 0..T::WIDTH {
+            self.data[offset + byte] = (val >> (8 * byte)) as u8;
         }
     }
 }

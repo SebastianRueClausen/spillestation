@@ -72,6 +72,12 @@ impl Bus {
         }
     }
 
+    /// TODO: Make this not have side effects.
+    pub fn peek<T: AddrUnit>(&mut self, addr: u32) -> Option<u32> {
+        let addr = regioned_addr(addr);
+        self.load::<T>(addr).map(|(val, _)| val)
+    }
+
     pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Option<(u32, Cycle)> {
         let (val, time) = match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
@@ -235,6 +241,26 @@ impl Bus {
             }
         }
     }
+}
+
+/// Instructions in KUSEG and KUSEG0 are cached in the instruction cache.
+pub fn addr_cached(addr: u32) -> bool {
+    (addr >> 29) <= 4
+}
+
+#[inline]
+pub fn regioned_addr(addr: u32) -> u32 {
+    const REGION_MAP: [u32; 8] = [
+        0xffff_ffff,
+        0xffff_ffff,
+        0xffff_ffff,
+        0xffff_ffff,
+        0x7fff_ffff,
+        0x1fff_ffff,
+        0xffff_ffff,
+        0xffff_ffff,
+    ];
+    addr & REGION_MAP[(addr >> 29) as usize]
 }
 
 pub trait BusMap {

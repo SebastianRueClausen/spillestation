@@ -15,6 +15,7 @@ mod gte;
 pub mod irq;
 pub mod opcode;
 
+use crate::bus;
 use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
 use crate::bus::{AddrUnit, Bus, BusMap, Byte, HalfWord, Word};
@@ -163,7 +164,7 @@ impl Cpu {
             return Err(Exception::AddressLoadError);
         }
 
-        let addr = regioned_addr(addr);
+        let addr = bus::regioned_addr(addr);
 
         if let Some(offset) = ScratchPad::offset(addr) {
             Ok((self.bus.scratchpad.load::<T>(offset), 0))
@@ -178,7 +179,7 @@ impl Cpu {
             return Err(Exception::AddressLoadError);
         }
 
-        let addr = regioned_addr(addr);
+        let addr = bus::regioned_addr(addr);
 
         self.bus
             .load::<T>(addr)
@@ -195,7 +196,7 @@ impl Cpu {
             return Err(Exception::AddressStoreError);
         }
 
-        let addr = regioned_addr(addr);
+        let addr = bus::regioned_addr(addr);
 
         if !self.cop0.cache_isolated() {
             self.bus
@@ -266,7 +267,9 @@ impl Cpu {
         reg
     }
 
-    /// Fetch pending load if there is any.
+    /// Fetch pending load if there is any. It doesn't wait for the load to be finished, so the
+    /// register will contain the value before it's done loading. Only if the register is actually
+    /// read or written to will the CPU wait through 'access_reg'.
     fn fetch_load_slot(&mut self) {
         self.set_reg(self.load_delay.reg, self.load_delay.val);
         self.load_delay = DelaySlot::default();
@@ -286,7 +289,7 @@ impl Cpu {
 
     /// Branch to relative offset.
     fn branch(&mut self, offset: u32) {
-        // Offset is shifted 2 bits since PC addresses must be 32-bit aligned.
+        // Offset is shifted 2 bits since PC addresses must be 32-bit aligned anyway.
         self.next_pc = self.pc.wrapping_add(offset << 2);
         self.branched = true;
     }
@@ -295,11 +298,6 @@ impl Cpu {
     fn jump(&mut self, address: u32) {
         self.next_pc = address;
         self.branched = true;
-
-        if !Word::is_aligned(self.next_pc) {
-            self.cop0.set_reg(8, self.next_pc);
-            self.throw_exception(Exception::AddressLoadError);
-        }
     }
 
     /// Start handeling an exception, and jumps to exception handling code in bios.
@@ -331,7 +329,11 @@ impl Cpu {
     }
 
     pub fn curr_ins(&mut self) -> Opcode {
-        Opcode::new(self.load_code::<Word>(self.pc).unwrap())
+        let addr = bus::regioned_addr(self.pc);
+        let op = self.bus.load::<Word>(addr)
+            .map(|(val, _)| val)
+            .unwrap_or(0xffff_ffff);
+        Opcode::new(op)
     }
 
     pub fn icache_misses(&mut self) -> u64 {
@@ -380,7 +382,7 @@ impl Cpu {
 
                 dbg.instruction_load(addr);
 
-                if addr_cached(addr) && self.bus.cache_ctrl.icache_enabled() {
+                if bus::addr_cached(addr) && self.bus.cache_ctrl.icache_enabled() {
                     let tag = addr.bit_range(12, 30);
                     let word_idx = addr.bit_range(2, 3) as usize;
                     let line_idx = addr.bit_range(4, 11) as usize;
@@ -936,10 +938,10 @@ impl Cpu {
     /// then it branches if the value is greater than or equal to zero, otherwise it branches if
     /// the values is less than zero.
     ///
-    /// - BLTZ - Branch if less than zero.
-    /// - BLTZAL - Branch if less than zero and set return register.
-    /// - BGEZ - Branch if greater than or equal to zero.
-    /// - BGEZAL - Branch if greater than or equal to zero and set return register.
+    /// * BLTZ - Branch if less than zero.
+    /// * BLTZAL - Branch if less than zero and set return register.
+    /// * BGEZ - Branch if greater than or equal to zero.
+    /// * BGEZAL - Branch if greater than or equal to zero and set return register.
     fn op_bcondz(&mut self, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
@@ -964,7 +966,7 @@ impl Cpu {
 
     /// J - Jump.
     fn op_j(&mut self, op: Opcode) {
-        self.jump((self.pc & 0xf000_0000) | ((op.target() << 2) & 0x0ffffffc));
+        self.jump((self.pc & 0xf000_0000) | (op.target() << 2));
 
         self.fetch_load_slot();
     }
@@ -972,6 +974,7 @@ impl Cpu {
     /// JAL - Jump and link.
     fn op_jal(&mut self, op: Opcode) {
         let pc = self.next_pc;
+        self.access_reg(RegIdx::RA);
 
         self.op_j(op);
         self.set_reg(RegIdx::RA, pc);
@@ -1539,26 +1542,6 @@ impl Cpu {
     fn op_illegal(&mut self) {
         self.throw_exception(Exception::ReservedInstruction);
     }
-}
-
-/// Instructions in KUSEG and KUSEG0 are cached in the instruction cache.
-fn addr_cached(addr: u32) -> bool {
-    (addr >> 29) <= 4
-}
-
-#[inline]
-pub fn regioned_addr(addr: u32) -> u32 {
-    const REGION_MAP: [u32; 8] = [
-        0xffff_ffff,
-        0xffff_ffff,
-        0xffff_ffff,
-        0xffff_ffff,
-        0x7fff_ffff,
-        0x1fff_ffff,
-        0xffff_ffff,
-        0xffff_ffff,
-    ];
-    addr & REGION_MAP[(addr >> 29) as usize]
 }
 
 #[derive(Clone, Copy)]

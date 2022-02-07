@@ -1,3 +1,4 @@
+use splst_util::Bit;
 use super::{AddrUnit, BusMap};
 use super::raw::RawMem;
 
@@ -12,11 +13,13 @@ impl Ram {
 
     #[inline]
     pub fn load<T: AddrUnit>(&mut self, offset: u32) -> u32 {
+        let offset = offset.bit_range(0, 20);
         self.0.load::<T>(offset)
     }
 
     #[inline]
     pub fn store<T: AddrUnit>(&mut self, offset: u32, val: u32) {
+        let offset = offset.bit_range(0, 20);
         self.0.store::<T>(offset, val)
     }
 }

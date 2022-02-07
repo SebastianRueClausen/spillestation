@@ -87,7 +87,7 @@ impl System {
 
     /// Run at full speed for a given amount of time.
     pub fn run(&mut self, time: Duration, out: &mut impl VidOut) {
-        // Since ['Duration'] can't be constant for now, it has to be
+        // Since 'Duration' can't be constant for now, it has to be
         // calculated each run even though the number is constant.
         let cycle_time = Duration::from_secs(1) / timing::CPU_HZ as u32;
 
@@ -114,26 +114,18 @@ impl System {
     ) -> (Duration, StopReason) {
         let cycle_time = Duration::from_secs(1) / hz as u32;
 
-        loop {
-            let before = self.cpu.bus.schedule.cycle();
+        while let Some(new) = time.checked_sub(cycle_time) {
+            time = new;
 
-            self.cpu.step(&mut ());
+            self.cpu.step(dbg);
             self.maybe_draw_frame(out);
 
-            let cycles = self.cpu.bus.schedule.cycle() - before;
-
-            for _ in 0..cycles {
-                if let Some(new) = time.checked_sub(cycle_time) {
-                    time = new;
-                } else {
-                    return (time, StopReason::Time);
-                }
-            }
-                
             if dbg.should_stop() {
                 return (time, StopReason::Break);
             }
         }
+
+        (time, StopReason::Time)
     }
 
     /// Run for a given number of cycles in debug mode.
