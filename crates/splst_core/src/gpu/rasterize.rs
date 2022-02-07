@@ -83,29 +83,40 @@ impl Gpu {
 
     /// Load a texel at a given texture coordinate.
     fn load_texel(&self, params: &TextureParams, coord: TexCoord) -> Texel {
+        let u = (coord.u & !(self.tex_win_w * 8)) | ((self.tex_win_x & self.tex_win_w) * 8);
+        let v = (coord.v & !(self.tex_win_h * 8)) | ((self.tex_win_y & self.tex_win_h) * 8);
+
+        let u = u as i32;
+        let v = v as i32;
+
         match params.texel_depth {
             TexelDepth::B4 => {
-                let value = self.vram.load_16(
-                    params.texture_x + (coord.u / 4) as i32,
-                    params.texture_y + coord.v as i32,
+                let val = self.vram.load_16(
+                    self.status.tex_page_x() + (u / 4),
+                    self.status.tex_page_y() + v,
                 );
-                let offset = (value >> ((coord.u & 0x3) * 4)) as i32 & 0xf;
+
+                let offset = (val >> ((u & 0x3) * 4)) as i32 & 0xf;
+
                 Texel::new(self.vram.load_16(params.clut_x + offset, params.clut_y))
             }
             TexelDepth::B8 => {
-                let value = self.vram.load_16(
-                    params.texture_x + (coord.u / 2) as i32,
-                    params.texture_y + coord.v as i32,
+                let val = self.vram.load_16(
+                    self.status.tex_page_x() + (u / 2),
+                    self.status.tex_page_y() + v,
                 );
-                let offset = (value >> ((coord.u & 0x1) * 8)) as i32 & 0xff;
+
+                let offset = (val >> ((u & 0x1) * 8)) as i32 & 0xff;
+
                 Texel::new(self.vram.load_16(params.clut_x + offset, params.clut_y))
             }
             TexelDepth::B15 => {
-                let value = self.vram.load_16(
-                    params.texture_x + coord.u as i32,
-                    params.texture_y + coord.v as i32,
+                let val = self.vram.load_16(
+                    self.status.tex_page_x() + u,
+                    self.status.tex_page_y() + v,
                 );
-                Texel::new(value)
+
+                Texel::new(val)
             }
         }
     }
@@ -121,8 +132,6 @@ impl Gpu {
         // decoding the command. Shading and texturing spend some time fetching texels and background
         // colors, which could depend on the texture cache, which seems pretty easy to emulate when
         // that get's implemented.
-        //
-        // TODO: How much time does transparency take?
         let cycles = match (Shade::IS_SHADED, Tex::IS_TEXTURED) {
             (true, true) => 400 + pixels * 2,
             (false, true) => 300 + pixels * 2,
@@ -176,13 +185,13 @@ impl Gpu {
 
         // Clip screen bounds.
         let max = Point {
-            x: i32::max(max.x, self.draw_area_right as i32),
-            y: i32::max(max.y, self.draw_area_top as i32),
+            x: i32::max(max.x, self.da_right as i32),
+            y: i32::max(max.y, self.da_top as i32),
         };
 
         let min = Point {
-            x: i32::min(min.x, self.draw_area_left as i32),
-            y: i32::min(min.y, self.draw_area_bottom as i32),
+            x: i32::min(min.x, self.da_left as i32),
+            y: i32::min(min.y, self.da_bottom as i32),
         };
 
         // This is to keep track of how many pixels gets drawn to calculate timing.
@@ -217,13 +226,17 @@ impl Gpu {
                 };
 
                 let color = if Tex::IS_TEXTURED {
+                    let u = v1.texcoord.u as f32 * res.x
+                        + v2.texcoord.u as f32 * res.y
+                        + v3.texcoord.u as f32 * res.z;
+
+                    let v = v1.texcoord.v as f32 * res.x
+                        + v2.texcoord.v as f32 * res.y
+                        + v3.texcoord.v as f32 * res.z;
+
                     let uv = TexCoord {
-                        u: (v1.texcoord.u as f32 * res.x
-                            + v2.texcoord.u as f32 * res.y
-                            + v3.texcoord.u as f32 * res.z) as u8,
-                        v: (v1.texcoord.v as f32 * res.x
-                            + v2.texcoord.v as f32 * res.y
-                            + v3.texcoord.v as f32 * res.z) as u8,
+                        u: u as u8,
+                        v: v as u8
                     };
 
                     let texel = self.load_texel(params, uv);
@@ -246,11 +259,6 @@ impl Gpu {
                     if Trans::IS_TRANSPARENT && texel.is_transparent() {
                         let background = Color::from_u16(self.vram.load_16(p.x, p.y));
                         params.blend_mode.blend(texture_color, background)
-                        /*
-                        self.status
-                            .trans_blending()
-                            .blend(texture_color, background)
-                        */
                     } else {
                         texture_color
                     }
@@ -313,4 +321,3 @@ fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
         Vec3::new(1.0 - (u.x + u.y) / u.z, u.y / u.z, u.x / u.z)
     }
 }
-

@@ -235,13 +235,13 @@ pub struct Status(pub u32);
 
 impl Status {
     /// Texture page x base coordinate. N * 64.
-    pub fn texture_page_x_base(self) -> u32 {
-        self.0.bit_range(0, 3) * 64
+    pub fn tex_page_x(self) -> i32 {
+        self.0.bit_range(0, 3) as i32 * 64
     }
 
     /// Texture page y base coordinate. N * 256.
-    pub fn texture_page_y_base(self) -> u32 {
-        self.0.bit(4) as u32 * 256
+    pub fn tex_page_y(self) -> i32 {
+        self.0.bit(4) as i32 * 256
     }
 
     /// How to blend source and destination colors.
@@ -420,7 +420,6 @@ impl Timing {
         self.scln_count = vmode.scln_count();
         self.vbegin = vmode.vbegin();
         self.vend = vmode.vend();
-        
         self.scanline %= self.scln_count;
         self.scanline_prog %= self.cycles_per_scln;
 
@@ -455,32 +454,34 @@ pub struct Gpu {
     /// GP1(10) command call. It is read through the BUS at GPUREAD, if no transfer is ongoing.
     gpu_read: u32,
     /// Mirros textured rectangles on the x axis if true,
-    rect_tex_x_flip: bool,
+    tex_x_flip: bool,
     /// Mirros textured rectangles on the y axis if true,
     #[allow(dead_code)]
-    rect_tex_y_flip: bool,
-    /// Texture window x mask.
-    tex_window_x_mask: u8,
-    /// Texture window y mask.
-    tex_window_y_mask: u8,
-    /// Texture window x offset.
-    tex_window_x_offset: u8,
-    /// Texture window y offset.
-    tex_window_y_offset: u8,
-    draw_area_left: u16,
-    draw_area_right: u16,
-    draw_area_top: u16,
-    draw_area_bottom: u16,
-    pub draw_x_offset: i16,
-    pub draw_y_offset: i16,
+    tex_y_flip: bool,
+    tex_win_w: u8,
+    tex_win_h: u8,
+    tex_win_x: u8,
+    tex_win_y: u8,
+    /// Draw area left.
+    da_left: u16,
+    /// Draw area right.
+    da_right: u16,
+    /// Draw area top.
+    da_top: u16,
+    /// Draw area bottom.
+    da_bottom: u16,
+    /// Draw offset x.
+    pub x_offset: i16,
+    /// Draw offset y.
+    pub y_offset: i16,
     /// The first column display area in VRAM.
-    pub display_vram_x_start: u16,
+    pub vram_x_start: u16,
     /// The first line display area in VRAM.
-    pub display_vram_y_start: u16,
-    pub display_column_start: u16,
-    pub display_column_end: u16,
-    pub display_line_start: u16,
-    pub display_line_end: u16,
+    pub vram_y_start: u16,
+    pub dis_x_start: u16,
+    pub dis_x_end: u16,
+    pub dis_y_start: u16,
+    pub dis_y_end: u16,
 }
 
 impl Gpu {
@@ -494,24 +495,24 @@ impl Gpu {
             timing: Timing::new(status.video_mode()),
             status,
             gpu_read: 0x0,
-            rect_tex_x_flip: false,
-            rect_tex_y_flip: false,
-            tex_window_x_mask: 0x0,
-            tex_window_y_mask: 0x0,
-            tex_window_x_offset: 0x0,
-            tex_window_y_offset: 0x0,
-            draw_area_left: 0x0,
-            draw_area_right: 0x0,
-            draw_area_top: 0x0,
-            draw_area_bottom: 0x0,
-            draw_x_offset: 0x0,
-            draw_y_offset: 0x0,
-            display_vram_x_start: 0x0,
-            display_vram_y_start: 0x0,
-            display_column_start: 0x200,
-            display_column_end: 0xc00,
-            display_line_start: 0x10,
-            display_line_end: 0x100,
+            tex_x_flip: false,
+            tex_y_flip: false,
+            tex_win_w: 0x0,
+            tex_win_h: 0x0,
+            tex_win_x: 0x0,
+            tex_win_y: 0x0,
+            da_left: 0x0,
+            da_right: 0x0,
+            da_top: 0x0,
+            da_bottom: 0x0,
+            x_offset: 0x0,
+            y_offset: 0x0,
+            vram_x_start: 0x0,
+            vram_y_start: 0x0,
+            dis_x_start: 0x200,
+            dis_x_end: 0xc00,
+            dis_y_start: 0x10,
+            dis_y_end: 0x100,
         }
     }
 
@@ -629,8 +630,8 @@ impl Gpu {
 
     pub fn draw_info(&self) -> DrawInfo {
         DrawInfo {
-            vram_x_start: self.display_vram_x_start as u32,
-            vram_y_start: self.display_vram_y_start as u32,
+            vram_x_start: self.vram_x_start as u32,
+            vram_y_start: self.vram_y_start as u32,
         }
     }
 
@@ -733,17 +734,16 @@ impl Gpu {
         // The the current line being displayed in VRAM. It's used here to determine
         // the value of bit 31 of 'status'.
         let line_offset = if self.status.interlaced480() {
-            let offset = if self.timing.in_vblank {
-                (self.status.interlace_field() == InterlaceField::Bottom) as u16
-            } else {
-                0
+            let offset = match self.timing.in_vblank {
+                true => (self.status.interlace_field() == InterlaceField::Bottom) as u16,
+                false => 0,
             };
             (self.timing.scanline << 1) as u16 | offset
         } else {
             self.timing.scanline as u16
         };
 
-        let vram_line = self.display_vram_y_start + line_offset;
+        let vram_line = self.vram_y_start + line_offset;
         self.status.0 = self.status.0.set_bit(31, vram_line.bit(0));
     }
 
@@ -752,7 +752,38 @@ impl Gpu {
         match cmd {
             // GP1(0) - Resets the state of the GPU.
             0x0 => {
-                *self = Self::new();
+                self.fifo.clear();
+
+                self.status.0 = 0x14802000;
+
+                self.vram_x_start = 0;
+                self.vram_y_start = 0;
+
+                self.dis_x_start = 0x200;
+                self.dis_x_end = 0xc00;
+
+                self.dis_y_start = 0x10;
+                self.dis_y_end = 0x100;
+
+                self.tex_x_flip = false;
+                self.tex_y_flip = false;
+
+                self.tex_win_w = 0;
+                self.tex_win_h = 0;
+
+                self.tex_win_x = 0;
+                self.tex_win_y = 0;
+
+                self.da_left = 0;
+                self.da_top = 0;
+
+                self.da_right = 0;
+                self.da_bottom = 0;
+
+                self.x_offset = 0;
+                self.y_offset = 0;
+
+                self.timing.update_video_mode(self.status.video_mode());
             }
             // GP1(1) - Reset command buffer.
             0x1 => {
@@ -777,22 +808,22 @@ impl Gpu {
             // - 0..9 - x (address in VRAM).
             // - 10..18 - y (address in VRAM).
             0x5 => {
-                self.display_vram_x_start = val.bit_range(0, 9) as u16;
-                self.display_vram_y_start = val.bit_range(10, 18) as u16;
+                self.vram_x_start = val.bit_range(0, 9) as u16;
+                self.vram_y_start = val.bit_range(10, 18) as u16;
             }
             // GP1(6) - Horizontal display range.
             // - 0..11 - column start.
             // - 12..23 - column end.
             0x6 => {
-                self.display_column_start = val.bit_range(0, 11) as u16;
-                self.display_column_end = val.bit_range(12, 23) as u16;
+                self.dis_x_start = val.bit_range(0, 11) as u16;
+                self.dis_x_end = val.bit_range(12, 23) as u16;
             }
             // GP1(7) - Vertical display range.
             // - 0..11 - line start.
             // - 12..23 - line end.
             0x7 => {
-                self.display_line_start = val.bit_range(0, 11) as u16;
-                self.display_line_end = val.bit_range(12, 23) as u16;
+                self.dis_y_start = val.bit_range(0, 11) as u16;
+                self.dis_y_end = val.bit_range(12, 23) as u16;
             }
             // GP1(8) - Set display mode.
             // - 0..1 - Horizontal resolution 1.
@@ -834,16 +865,19 @@ impl Gpu {
             // GP0(02) - Fill rectanlge in VRAM.
             0x2 => {
                 let color = Color::from_cmd(self.fifo.pop());
+
                 let val = self.fifo.pop() as i32;
                 let start = Point {
                     x: val & 0x3f0,
                     y: (val >> 16) & 0x3ff,
                 };
+
                 let val = self.fifo.pop() as i32;
                 let dim = Point {
                     x: ((val & 0x3ff) + 0xf) & !0xf,
                     y: (val >> 16) & 0x1ff,
                 };
+
                 self.fill_rect(color, start, dim); 
                 0    
             }
@@ -855,11 +889,14 @@ impl Gpu {
             // - 14..23 - Not used.
             0xe1 => {
                 let val = self.fifo.pop();
+
                 self.status.0 = self.status.0
                     .set_bit_range(0, 10, val.bit_range(0, 10))
                     .set_bit(15, val.bit(11));
-                self.rect_tex_x_flip = val.bit(12);
-                self.rect_tex_y_flip = val.bit(13);
+
+                self.tex_x_flip = val.bit(12);
+                self.tex_y_flip = val.bit(13);
+
                 0
             }
             // GP0(e2) - Texture window setting.
@@ -869,10 +906,10 @@ impl Gpu {
             // - 15..19 - Texture window offset y.
             0xe2 => {
                 let val = self.fifo.pop();
-                self.tex_window_x_mask = val.bit_range(0, 4) as u8;
-                self.tex_window_y_mask = val.bit_range(5, 9) as u8;
-                self.tex_window_x_offset = val.bit_range(10, 14) as u8;
-                self.tex_window_y_offset = val.bit_range(15, 19) as u8;
+                self.tex_win_w = val.bit_range(0, 4) as u8;
+                self.tex_win_h = val.bit_range(5, 9) as u8;
+                self.tex_win_x = val.bit_range(10, 14) as u8;
+                self.tex_win_y = val.bit_range(15, 19) as u8;
                 0
             }
             // GP0(e3) - Set draw area top left.
@@ -881,8 +918,8 @@ impl Gpu {
             // TODO this differs between GPU versions.
             0xe3 => {
                 let val = self.fifo.pop();
-                self.draw_area_left = val.bit_range(0, 9) as u16;
-                self.draw_area_top = val.bit_range(10, 18) as u16;
+                self.da_left = val.bit_range(0, 9) as u16;
+                self.da_top = val.bit_range(10, 18) as u16;
                 0
             }
             // GP0(e4) - Set draw area bottom right.
@@ -890,8 +927,8 @@ impl Gpu {
             // - 10..18 - Draw area bottom.
             0xe4 => {
                 let val = self.fifo.pop();
-                self.draw_area_right = val.bit_range(0, 9) as u16;
-                self.draw_area_bottom = val.bit_range(10, 18) as u16;
+                self.da_right = val.bit_range(0, 9) as u16;
+                self.da_bottom = val.bit_range(10, 18) as u16;
                 0
             }
             // GP0(e5) - Set drawing offset.
@@ -904,8 +941,8 @@ impl Gpu {
                 let y_offset = val.bit_range(11, 21) as u16;
                 // Because the command stores the values as 11 bit signed integers, the values have to be
                 // bit-shifted to the most significant bits in order to make Rust generate sign extension.
-                self.draw_x_offset = ((x_offset << 5) as i16) >> 5;
-                self.draw_y_offset = ((y_offset << 5) as i16) >> 5;
+                self.x_offset = ((x_offset << 5) as i16) >> 5;
+                self.y_offset = ((y_offset << 5) as i16) >> 5;
                 0
             }
             // GP0(e6) - Mask bit setting.
@@ -929,10 +966,12 @@ impl Gpu {
             0xa0 => {
                 self.fifo.pop();
                 let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
-                let x = pos.bit_range(00, 15) as i32;
-                let y = pos.bit_range(16, 31) as i32;
-                let w = dim.bit_range(00, 15) as i32;
-                let h = dim.bit_range(16, 31) as i32;
+                let (x, y, w, h) = (
+                    pos.bit_range(00, 15) as i32,
+                    pos.bit_range(16, 31) as i32,
+                    dim.bit_range(00, 15) as i32,
+                    dim.bit_range(16, 31) as i32,
+                );
                 self.state = State::VramStore(MemTransfer::new(x, y, w, h));
                 0
             }
@@ -940,10 +979,12 @@ impl Gpu {
             0xc0 => {
                 self.fifo.pop();
                 let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
-                let x = pos.bit_range(00, 15) as i32;
-                let y = pos.bit_range(16, 31) as i32;
-                let w = dim.bit_range(00, 15) as i32;
-                let h = dim.bit_range(16, 31) as i32;
+                let (x, y, w, h) = (
+                    pos.bit_range(00, 15) as i32,
+                    pos.bit_range(16, 31) as i32,
+                    dim.bit_range(00, 15) as i32,
+                    dim.bit_range(16, 31) as i32,
+                );
                 self.state = State::VramLoad(MemTransfer::new(x, y, w, h));
                 0
             }
@@ -965,10 +1006,9 @@ impl Gpu {
         let mut verts = [Vertex::default(); 3];
         let mut params = TextureParams::default();
 
-        let color = if !Shade::IS_SHADED {
-            Color::from_cmd(self.fifo.pop())
-        } else {
-            Color::from_rgb(0, 0, 0)
+        let color = match Shade::IS_SHADED {
+            true => Color::from_rgb(0, 0, 0),
+            false => Color::from_cmd(self.fifo.pop()),
         };
 
         for (i, vertex) in verts.iter_mut().enumerate() {
@@ -977,34 +1017,31 @@ impl Gpu {
             }
 
             vertex.point = Point::from_cmd(self.fifo.pop()).with_offset(
-                self.draw_x_offset as i32,
-                self.draw_y_offset as i32,
+                self.x_offset as i32, self.y_offset as i32,
             );
 
             if Tex::IS_TEXTURED {
-                let value = self.fifo.pop();
+                let val = self.fifo.pop();
                 match i {
                     0 => {
-                        let value = (value >> 16) as i32;
-                        params.clut_x = value.bit_range(0, 5) * 16;
-                        params.clut_y = value.bit_range(6, 14);
+                        let val = (val >> 16) as i32;
+
+                        params.clut_x = val.bit_range(0, 5) * 16;
+                        params.clut_y = val.bit_range(6, 14);
                     }
                     1 => {
-                        let value = (value >> 16) as i32;
-                        params.texture_x = value.bit_range(0, 3) * 64;
-                        params.texture_y = value.bit(4) as i32 * 256;
-                        params.blend_mode = TransBlend::from_value(
-                            value.bit_range(5, 6) as u32
-                        );
-                        params.texel_depth = TexelDepth::from_value(
-                            value.bit_range(7, 8) as u32
-                        );
+                        let val = val >> 16;
+
+                        self.status.0 = self.status.0
+                            .set_bit_range(0, 8, val.bit_range(0, 8))
+                            .set_bit(11, val.bit(11));
                     }
                     _ => {}
                 }
+
                 vertex.texcoord = TexCoord {
-                    u: value.bit_range(0, 7) as u8,
-                    v: value.bit_range(8, 15) as u8,
+                    u: val.bit_range(0, 7) as u8,
+                    v: val.bit_range(8, 15) as u8,
                 };
             }
         }
@@ -1023,10 +1060,9 @@ impl Gpu {
         let mut verts = [Vertex::default(); 4];
         let mut params = TextureParams::default();
 
-        let color = if !Shade::IS_SHADED {
-            Color::from_cmd(self.fifo.pop())
-        } else {
-            Color::from_rgb(0, 0, 0)
+        let color = match Shade::IS_SHADED {
+            true => Color::from_rgb(0, 0, 0),
+            false => Color::from_cmd(self.fifo.pop()),
         };
 
         for (i, vertex) in verts.iter_mut().enumerate() {
@@ -1036,43 +1072,43 @@ impl Gpu {
             }
 
             vertex.point = Point::from_cmd(self.fifo.pop()).with_offset(
-                self.draw_x_offset as i32,
-                self.draw_y_offset as i32,
+                self.x_offset as i32, self.y_offset as i32,
             );
 
             if Tex::IS_TEXTURED {
-                let value = self.fifo.pop();
+                let val = self.fifo.pop();
                 match i {
                     0 => {
-                        let value = (value >> 16) as i32;
-                        params.clut_x = value.bit_range(0, 5) * 16;
-                        params.clut_y = value.bit_range(6, 14);
+                        let val = (val >> 16) as i32;
+
+                        params.clut_x = val.bit_range(0, 5) * 16;
+                        params.clut_y = val.bit_range(6, 14);
                     }
                     1 => {
-                        let value = (value >> 16) as i32;
-                        params.texture_x = value.bit_range(0, 3) * 64;
-                        params.texture_y = value.bit(4) as i32 * 256;
-                        params.blend_mode = TransBlend::from_value(
-                            value.bit_range(5, 6) as u32
-                        );
-                        params.texel_depth = TexelDepth::from_value(
-                            value.bit_range(7, 8) as u32
-                        );
+                        let val = val >> 16;
+
+                        self.status.0 = self.status.0
+                            .set_bit_range(0, 8, val.bit_range(0, 8))
+                            .set_bit(11, val.bit(11));
                     }
                     _ => {}
                 }
+
                 vertex.texcoord = TexCoord {
-                    u: value.bit_range(0, 7) as u8,
-                    v: value.bit_range(8, 15) as u8,
+                    u: val.bit_range(0, 7) as u8,
+                    v: val.bit_range(8, 15) as u8,
                 };
             }
         }
+
         let tri1 = self.draw_triangle::<Shade, Tex, Trans>(
             color, &params, &verts[0], &verts[1], &verts[2],
         );
+
         let tri2 = self.draw_triangle::<Shade, Tex, Trans>(
             color, &params, &verts[1], &verts[2], &verts[3]
         );
+
         timing::gpu_to_cpu_cycles(tri1 + tri2)
     }
 
@@ -1081,13 +1117,13 @@ impl Gpu {
         self.fifo.pop();
 
         let start = Point::from_cmd(self.fifo.pop()).with_offset(
-            self.draw_x_offset as i32,
-            self.draw_y_offset as i32,
+            self.x_offset as i32,
+            self.y_offset as i32,
         );
 
         let end = Point::from_cmd(self.fifo.pop()).with_offset(
-            self.draw_x_offset as i32,
-            self.draw_y_offset as i32,
+            self.x_offset as i32,
+            self.y_offset as i32,
         );
 
         self.draw_line(start, end);

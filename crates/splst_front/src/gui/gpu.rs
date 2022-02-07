@@ -20,16 +20,16 @@ pub struct GpuStatus {
 impl GpuStatus {
     /// Write information to all the fields.
     fn write_fields(&mut self, gpu: &Gpu) -> Result<(), std::fmt::Error> {
-        write!(self.fields[0], "{:08x}", gpu.draw_x_offset)?;
-        write!(self.fields[1], "{:08x}", gpu.draw_y_offset)?;
-        write!(self.fields[2], "{:08x}", gpu.display_vram_x_start)?;
-        write!(self.fields[3], "{:08x}", gpu.display_vram_y_start)?;
-        write!(self.fields[4], "{:08x}", gpu.display_column_start)?;
-        write!(self.fields[5], "{:08x}", gpu.display_column_end)?;
-        write!(self.fields[6], "{:08x}", gpu.display_line_start)?;
-        write!(self.fields[7], "{:08x}", gpu.display_line_end)?;
-        write!(self.fields[8], "{:08x}", gpu.status.texture_page_x_base())?;
-        write!(self.fields[9], "{:08x}", gpu.status.texture_page_y_base())?;
+        write!(self.fields[0], "{:08x}", gpu.x_offset)?;
+        write!(self.fields[1], "{:08x}", gpu.y_offset)?;
+        write!(self.fields[2], "{:08x}", gpu.vram_x_start)?;
+        write!(self.fields[3], "{:08x}", gpu.vram_y_start)?;
+        write!(self.fields[4], "{:08x}", gpu.dis_x_start)?;
+        write!(self.fields[5], "{:08x}", gpu.dis_x_end)?;
+        write!(self.fields[6], "{:08x}", gpu.dis_y_start)?;
+        write!(self.fields[7], "{:08x}", gpu.dis_y_end)?;
+        write!(self.fields[8], "{:08x}", gpu.status.tex_page_x())?;
+        write!(self.fields[9], "{:08x}", gpu.status.tex_page_y())?;
         write!(self.fields[10], "{}", gpu.status.trans_blending())?;
         write!(self.fields[11], "{}", gpu.status.texture_depth())?;
         write!(self.fields[12], "{}", gpu.status.dithering_enabled())?;
