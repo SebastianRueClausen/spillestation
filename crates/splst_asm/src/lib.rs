@@ -36,7 +36,7 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "[error]:{}: {}", self.line, self.message)
+        write!(f, "{}: {}", self.line, self.message)
     }
 }
 

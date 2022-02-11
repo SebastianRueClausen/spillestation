@@ -1,5 +1,4 @@
 use splst_util::Bit;
-use super::{TexelDepth, TransBlend};
 
 /// A point on the screen or in VRAM.
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -163,35 +162,6 @@ impl Color {
             r: ((self.r as i32) + dither).clamp(0, 255) as u8,
             g: ((self.g as i32) + dither).clamp(0, 255) as u8,
             b: ((self.b as i32) + dither).clamp(0, 255) as u8,
-        }
-    }
-}
-
-/// Parameters from GP0 draw commands, which determine how a shape is textured.
-pub struct TextureParams {
-    /// The x coordinate start of the texture color lookup table.
-    pub clut_x: i32,
-    /// The y coordinate start of the texture color lookup table.
-    pub clut_y: i32,
-    /// The x coordinate start of texture in VRAM.
-    pub texture_x: i32,
-    /// The y coordinate start of texture in VRAM.
-    pub texture_y: i32,
-    /// The depth of the texture. Essentially how many bits each texture color consists of.
-    pub texel_depth: TexelDepth,
-    /// How to blend with the background color.
-    pub blend_mode: TransBlend,
-}
-
-impl Default for TextureParams {
-    fn default() -> Self {
-        Self {
-            clut_x: 0,
-            clut_y: 0,
-            texture_x: 0,
-            texture_y: 0,
-            texel_depth: TexelDepth::B4,
-            blend_mode: TransBlend::Avg,
         }
     }
 }

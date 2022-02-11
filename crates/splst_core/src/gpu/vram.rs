@@ -1,6 +1,6 @@
 /// VRAM consists of 512 lines of 2048 bytes each, which equals 1 megabyte.
 pub struct Vram {
-    data: Box<[u8; Self::SIZE]>,
+    pub data: Box<[u8; Self::SIZE]>,
 }
 
 impl Vram {
@@ -37,6 +37,10 @@ impl Vram {
 
     pub fn raw_data(&self) -> &[u8] {
         &self.data[..]
+    }
+
+    pub fn clear(&mut self) {
+        self.data = Box::new([0x0; Self::SIZE]);
     }
 }
 

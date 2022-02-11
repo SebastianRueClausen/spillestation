@@ -1,4 +1,4 @@
-//! Represent's the GPU of the Playstation 1.
+//! Emulation of the Playstations 1 GPU.
 
 mod fifo;
 mod primitive;
@@ -14,7 +14,7 @@ use crate::timer::Timers;
 use crate::{Cycle, DrawInfo};
 
 use fifo::Fifo;
-use primitive::{Color, Point, TexCoord, TextureParams, Vertex};
+use primitive::{Color, Point, TexCoord, Vertex};
 use rasterize::{Opaque, Shaded, Shading, Textured, Textureing, Transparency, UnShaded, UnTextured};
 
 use std::fmt;
@@ -245,7 +245,7 @@ impl Status {
     }
 
     /// How to blend source and destination colors.
-    pub fn trans_blending(self) -> TransBlend {
+    pub fn blend_mode(self) -> TransBlend {
         TransBlend::from_value(self.0.bit_range(5, 6))
     }
 
@@ -382,9 +382,9 @@ impl Status {
 
 struct Timing {
     /// The current scanline.
-    scanline: u64,
+    scln: u64,
     /// The current progress into the scanline in dot cycles.
-    scanline_prog: u64,
+    scln_prog: u64,
     in_hblank: bool,
     in_vblank: bool,
     last_run: Cycle,
@@ -402,8 +402,8 @@ struct Timing {
 impl Timing {
     fn new(vmode: VideoMode) -> Self {
         Self {
-            scanline: 0,
-            scanline_prog: 0,
+            scln: 0,
+            scln_prog: 0,
             in_hblank: false,
             in_vblank: false,
             last_run: 0,
@@ -418,10 +418,13 @@ impl Timing {
     fn update_video_mode(&mut self, vmode: VideoMode) {
         self.cycles_per_scln = vmode.cycles_per_scln();
         self.scln_count = vmode.scln_count();
+
         self.vbegin = vmode.vbegin();
         self.vend = vmode.vend();
-        self.scanline %= self.scln_count;
-        self.scanline_prog %= self.cycles_per_scln;
+
+        // Make sure the current scanline is in range.
+        self.scln %= self.scln_count;
+        self.scln_prog %= self.cycles_per_scln;
 
     }
 }
@@ -610,8 +613,8 @@ impl Gpu {
                     let val = self.fifo.pop();
 
                     for (lo, hi) in [(0, 15), (16, 31)] {
-                        let value = val.bit_range(lo, hi) as u16;
-                        self.vram.store_16(tran.x, tran.y, value);
+                        let val = val.bit_range(lo, hi) as u16;
+                        self.vram.store_16(tran.x, tran.y, val);
                         tran.next();
                     }
 
@@ -657,7 +660,7 @@ impl Gpu {
     pub fn run_internal(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
         self.try_run_cmd(schedule);
 
-        self.timing.scanline_prog += timing::cpu_to_gpu_cycles(
+        self.timing.scln_prog += timing::cpu_to_gpu_cycles(
             schedule.cycle() - self.timing.last_run
         );
 
@@ -665,8 +668,8 @@ impl Gpu {
 
         // If the progress is less than a single scanline. This is just to have a fast path to
         // allow running the GPU often without a big performance loss.
-        if self.timing.scanline_prog < self.timing.cycles_per_scln {
-            let in_hblank = self.timing.scanline_prog >= timing::HSYNC_CYCLES;
+        if self.timing.scln_prog < self.timing.cycles_per_scln {
+            let in_hblank = self.timing.scln_prog >= timing::HSYNC_CYCLES;
 
             // If we have entered Hblank.
             if in_hblank && !self.timing.in_hblank {
@@ -676,14 +679,14 @@ impl Gpu {
             self.timing.in_hblank = in_hblank;
         } else {
             // Calculate the number of lines to be drawn.
-            let mut lines = self.timing.scanline_prog / self.timing.cycles_per_scln;
-            self.timing.scanline_prog %= self.timing.cycles_per_scln;
+            let mut lines = self.timing.scln_prog / self.timing.cycles_per_scln;
+            self.timing.scln_prog %= self.timing.cycles_per_scln;
 
             // At there must have been atleast a single Hblank, this calculates the amount.
             // If the GPU wasn't in Hblank, it must have entered since then, which adds one to the
             // count. We know it's going to enter into Hblank on each scanline, except the current
             // one it's on, which is represented by 'in_hblank'.
-            let in_hblank = self.timing.scanline_prog >= timing::HSYNC_CYCLES;
+            let in_hblank = self.timing.scln_prog >= timing::HSYNC_CYCLES;
             let hblank_count = u64::from(!self.timing.in_hblank)
                 + u64::from(in_hblank)
                 + lines - 1;
@@ -692,21 +695,21 @@ impl Gpu {
             self.timing.in_hblank = in_hblank;
 
             while lines > 0 {
-                let line_count = u64::min(lines, self.timing.scln_count - self.timing.scanline);
+                let line_count = u64::min(lines, self.timing.scln_count - self.timing.scln);
                 lines -= line_count;
 
-                let scanline = self.timing.scanline + line_count;
+                let scln = self.timing.scln + line_count;
 
                 // Calculate if the scanlines being drawn enters the display area, and clear the
                 // Vblank flag if not.
-                if self.timing.scanline < self.timing.vbegin && scanline >= self.timing.vend {
+                if self.timing.scln < self.timing.vbegin && scln >= self.timing.vend {
                     // TODO: Timer sync.
                     self.timing.in_vblank = false;
                 }
 
-                self.timing.scanline = scanline;
+                self.timing.scln = scln;
 
-                let in_vblank = !timing::NTSC_VERTICAL_RANGE.contains(&scanline);
+                let in_vblank = !timing::NTSC_VERTICAL_RANGE.contains(&scln);
 
                 // If we are either leaving or entering Vblank.
                 if self.timing.in_vblank != in_vblank {
@@ -719,8 +722,8 @@ impl Gpu {
                 }
 
                 // Prepare new frame if we are at the end of Vblank.
-                if self.timing.scanline == self.timing.scln_count {
-                    self.timing.scanline = 0;
+                if self.timing.scln == self.timing.scln_count {
+                    self.timing.scln = 0;
                     // The interlace field is toggled every frame if vertical interlace is turned on.
                     if self.status.interlaced480() {
                         self.status.0 ^= 1 << 13;
@@ -738,9 +741,9 @@ impl Gpu {
                 true => (self.status.interlace_field() == InterlaceField::Bottom) as u16,
                 false => 0,
             };
-            (self.timing.scanline << 1) as u16 | offset
+            (self.timing.scln << 1) as u16 | offset
         } else {
-            self.timing.scanline as u16
+            self.timing.scln as u16
         };
 
         let vram_line = self.vram_y_start + line_offset;
@@ -966,12 +969,20 @@ impl Gpu {
             0xa0 => {
                 self.fifo.pop();
                 let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
+
                 let (x, y, w, h) = (
                     pos.bit_range(00, 15) as i32,
                     pos.bit_range(16, 31) as i32,
                     dim.bit_range(00, 15) as i32,
                     dim.bit_range(16, 31) as i32,
                 );
+
+                let x = x & 0x3ff;
+                let y = y & 0x1ff;
+
+                let w = ((w - 1) & 0x3ff) + 1;
+                let h = ((h - 1) & 0x1ff) + 1;
+
                 self.state = State::VramStore(MemTransfer::new(x, y, w, h));
                 0
             }
@@ -979,12 +990,20 @@ impl Gpu {
             0xc0 => {
                 self.fifo.pop();
                 let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
+
                 let (x, y, w, h) = (
                     pos.bit_range(00, 15) as i32,
                     pos.bit_range(16, 31) as i32,
                     dim.bit_range(00, 15) as i32,
                     dim.bit_range(16, 31) as i32,
                 );
+
+                let x = x & 0x3ff;
+                let y = y & 0x1ff;
+
+                let w = ((w - 1) & 0x3ff) + 1;
+                let h = ((h - 1) & 0x1ff) + 1;
+
                 self.state = State::VramLoad(MemTransfer::new(x, y, w, h));
                 0
             }
@@ -1004,7 +1023,7 @@ impl Gpu {
         Trans: Transparency,
     {
         let mut verts = [Vertex::default(); 3];
-        let mut params = TextureParams::default();
+        let mut clut = (0, 0);
 
         let color = match Shade::IS_SHADED {
             true => Color::from_rgb(0, 0, 0),
@@ -1016,8 +1035,11 @@ impl Gpu {
                 vertex.color = Color::from_cmd(self.fifo.pop());
             }
 
-            vertex.point = Point::from_cmd(self.fifo.pop()).with_offset(
-                self.x_offset as i32, self.y_offset as i32,
+            let pos = self.fifo.pop();
+
+            vertex.point = Point::from_cmd(pos).with_offset(
+                self.x_offset as i32,
+                self.y_offset as i32,
             );
 
             if Tex::IS_TEXTURED {
@@ -1026,8 +1048,8 @@ impl Gpu {
                     0 => {
                         let val = (val >> 16) as i32;
 
-                        params.clut_x = val.bit_range(0, 5) * 16;
-                        params.clut_y = val.bit_range(6, 14);
+                        clut.0 = val.bit_range(0, 5) * 16;
+                        clut.1 = val.bit_range(6, 14);
                     }
                     1 => {
                         let val = val >> 16;
@@ -1045,9 +1067,11 @@ impl Gpu {
                 };
             }
         }
+
         let cycles = self.draw_triangle::<Shade, Tex, Trans>(
-            color, &params, &verts[0], &verts[1], &verts[2]
+            color, clut, &verts[0], &verts[1], &verts[2]
         );
+
         timing::gpu_to_cpu_cycles(cycles)
     }
 
@@ -1058,7 +1082,7 @@ impl Gpu {
         Trans: Transparency,
     {
         let mut verts = [Vertex::default(); 4];
-        let mut params = TextureParams::default();
+        let mut clut = (0, 0);
 
         let color = match Shade::IS_SHADED {
             true => Color::from_rgb(0, 0, 0),
@@ -1071,8 +1095,11 @@ impl Gpu {
                 vertex.color = Color::from_cmd(self.fifo.pop());
             }
 
-            vertex.point = Point::from_cmd(self.fifo.pop()).with_offset(
-                self.x_offset as i32, self.y_offset as i32,
+            let pos = self.fifo.pop();
+
+            vertex.point = Point::from_cmd(pos).with_offset(
+                self.x_offset as i32,
+                self.y_offset as i32,
             );
 
             if Tex::IS_TEXTURED {
@@ -1081,8 +1108,8 @@ impl Gpu {
                     0 => {
                         let val = (val >> 16) as i32;
 
-                        params.clut_x = val.bit_range(0, 5) * 16;
-                        params.clut_y = val.bit_range(6, 14);
+                        clut.0 = val.bit_range(0, 5) * 16;
+                        clut.1 = val.bit_range(6, 14);
                     }
                     1 => {
                         let val = val >> 16;
@@ -1102,11 +1129,11 @@ impl Gpu {
         }
 
         let tri1 = self.draw_triangle::<Shade, Tex, Trans>(
-            color, &params, &verts[0], &verts[1], &verts[2],
+            color, clut, &verts[0], &verts[1], &verts[2],
         );
 
         let tri2 = self.draw_triangle::<Shade, Tex, Trans>(
-            color, &params, &verts[1], &verts[2], &verts[3]
+            color, clut, &verts[1], &verts[2], &verts[3]
         );
 
         timing::gpu_to_cpu_cycles(tri1 + tri2)

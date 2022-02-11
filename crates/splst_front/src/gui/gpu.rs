@@ -30,7 +30,7 @@ impl GpuStatus {
         write!(self.fields[7], "{:08x}", gpu.dis_y_end)?;
         write!(self.fields[8], "{:08x}", gpu.status.tex_page_x())?;
         write!(self.fields[9], "{:08x}", gpu.status.tex_page_y())?;
-        write!(self.fields[10], "{}", gpu.status.trans_blending())?;
+        write!(self.fields[10], "{}", gpu.status.blend_mode())?;
         write!(self.fields[11], "{}", gpu.status.texture_depth())?;
         write!(self.fields[12], "{}", gpu.status.dithering_enabled())?;
         write!(self.fields[13], "{}", gpu.status.draw_to_display())?;

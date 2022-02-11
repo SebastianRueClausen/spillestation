@@ -18,19 +18,19 @@ pub use sector::Sector;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("[error]: {0}")]
+    #[error("{0}")]
     IoError(#[from] io::Error),
 
-    #[error("[error]: {0}")]
+    #[error("{0}")]
     PathError(String),
 
-    #[error("[error]:{line}: {msg}")]
+    #[error("cue error:{line}: {msg}")]
     CueError {
         line: usize,
         msg: String,
     },
 
-    #[error("Section read failure")]
+    #[error("section read failure")]
     SectionReadError,
 }
 

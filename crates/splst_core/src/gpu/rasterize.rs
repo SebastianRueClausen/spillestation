@@ -1,4 +1,4 @@
-use super::primitive::{Color, Point, TexCoord, Texel, TextureParams, Vertex};
+use super::primitive::{Color, Point, TexCoord, Texel, Vertex};
 use super::{Gpu, TexelDepth};
 use crate::Cycle;
 
@@ -82,14 +82,16 @@ impl Gpu {
     }
 
     /// Load a texel at a given texture coordinate.
-    fn load_texel(&self, params: &TextureParams, coord: TexCoord) -> Texel {
+    fn load_texel( &self, clut: (i32, i32), coord: TexCoord) -> Texel {
         let u = (coord.u & !(self.tex_win_w * 8)) | ((self.tex_win_x & self.tex_win_w) * 8);
         let v = (coord.v & !(self.tex_win_h * 8)) | ((self.tex_win_y & self.tex_win_h) * 8);
 
         let u = u as i32;
         let v = v as i32;
 
-        match params.texel_depth {
+        let (clut_x, clut_y) = clut;
+
+        match self.status.texture_depth() {
             TexelDepth::B4 => {
                 let val = self.vram.load_16(
                     self.status.tex_page_x() + (u / 4),
@@ -98,7 +100,7 @@ impl Gpu {
 
                 let offset = (val >> ((u & 0x3) * 4)) as i32 & 0xf;
 
-                Texel::new(self.vram.load_16(params.clut_x + offset, params.clut_y))
+                Texel::new(self.vram.load_16(clut_x + offset, clut_y))
             }
             TexelDepth::B8 => {
                 let val = self.vram.load_16(
@@ -108,7 +110,7 @@ impl Gpu {
 
                 let offset = (val >> ((u & 0x1) * 8)) as i32 & 0xff;
 
-                Texel::new(self.vram.load_16(params.clut_x + offset, params.clut_y))
+                Texel::new(self.vram.load_16(clut_x + offset, clut_y))
             }
             TexelDepth::B15 => {
                 let val = self.vram.load_16(
@@ -134,14 +136,11 @@ impl Gpu {
         // that get's implemented.
         let cycles = match (Shade::IS_SHADED, Tex::IS_TEXTURED) {
             (true, true) => 400 + pixels * 2,
-            (false, true) => 300 + pixels * 2,
             (true, false) => 180 + pixels * 2,
-            (false, false) => {
-                if Trans::IS_TRANSPARENT {
-                    (pixels * 3) / 2
-                } else {
-                    pixels
-                }
+            (false, true) => 300 + pixels * 2,
+            (false, false) => match Trans::IS_TRANSPARENT {
+                true => (pixels * 3) / 2,
+                false => pixels,
             }
         };
 
@@ -165,7 +164,7 @@ impl Gpu {
     pub fn draw_triangle<Shade: Shading, Tex: Textureing, Trans: Transparency>(
         &mut self,
         shade: Color,
-        params: &TextureParams,
+        clut: (i32, i32),
         v1: &Vertex,
         v2: &Vertex,
         v3: &Vertex,
@@ -191,7 +190,7 @@ impl Gpu {
 
         let min = Point {
             x: i32::min(min.x, self.da_left as i32),
-            y: i32::min(min.y, self.da_bottom as i32),
+            y: i32::min(min.y, self.da_bottom as i32 - 10),
         };
 
         // This is to keep track of how many pixels gets drawn to calculate timing.
@@ -229,7 +228,6 @@ impl Gpu {
                     let u = v1.texcoord.u as f32 * res.x
                         + v2.texcoord.u as f32 * res.y
                         + v3.texcoord.u as f32 * res.z;
-
                     let v = v1.texcoord.v as f32 * res.x
                         + v2.texcoord.v as f32 * res.y
                         + v3.texcoord.v as f32 * res.z;
@@ -239,7 +237,7 @@ impl Gpu {
                         v: v as u8
                     };
 
-                    let texel = self.load_texel(params, uv);
+                    let texel = self.load_texel(clut, uv);
 
                     if texel.is_invisible() {
                         continue;
@@ -247,18 +245,17 @@ impl Gpu {
 
                     // If the triangle is not textured raw, the texture color get's blended with the
                     // shade. Otherwise it doesn't.
-                    let texture_color = if Tex::IS_RAW {
-                        texel.as_color()
-                    } else {
-                        texel.as_color().shade_blend(shade)
+                    let texture_color = match Tex::IS_RAW {
+                        true => texel.as_color(),
+                        false => texel.as_color().shade_blend(shade),
                     };
 
                     // If both the triangle and the texel is transparent, the texture color
                     // get's blended with the background using the blending function specified in
                     // the status register.
                     if Trans::IS_TRANSPARENT && texel.is_transparent() {
-                        let background = Color::from_u16(self.vram.load_16(p.x, p.y));
-                        params.blend_mode.blend(texture_color, background)
+                        let back = Color::from_u16(self.vram.load_16(p.x, p.y));
+                        self.status.blend_mode().blend(texture_color, back)
                     } else {
                         texture_color
                     }
@@ -267,16 +264,16 @@ impl Gpu {
                     // the background color.
                     if Trans::IS_TRANSPARENT {
                         let background = Color::from_u16(self.vram.load_16(p.x, p.y));
-                        self.status.trans_blending().blend(shade, background)
+                        self.status.blend_mode().blend(shade, background)
                     } else {
                         shade
                     }
                 };
 
-                let color = if self.status.dithering_enabled() {
-                    color.dither(p)
-                } else {
-                    color
+
+                let color = match self.status.dithering_enabled() {
+                    true => color.dither(p),
+                    false => color,
                 };
 
                 pixels_drawn += 1;
@@ -298,7 +295,6 @@ impl Gpu {
     }
 }
 
-/// Calculate barycentric coordinates.
 #[inline]
 fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
     let v1 = Vec3::new(

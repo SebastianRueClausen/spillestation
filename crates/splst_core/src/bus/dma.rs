@@ -371,9 +371,11 @@ impl Dma {
     /// Mark channel as done.
     fn channel_done(&mut self, port: Port, schedule: &mut Schedule) {
         self.channels[port as usize].ctrl.mark_as_finished();
+
         if self.irq.channel_irq_enabled(port) {
             self.irq.set_channel_irq_flag(port);
         }
+
         self.irq.update_master_irq_flag(schedule);
     }
 
@@ -390,31 +392,38 @@ impl Dma {
         ram: &mut Ram
     ) {
         let ctrl = self[port].ctrl;
+
         let done = if ctrl.chopping_enabled() {
             ctrl.dma_chop_size() as Cycle + schedule.cycle()
         } else {
             Cycle::MAX
         };
+
         let mut manual_done = false;
-        while schedule.cycle() != done
+
+        while schedule.cycle() < done
             && self[port].ctrl.enabled()
             && chan.dma_ready(self[port].ctrl.direction())
         {
             let stat = &mut self[port];
+
             let mut tran = match stat.transfer.take() {
-                Some(trans) => trans,
+                Some(tran) => tran,
                 None => match stat.ctrl.sync_mode() {
                     SyncMode::Manual => {
                         if manual_done {
                             self.channel_done(port, schedule);
                             return;
                         }
+
                         // For manual transfers the start flag must be set as opposed to the other
                         // sync modes.
                         if !stat.ctrl.start() {
                             return;
                         }
+
                         manual_done = true;
+
                         Transfer {
                             inc: stat.ctrl.step().step_amount(),
                             size: stat.block_ctrl.size as u32,
@@ -437,15 +446,19 @@ impl Dma {
                     SyncMode::LinkedList => {
                         if stat.base != 0x00ff_ffff {
                             let header = ram.load::<Word>(stat.base & 0x001f_fffc);
+
                             let tran = Transfer {
                                 inc: stat.ctrl.step().step_amount(),
                                 size: header.bit_range(24, 31),
                                 cursor: (stat.base + 4).bit_range(0, 23),
                             };
+
                             stat.base = header.bit_range(0, 23);
+
                             if tran.size == 0 {
                                 continue;
                             }
+
                             tran
                         } else {
                             self.channel_done(port, schedule);
@@ -454,45 +467,55 @@ impl Dma {
                     }
                 }
             };
+
             self[port].transfer = match stat.ctrl.direction() {
                 ChanDir::ToRam => {
                     loop {
-                        if schedule.cycle() == done {
+                        if schedule.cycle() > done {
                             schedule.schedule_in(
                                 self[port].ctrl.cpu_chop_size(),
                                 Event::RunDmaChan(port)
                             );
                             break Some(tran); 
                         }
+
                         if let Some(size) = tran.size.checked_sub(1) {
                             let addr = tran.cursor & 0x001f_fffc;
                             let val = chan.dma_load(schedule, (tran.size as u16, tran.cursor));
+
                             ram.store::<Word>(addr, val);
+
                             tran.cursor = tran.cursor.wrapping_add(tran.inc) & 0x00ff_ffff;
                             tran.size = size;
                         } else {
                             break None;
                         }
+
                         schedule.tick(1);
                     }
                 }
                 ChanDir::ToPort => {
                     loop {
-                        if schedule.cycle() == done {
+                        if schedule.cycle() > done {
                             schedule.schedule_in(
                                 self[port].ctrl.cpu_chop_size(),
                                 Event::RunDmaChan(port)
                             );
                             break Some(tran); 
                         }
+
                         if let Some(size) = tran.size.checked_sub(1) {
                             let addr = tran.cursor & 0x001f_fffc;
-                            chan.dma_store(schedule, ram.load::<Word>(addr));
+                            let val = ram.load::<Word>(addr);
+
+                            chan.dma_store(schedule, val);
+
                             tran.cursor = tran.cursor.wrapping_add(tran.inc) & 0x00ff_ffff;
                             tran.size = size;
                         } else {
                             break None;
                         }
+
                         schedule.tick(1);
                     }
                 }

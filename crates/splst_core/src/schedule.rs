@@ -25,14 +25,25 @@ pub struct Schedule {
     /// Event queue. This allows for a fast way to check if any events should run at any given cycle.
     /// Events are sorted in the binary queue such that the next event to run is the root item.
     events: BinaryHeap<EventEntry>,
+    /// The cycle when the next event is ready. This is simply an optimization. Just peeking
+    /// at the first item in 'events' is constant time, bit requires 4 branches.
+    next_event: Cycle,
 }
 
 impl Schedule {
     pub fn new() -> Self {
         Self {
             cycle: 0,
+            next_event: Cycle::MAX,
             events: BinaryHeap::with_capacity(16),
         }
+    }
+
+    fn update_next_event(&mut self) {
+       self.next_event = self.events
+           .peek()
+           .map(|entry| entry.0)
+           .unwrap_or(Cycle::MAX);
     }
 
     /// Returns iter of all event entries in the event heap in arbitary order.
@@ -43,6 +54,7 @@ impl Schedule {
     /// Schedule an ['Event'] at a given absolute cycle.
     pub fn schedule_at(&mut self, cycle: Cycle, event: Event) {
         self.events.push(EventEntry(cycle, event));
+        self.update_next_event();
     }
 
     /// Schedule an ['Event'] in a given number of cycles.
@@ -57,11 +69,12 @@ impl Schedule {
 
     /// Returns an event if any is ready.
     pub fn pop_event(&mut self) -> Option<Event> {
-        match self.events.peek() {
-            Some(entry) if entry.0 <= self.cycle => {
-                Some(self.events.pop().unwrap().1)
-            }
-            _ => None,
+        if self.next_event <= self.cycle {
+            let event = self.events.pop().unwrap().1;
+            self.update_next_event();
+            Some(event) 
+        } else {
+            None
         }
     }
 
@@ -69,6 +82,7 @@ impl Schedule {
         self.events.retain(|entry| {
             entry.1 != event 
         });
+        self.update_next_event();
     }
 
     pub fn cycle(&self) -> Cycle {
