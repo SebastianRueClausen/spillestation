@@ -83,11 +83,11 @@ impl Color {
         Self { r, g, b }
     }
 
-    pub fn from_u16(value: u16) -> Self {
+    pub fn from_u16(val: u16) -> Self {
         Self {
-            r: (value.bit_range(0, 4) << 3) as u8,
-            g: (value.bit_range(5, 9) << 3) as u8,
-            b: (value.bit_range(10, 14) << 3) as u8,
+            r: (val.bit_range(0, 4) << 3) as u8,
+            g: (val.bit_range(5, 9) << 3) as u8,
+            b: (val.bit_range(10, 14) << 3) as u8,
         }
     }
 
@@ -155,13 +155,13 @@ impl Color {
         }
     }
 
-    pub fn dither(self, point: Point) -> Self {
-        let (x, y) = (point.x.bit_range(0, 1), point.y.bit_range(0, 1));
-        let dither = DITHER_LUT[y as usize][x as usize];
+    pub fn dither(self, p: Point) -> Self {
+        let (x, y) = (p.x.bit_range(0, 1), p.y.bit_range(0, 1));
+        let d = DITHER_LUT[y as usize][x as usize];
         Self {
-            r: ((self.r as i32) + dither).clamp(0, 255) as u8,
-            g: ((self.g as i32) + dither).clamp(0, 255) as u8,
-            b: ((self.b as i32) + dither).clamp(0, 255) as u8,
+            r: ((self.r as i32) + d).clamp(0, 255) as u8,
+            g: ((self.g as i32) + d).clamp(0, 255) as u8,
+            b: ((self.b as i32) + d).clamp(0, 255) as u8,
         }
     }
 }

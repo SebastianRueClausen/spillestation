@@ -5,9 +5,6 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
-/// Bios always takes up 512 kilobytes.
-pub const BIOS_SIZE: usize = 1024 * 512;
-
 #[derive(Error, Debug)]
 pub enum BiosError {
     #[error("Failed to load BIOS: {0}")]
@@ -22,11 +19,15 @@ pub struct Bios {
 }
 
 impl Bios {
+    pub const SIZE: usize = 1024 * 512;
+
     pub fn from_file(path: &Path) -> Result<Self, BiosError> {
         let mut file = File::open(path)?;
-        let mut data = Vec::<u8>::with_capacity(BIOS_SIZE);
+        let mut data = Vec::<u8>::with_capacity(Self::SIZE);
+
         file.read_to_end(&mut data)?;
-        if data.len() != BIOS_SIZE {
+
+        if data.len() != Self::SIZE {
             Err(BiosError::InvalidSize(data.len()))
         } else {
             Ok(Self::new(data.into_boxed_slice()))
@@ -36,12 +37,16 @@ impl Bios {
     #[cfg(test)]
     pub fn from_code(base: u32, code: &[u8]) -> Self {
         debug_assert!((Self::BUS_BEGIN..=Self::BUS_END).contains(&base));
+
         let base = (base - Self::BUS_BEGIN) as usize;
-        debug_assert!(base + code.len() <= BIOS_SIZE);
-        let mut data = [0x0; BIOS_SIZE];
+
+        debug_assert!(base + code.len() <= Self::SIZE);
+
+        let mut data = [0x0; Self::SIZE];
         for (i, byte) in code.iter().enumerate() {
             data[i + base] = *byte;
         }
+
         Self::new(Box::from(data))
     }
 
@@ -58,5 +63,5 @@ impl Bios {
 
 impl BusMap for Bios {
     const BUS_BEGIN: u32 = 0x1fc00000;
-    const BUS_END: u32 = Self::BUS_BEGIN + BIOS_SIZE as u32 - 1;
+    const BUS_END: u32 = Self::BUS_BEGIN + Self::SIZE as u32 - 1;
 }

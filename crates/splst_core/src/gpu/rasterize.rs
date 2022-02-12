@@ -82,13 +82,13 @@ impl Gpu {
     }
 
     /// Load a texel at a given texture coordinate.
-    fn load_texel( &self, clut: (i32, i32), coord: TexCoord) -> Texel {
+    fn load_texel(&self, clut: (i32, i32), coord: TexCoord) -> Texel {
         let u = (coord.u & !(self.tex_win_w * 8)) | ((self.tex_win_x & self.tex_win_w) * 8);
         let v = (coord.v & !(self.tex_win_h * 8)) | ((self.tex_win_y & self.tex_win_h) * 8);
-
+       
         let u = u as i32;
         let v = v as i32;
-
+        
         let (clut_x, clut_y) = clut;
 
         match self.status.texture_depth() {
@@ -98,7 +98,7 @@ impl Gpu {
                     self.status.tex_page_y() + v,
                 );
 
-                let offset = (val >> ((u & 0x3) * 4)) as i32 & 0xf;
+                let offset = (val >> ((u & 3) * 4)) as i32 & 0xf;
 
                 Texel::new(self.vram.load_16(clut_x + offset, clut_y))
             }
@@ -108,7 +108,7 @@ impl Gpu {
                     self.status.tex_page_y() + v,
                 );
 
-                let offset = (val >> ((u & 0x1) * 8)) as i32 & 0xff;
+                let offset = (val >> ((u & 1) * 8)) as i32 & 0xff;
 
                 Texel::new(self.vram.load_16(clut_x + offset, clut_y))
             }
@@ -173,8 +173,8 @@ impl Gpu {
 
         // Calculate bounding box.
         let max = Point {
-            x: i32::max(points[0].x, i32::max(points[1].x, points[2].x)),
-            y: i32::max(points[0].y, i32::max(points[1].y, points[2].y)),
+            x: i32::max(points[0].x, i32::max(points[1].x, points[2].x)) - 1,
+            y: i32::max(points[0].y, i32::max(points[1].y, points[2].y)) - 1,
         };
 
         let min = Point {
@@ -245,7 +245,7 @@ impl Gpu {
 
                     // If the triangle is not textured raw, the texture color get's blended with the
                     // shade. Otherwise it doesn't.
-                    let texture_color = match Tex::IS_RAW {
+                    let tex_color = match Tex::IS_RAW {
                         true => texel.as_color(),
                         false => texel.as_color().shade_blend(shade),
                     };
@@ -254,10 +254,12 @@ impl Gpu {
                     // get's blended with the background using the blending function specified in
                     // the status register.
                     if Trans::IS_TRANSPARENT && texel.is_transparent() {
-                        let back = Color::from_u16(self.vram.load_16(p.x, p.y));
-                        self.status.blend_mode().blend(texture_color, back)
+                        let back = self.vram.load_16(p.x, p.y);
+                        self.status
+                            .blend_mode()
+                            .blend(tex_color, Color::from_u16(back))
                     } else {
-                        texture_color
+                        tex_color
                     }
                 } else {
                     // If the triangle isn't textured, but transparent, the shade get's blended with

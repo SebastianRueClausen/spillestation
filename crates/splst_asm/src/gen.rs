@@ -1,5 +1,6 @@
 use splst_util::{Bit, BitSet};
 
+use crate::parse::ParsedSource;
 use crate::ir::{Ir, IrTy, Register, Label};
 use crate::Error;
 
@@ -398,29 +399,39 @@ impl<'a> CodeGen<'a> {
 
 /// Generate binary machine code from ['Ir'] instructions.
 pub fn gen_machine_code<'a>(
-    text: Vec<Ir<'a>>,
-    data: Vec<Ir<'a>>,
+    parsed: Vec<ParsedSource<'a>>,
     base: u32
-) -> Result<Vec<u8>, Error> {
+) -> Result<(Vec<u8>, u32), Error> {
     let mut gen = CodeGen::new();
     let mut addr = base;
-
-    for ins in text.iter().chain(data.iter()) {
-        if let IrTy::Label(id) = ins.ty {
-            if gen.labels.insert(id, addr).is_some() {
-                return Err(Error::new(
-                    ins.line,
-                    format!("Label '{}' redeclared", id),  
-                ));
+   
+    for s in &parsed {
+        for ins in s.text.iter().chain(s.data.iter()) {
+            if let IrTy::Label(id) = ins.ty {
+                if gen.labels.insert(id, addr).is_some() {
+                    return Err(Error::new(
+                        ins.line,
+                        format!("Label '{}' redeclared", id),  
+                    ));
+                }
+            } else {
+                addr += ins.ty.size();
             }
-        } else {
-            addr += ins.ty.size();
         }
     }
 
-    // Generate text section and then data section.
-    for ins in text.iter().chain(data.iter()) {
-        gen.assemble_ir(ins)?;
+    for s in &parsed {
+        for ins in s.text.iter().chain(s.data.iter()) {
+            gen.assemble_ir(ins)?;
+        }
     }
-    Ok(gen.code)
+
+    let main = match gen.labels.get("main") {
+        Some(main) => *main,
+        None => {
+            return Err(Error::new(0, "No label 'main'"));
+        }
+    };
+
+    Ok((gen.code, main))
 }

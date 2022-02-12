@@ -81,13 +81,9 @@ impl Step {
 }
 
 #[derive(Clone, Copy)]
-struct ChannelCtrl(u32);
+struct ChanCtrl(u32);
 
-impl ChannelCtrl {
-    fn new(value: u32) -> Self {
-        Self { 0: value }
-    }
-
+impl ChanCtrl {
     /// Check if Channel is either from or to CPU.
     fn direction(self) -> ChanDir {
         match self.0.bit(0) {
@@ -165,11 +161,12 @@ struct Transfer {
     inc: u32,
 }
 
+/// The registers and info about a DMA channel.
 pub struct ChanStat {
     port: Port,
     base: u32,
     block_ctrl: BlockCtrl,
-    ctrl: ChannelCtrl,
+    ctrl: ChanCtrl,
     transfer: Option<Transfer>,
 }
 
@@ -179,7 +176,7 @@ impl ChanStat {
             port,
             base: 0x0,
             block_ctrl: BlockCtrl::new(0x0),
-            ctrl: ChannelCtrl::new(0x0),
+            ctrl: ChanCtrl(0x0),
             transfer: None,
         }
     }
@@ -190,7 +187,7 @@ impl ChanStat {
             0 => self.base,
             4 => self.block_ctrl.load(),
             8 => self.ctrl.0,
-            _ => unreachable!("Invalid load in channel at offset {:08x}", offset),
+            _ => unreachable!("Invalid load in channel at offset {offset}"),
         }
     }
 
@@ -199,12 +196,7 @@ impl ChanStat {
         match offset {
             0 => self.base = val.bit_range(0, 23),
             4 => self.block_ctrl = BlockCtrl::new(val),
-            8 => {
-                self.ctrl.store(self.port, val);
-                if self.ctrl.chopping_enabled() {
-                    warn!("DMA chopping enabled");
-                }
-            },
+            8 => self.ctrl.store(self.port, val),
             _ => unreachable!("Invalid store at in channel at offset {:08x}", offset),
         }
     }
@@ -213,12 +205,6 @@ impl ChanStat {
 // TODO: Add support for this.
 #[derive(Copy, Clone)]
 struct CtrlReg(u32);
-
-impl Default for CtrlReg {
-    fn default() -> Self {
-        Self(0x07654321)
-    }
-}
 
 impl CtrlReg {
     #[allow(dead_code)]
@@ -237,12 +223,6 @@ impl CtrlReg {
 /// DMA Interrupt register.
 #[derive(Copy, Clone)]
 pub struct IrqReg(u32);
-
-impl Default for IrqReg {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 impl IrqReg {
     /// If this is set, a interrupt will always be triggered when a channel is done or this
@@ -309,6 +289,7 @@ impl IrqReg {
 /// It can be a lot faster than CPU loads, even though the CPU is stopped during transfers.
 ///
 /// # Chopping
+///
 /// Because the CPU doesn't get to run during transfers, the DMA allows for chopping. Chopping
 /// is a feature allowing the CPU to run for a given amount of cycles at a given interval while
 /// transfering. It's likely to allow games to handle input and rendering and such while handling
@@ -324,8 +305,8 @@ pub struct Dma {
 impl Dma {
     pub fn new() -> Self {
         Self {
-            ctrl: CtrlReg::default(),
-            irq: IrqReg::default(),
+            ctrl: CtrlReg(0x7654321),
+            irq: IrqReg(0),
             channels: [
                 ChanStat::new(Port::MdecIn),
                 ChanStat::new(Port::MdecOut),
@@ -339,11 +320,11 @@ impl Dma {
     }
 
     pub fn load(&self, offset: u32) -> u32 {
-        let channel = offset.bit_range(4, 6);
+        let chan = offset.bit_range(4, 6);
         let reg = offset.bit_range(0, 3);
 
-        match channel {
-            0..=6 => self.channels[channel as usize].load(reg),
+        match chan {
+            0..=6 => self.channels[chan as usize].load(reg),
             7 => match reg {
                 0 => self.ctrl.0,
                 4 => self.irq.0,
@@ -354,11 +335,11 @@ impl Dma {
     }
 
     pub fn store(&mut self, schedule: &mut Schedule, offset: u32, value: u32) {
-        let channel = offset.bit_range(4, 6);
+        let chan = offset.bit_range(4, 6);
         let reg = offset.bit_range(0, 3);
 
-        match channel {
-            0..=6 => self.channels[channel as usize].store(reg, value),
+        match chan {
+            0..=6 => self.channels[chan as usize].store(reg, value),
             7 => match reg {
                 0 => self.ctrl.0 = value,
                 4 => self.irq.store(schedule, value),
@@ -433,6 +414,7 @@ impl Dma {
                     SyncMode::Request => {
                         if let Some(blocks) = stat.block_ctrl.count.checked_sub(1) {
                             stat.block_ctrl.count = blocks;
+
                             Transfer {
                                 inc: stat.ctrl.step().step_amount(),
                                 size: stat.block_ctrl.size as u32,
@@ -468,14 +450,28 @@ impl Dma {
                 }
             };
 
+            // Transfer a single block. If it's in in manual mode, this does the whole transfer, if
+            // it's in request mode, then it transfer a single block and if it's in linked mode,
+            // this does transfers a single node. It will stop in the middle of a transfer if 
+            // chopping is enabled and it runs out of cycles.
             self[port].transfer = match stat.ctrl.direction() {
                 ChanDir::ToRam => {
                     loop {
                         if schedule.cycle() > done {
+                            let stat = &mut self[port];
+                           
+                            // If the channel is in manual sync mode, then the base address will
+                            // only get updated during if chopping is enabled. Should it hold for
+                            // request mode as well?
+                            if let SyncMode::Manual = stat.ctrl.sync_mode() {
+                                stat.base = tran.cursor;
+                            }
+
                             schedule.schedule_in(
-                                self[port].ctrl.cpu_chop_size(),
+                                stat.ctrl.cpu_chop_size(),
                                 Event::RunDmaChan(port)
                             );
+
                             break Some(tran); 
                         }
 
@@ -488,6 +484,18 @@ impl Dma {
                             tran.cursor = tran.cursor.wrapping_add(tran.inc) & 0x00ff_ffff;
                             tran.size = size;
                         } else {
+                            let stat = &mut self[port];
+
+                            // Request mode and manual mode with chopping enabled will point at the
+                            // end of the transfer when the transfer is done.
+                            let update_base = stat.ctrl.chopping_enabled()
+                                && stat.ctrl.sync_mode() == SyncMode::Manual
+                                || stat.ctrl.sync_mode() == SyncMode::Request;
+
+                            if update_base {
+                                stat.base = tran.cursor; 
+                            }
+
                             break None;
                         }
 
@@ -497,10 +505,17 @@ impl Dma {
                 ChanDir::ToPort => {
                     loop {
                         if schedule.cycle() > done {
+                            let stat = &mut self[port];
+                           
+                            if let SyncMode::Manual = stat.ctrl.sync_mode() {
+                                stat.base = tran.cursor;
+                            }
+
                             schedule.schedule_in(
-                                self[port].ctrl.cpu_chop_size(),
+                                stat.ctrl.cpu_chop_size(),
                                 Event::RunDmaChan(port)
                             );
+
                             break Some(tran); 
                         }
 
@@ -513,6 +528,16 @@ impl Dma {
                             tran.cursor = tran.cursor.wrapping_add(tran.inc) & 0x00ff_ffff;
                             tran.size = size;
                         } else {
+                            let stat = &mut self[port];
+
+                            let update_base = stat.ctrl.chopping_enabled()
+                                && stat.ctrl.sync_mode() == SyncMode::Manual
+                                || stat.ctrl.sync_mode() == SyncMode::Request;
+
+                            if update_base {
+                                stat.base = tran.cursor; 
+                            }
+
                             break None;
                         }
 
@@ -576,7 +601,7 @@ impl DmaChan for OrderingTable {
     }
 
     fn dma_store(&mut self, _: &mut Schedule, _: u32) {
-        panic!("Ordering table DMA store");
+        warn!("Ordering table DMA store");
     }
 
     fn dma_ready(&self, _: ChanDir) -> bool {

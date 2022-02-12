@@ -3,9 +3,13 @@
 #[macro_use]
 extern crate log;
 
+#[cfg(test)]
+mod test;
+
 mod cdrom;
 mod spu;
 mod io_port;
+
 pub mod schedule;
 pub mod timer;
 pub mod bus;

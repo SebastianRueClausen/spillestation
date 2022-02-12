@@ -8,9 +8,27 @@ enum Section {
     Data,
 }
 
+pub struct ParsedSource<'a> {
+    pub text: Vec<Ir<'a>>,
+    pub data: Vec<Ir<'a>>,
+}
+
+impl<'a> ParsedSource<'a> {
+    fn new() -> Self {
+        Self {
+            text: Vec::with_capacity(64),
+            data: Vec::with_capacity(32),
+        }
+    }
+}
+
 /// Scan and parse 'input'. Returns Ir code for both text (first) and data (second) sections.
-pub fn parse<'a>(input: &'a str) -> Result<(Vec<Ir<'a>>, Vec<Ir<'a>>), Error> {
-    Parser::new(lex::tokenize(input)).parse()
+pub fn parse<'a>(input: &[&'a str]) -> Result<Vec<ParsedSource<'a>>, Error> {
+    input.iter()
+        .map(|i| {
+            Parser::new(lex::tokenize(i)).parse()
+        })
+        .collect()
 }
 
 struct Parser<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> {
@@ -100,14 +118,13 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
         }
     }
 
-    pub fn parse(&mut self) -> Result<(Vec<Ir<'a>>, Vec<Ir<'a>>), Error> {
-        let mut text = Vec::with_capacity(64);
-        let mut data = Vec::with_capacity(32);
+    pub fn parse(&mut self) -> Result<ParsedSource<'a>, Error> {
+        let mut parsed_source = ParsedSource::new();
 
         let mut push_ir = |sec, ir| {
             match sec {
-                Section::Data => data.push(ir),
-                Section::Text => text.push(ir),
+                Section::Data => parsed_source.data.push(ir),
+                Section::Text => parsed_source.text.push(ir),
             }
         };
 
@@ -451,6 +468,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
                 }
             }
         }
-        Ok((text, data))
+
+        Ok(parsed_source)
     }
 }

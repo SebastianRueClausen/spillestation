@@ -111,6 +111,7 @@ pub enum Event {
     TimerIrqEnable(TimerId),
     RunTimer(TimerId),
     IrqTrigger(Irq),
+    IoPortTransfer,
     IrqCheck,
 }
 
@@ -140,6 +141,9 @@ impl fmt::Display for Event {
             }
             Event::IrqTrigger(irq) => {
                 write!(f, "Trigger IRQ of type: {}", irq)
+            }
+            Event::IoPortTransfer => {
+                write!(f, "IO Port serial transfer") 
             }
             Event::IrqCheck => {
                 write!(f, "Check IRQ status")

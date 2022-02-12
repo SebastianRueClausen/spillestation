@@ -1,4 +1,7 @@
 //! Emulation of the Playstations 1 GPU.
+//!
+//! TODO:
+//! * Maybe switch to integer fixed point for rasterization instead of floats.
 
 mod fifo;
 mod primitive;
@@ -175,7 +178,7 @@ impl TexelDepth {
         match value {
             0 => TexelDepth::B4,
             1 => TexelDepth::B8,
-            2 => TexelDepth::B15,
+            2 | 3 => TexelDepth::B15,
             _ => unreachable!("Invalid texture depth"),
         }
     }
@@ -212,14 +215,11 @@ impl MemTransfer {
         }
     }
 
-    fn next(&mut self) -> bool {
+    fn next(&mut self) {
         self.x += 1;
         if self.x == self.x_end {
             self.x = self.x_start;
             self.y += 1;
-            !self.is_done()
-        } else {
-            true
         }
     }
 
@@ -388,6 +388,7 @@ struct Timing {
     in_hblank: bool,
     in_vblank: bool,
     last_run: Cycle,
+    /// The absolute number of the previous frame.
     frame_count: u64,
     /// How many cycles it takes to draw a scanline which depend on ['VideoMode'].
     cycles_per_scln: Cycle,
@@ -961,7 +962,7 @@ impl Gpu {
             0x30 => self.gp0_tri_poly::<Shaded, UnTextured, Opaque>(),
             0x38 => self.gp0_quad_poly::<Shaded, UnTextured, Opaque>(),
             // Opaque no shading.
-            0x44 => {
+            0x44 | 0x40 => {
                 self.gp0_line();
                 0
             }

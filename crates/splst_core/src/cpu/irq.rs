@@ -73,15 +73,15 @@ impl IrqState {
         match offset {
             0 => self.status &= val,
             4 => self.mask = val,
-            _ => unreachable!("Invalid store at offset {}", offset),
+            _ => unreachable!("Invalid store at offset {offset}"),
         }
     }
 
-    pub fn load(&mut self, offset: u32) -> u32 {
+    pub fn load(&self, offset: u32) -> u32 {
         match offset {
             0 => self.status,
             4 => self.mask,
-            _ => unreachable!("Invalid load at offset {}", offset),
+            _ => unreachable!("Invalid load at offset {offset}"),
         }
     }
 }

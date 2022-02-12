@@ -1,3 +1,7 @@
+//! TODO:
+//! * Pressing enter to add a checkpoint should check at least that the App is focused or
+//!   something.
+
 use super::App;
 
 use splst_core::cpu::{Cpu, REGISTER_NAMES};
