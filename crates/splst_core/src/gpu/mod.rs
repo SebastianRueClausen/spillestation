@@ -18,7 +18,17 @@ use crate::{Cycle, DrawInfo};
 
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, Vertex};
-use rasterize::{Opaque, Shaded, Shading, Textured, Textureing, Transparency, UnShaded, UnTextured};
+use rasterize::{
+    Opaque,
+    Shaded,
+    Shading,
+    Textured,
+    TexturedRaw,
+    UnTextured,
+    Textureing,
+    Transparency,
+    UnShaded,
+};
 
 use std::fmt;
 
@@ -466,14 +476,10 @@ pub struct Gpu {
     tex_win_h: u8,
     tex_win_x: u8,
     tex_win_y: u8,
-    /// Draw area left.
-    da_left: u16,
-    /// Draw area right.
-    da_right: u16,
-    /// Draw area top.
-    da_top: u16,
-    /// Draw area bottom.
-    da_bottom: u16,
+    da_x_max: i32,
+    da_x_min: i32,
+    da_y_max: i32,
+    da_y_min: i32,
     /// Draw offset x.
     pub x_offset: i16,
     /// Draw offset y.
@@ -505,10 +511,10 @@ impl Gpu {
             tex_win_h: 0x0,
             tex_win_x: 0x0,
             tex_win_y: 0x0,
-            da_left: 0x0,
-            da_right: 0x0,
-            da_top: 0x0,
-            da_bottom: 0x0,
+            da_x_max: 0x0,
+            da_x_min: 0x0,
+            da_y_max: 0x0,
+            da_y_min: 0x0,
             x_offset: 0x0,
             y_offset: 0x0,
             vram_x_start: 0x0,
@@ -778,11 +784,11 @@ impl Gpu {
                 self.tex_win_x = 0;
                 self.tex_win_y = 0;
 
-                self.da_left = 0;
-                self.da_top = 0;
+                self.da_x_max = 0;
+                self.da_x_min = 0;
 
-                self.da_right = 0;
-                self.da_bottom = 0;
+                self.da_y_max = 0;
+                self.da_y_min = 0;
 
                 self.x_offset = 0;
                 self.y_offset = 0;
@@ -882,7 +888,7 @@ impl Gpu {
                     y: (val >> 16) & 0x1ff,
                 };
 
-                self.fill_rect(color, start, dim); 
+                self.fill_rect(start, dim, color); 
                 0    
             }
             // GP0(e1) - Draw Mode Setting.
@@ -922,8 +928,8 @@ impl Gpu {
             // TODO this differs between GPU versions.
             0xe3 => {
                 let val = self.fifo.pop();
-                self.da_left = val.bit_range(0, 9) as u16;
-                self.da_top = val.bit_range(10, 18) as u16;
+                self.da_x_min = val.bit_range(0, 9) as i32;
+                self.da_y_min = val.bit_range(10, 18) as i32;
                 0
             }
             // GP0(e4) - Set draw area bottom right.
@@ -931,8 +937,8 @@ impl Gpu {
             // - 10..18 - Draw area bottom.
             0xe4 => {
                 let val = self.fifo.pop();
-                self.da_right = val.bit_range(0, 9) as u16;
-                self.da_bottom = val.bit_range(10, 18) as u16;
+                self.da_x_max = val.bit_range(0, 9) as i32;
+                self.da_y_max = val.bit_range(10, 18) as i32;
                 0
             }
             // GP0(e5) - Set drawing offset.
@@ -959,13 +965,12 @@ impl Gpu {
             }
             0x28 => self.gp0_quad_poly::<UnShaded, UnTextured, Opaque>(),
             0x2c => self.gp0_quad_poly::<UnShaded, Textured, Opaque>(),
+            0x2d => self.gp0_quad_poly::<UnShaded, TexturedRaw, Opaque>(),
             0x30 => self.gp0_tri_poly::<Shaded, UnTextured, Opaque>(),
             0x38 => self.gp0_quad_poly::<Shaded, UnTextured, Opaque>(),
-            // Opaque no shading.
-            0x44 | 0x40 => {
-                self.gp0_line();
-                0
-            }
+            0x40 => self.gp0_line::<UnShaded, Opaque>(),
+            0x44 => self.gp0_line::<UnShaded, Opaque>(),
+            0x65 => self.gp0_rect::<Textured, Opaque>(None),
             // GP0(a0) - Copy rectangle from CPU to VRAM.
             0xa0 => {
                 self.fifo.pop();
@@ -1024,7 +1029,7 @@ impl Gpu {
         Trans: Transparency,
     {
         let mut verts = [Vertex::default(); 3];
-        let mut clut = (0, 0);
+        let mut clut = Point::default();
 
         let color = match Shade::IS_SHADED {
             true => Color::from_rgb(0, 0, 0),
@@ -1047,10 +1052,8 @@ impl Gpu {
                 let val = self.fifo.pop();
                 match i {
                     0 => {
-                        let val = (val >> 16) as i32;
-
-                        clut.0 = val.bit_range(0, 5) * 16;
-                        clut.1 = val.bit_range(6, 14);
+                        clut.x = val.bit_range(16, 21) as i32 * 16;
+                        clut.y = val.bit_range(22, 30) as i32;
                     }
                     1 => {
                         let val = val >> 16;
@@ -1083,7 +1086,7 @@ impl Gpu {
         Trans: Transparency,
     {
         let mut verts = [Vertex::default(); 4];
-        let mut clut = (0, 0);
+        let mut clut = Point::default();
 
         let color = match Shade::IS_SHADED {
             true => Color::from_rgb(0, 0, 0),
@@ -1107,10 +1110,8 @@ impl Gpu {
                 let val = self.fifo.pop();
                 match i {
                     0 => {
-                        let val = (val >> 16) as i32;
-
-                        clut.0 = val.bit_range(0, 5) * 16;
-                        clut.1 = val.bit_range(6, 14);
+                        clut.x = val.bit_range(16, 21) as i32 * 16;
+                        clut.y = val.bit_range(22, 30) as i32;
                     }
                     1 => {
                         let val = val >> 16;
@@ -1140,9 +1141,11 @@ impl Gpu {
         timing::gpu_to_cpu_cycles(tri1 + tri2)
     }
 
-    fn gp0_line(&mut self) {
-        warn!("Drawing line");
-        self.fifo.pop();
+    fn gp0_line<S: Shading, T: Transparency>(&mut self) -> Cycle {
+        let color = match S::IS_SHADED {
+            false => Color::from_cmd(self.fifo.pop()),
+            true => Color::from_rgb(0, 0, 0),
+        };
 
         let start = Point::from_cmd(self.fifo.pop()).with_offset(
             self.x_offset as i32,
@@ -1154,7 +1157,44 @@ impl Gpu {
             self.y_offset as i32,
         );
 
-        self.draw_line(start, end);
+        let cycles = self.draw_line::<S, T>(start, end, color);
+
+        timing::gpu_to_cpu_cycles(cycles)
+    }
+
+    fn gp0_rect<Tex, Tran>(&mut self, size: Option<i32>) -> Cycle
+    where
+        Tex: Textureing,
+        Tran: Transparency,
+    {
+        let mut uv = TexCoord::default();
+        let mut clut = Point::default();
+
+        let color = Color::from_cmd(self.fifo.pop());
+
+        let start = Point::from_cmd(self.fifo.pop()).with_offset(
+            self.x_offset as i32,
+            self.y_offset as i32,
+        );
+
+        if Tex::IS_TEXTURED {
+            let val = self.fifo.pop();
+
+            uv.u = val.bit_range(0, 07) as u8;
+            uv.v = val.bit_range(8, 15) as u8;
+
+            clut.x = val.bit_range(16, 21) as i32 * 16;
+            clut.y = val.bit_range(22, 30) as i32;
+        }
+
+        let dim = match size {
+            Some(s) => Point::new(s, s),
+            None => Point::from_cmd(self.fifo.pop()),
+        };
+
+        let cycles = self.draw_rect::<Tex, Tran>(start, dim, color, uv, clut);
+
+        timing::gpu_to_cpu_cycles(cycles)
     }
 }
 

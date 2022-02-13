@@ -77,20 +77,45 @@ impl Transparency for Opaque {
 
 impl Gpu {
     /// Draw a pixel to the screen.
-    fn draw_pixel(&mut self, point: Point, color: Color) {
-        self.vram.store_16(point.x, point.y, color.as_u16());
+    fn draw_pixel<Tran, Tex>(
+        &mut self,
+        x: i32,
+        y: i32,
+        color: Color,
+        masked: bool
+    )
+    where
+        Tran: Transparency,
+        Tex: Textureing
+    {
+        let color = match Tran::IS_TRANSPARENT {
+            false => color,
+            true => {
+                let bg = Color::from_u16(self.vram.load_16(x, y));
+
+                if Tex::IS_TEXTURED {
+                    if masked {
+                        self.status.blend_mode().blend(color, bg)
+                    } else {
+                        color 
+                    }
+                } else {
+                    let bg = Color::from_u16(self.vram.load_16(x, y));
+                    self.status.blend_mode().blend(color, bg)
+                }
+            }
+        };
+        self.vram.store_16(x, y, color.as_u16());
     }
 
     /// Load a texel at a given texture coordinate.
-    fn load_texel(&self, clut: (i32, i32), coord: TexCoord) -> Texel {
+    fn load_texel(&self, clut: Point, coord: TexCoord) -> Texel {
         let u = (coord.u & !(self.tex_win_w * 8)) | ((self.tex_win_x & self.tex_win_w) * 8);
         let v = (coord.v & !(self.tex_win_h * 8)) | ((self.tex_win_y & self.tex_win_h) * 8);
        
         let u = u as i32;
         let v = v as i32;
         
-        let (clut_x, clut_y) = clut;
-
         match self.status.texture_depth() {
             TexelDepth::B4 => {
                 let val = self.vram.load_16(
@@ -100,7 +125,7 @@ impl Gpu {
 
                 let offset = (val >> ((u & 3) * 4)) as i32 & 0xf;
 
-                Texel::new(self.vram.load_16(clut_x + offset, clut_y))
+                Texel::new(self.vram.load_16(clut.x + offset, clut.y))
             }
             TexelDepth::B8 => {
                 let val = self.vram.load_16(
@@ -110,7 +135,7 @@ impl Gpu {
 
                 let offset = (val >> ((u & 1) * 8)) as i32 & 0xff;
 
-                Texel::new(self.vram.load_16(clut_x + offset, clut_y))
+                Texel::new(self.vram.load_16(clut.x + offset, clut.y))
             }
             TexelDepth::B15 => {
                 let val = self.vram.load_16(
@@ -124,38 +149,95 @@ impl Gpu {
     }
 
     // Calculate the amount of cycles to draw a triangle.
-    fn calc_triangle_draw_time<Shade, Tex, Trans>(&self, pixels: u64) -> Cycle
+    fn triangle_draw_time<Shade, Tex, Trans>(&self, mut pixels: u64) -> Cycle
     where
         Shade: Shading,
         Tex: Textureing,
         Trans: Transparency,
     {
-        // First of all there is a constant factor for shading and texturing, likely just from
-        // decoding the command. Shading and texturing spend some time fetching texels and background
-        // colors, which could depend on the texture cache, which seems pretty easy to emulate when
-        // that get's implemented.
-        let cycles = match (Shade::IS_SHADED, Tex::IS_TEXTURED) {
-            (true, true) => 400 + pixels * 2,
-            (true, false) => 180 + pixels * 2,
-            (false, true) => 300 + pixels * 2,
-            (false, false) => match Trans::IS_TRANSPARENT {
-                true => (pixels * 3) / 2,
-                false => pixels,
-            }
-        };
+        let mut cycles = 0;
+
+        // Start by calculating the constant factor.
+
+        if Shade::IS_SHADED {
+            cycles += 300;
+        }
+
+        if Tex::IS_TEXTURED {
+            cycles += 150;
+        }
+
+        let mut pixel_cost = 1.0;
+
+        if Tex::IS_TEXTURED || Shade::IS_SHADED {
+            pixel_cost += 1.0;
+        }
+
+        if Trans::IS_TRANSPARENT {
+            pixel_cost += 0.5;
+        }
+
+        // Hack for now until we emulate only drawing to non displayed lines.
+        if !self.status.draw_to_displayed() && self.status.interlaced480() {
+            pixels /= 2;
+        }
+
+        cycles + (pixels as f64 * pixel_cost) as Cycle
+    }
+
+    fn rect_draw_time<Tex, Trans>(&self, mut pixels: u64) -> Cycle
+    where
+        Tex: Textureing,
+        Trans: Transparency,
+    {
+        let cycles = 30;
+
+        let mut pixel_cost = 1.0;
+
+        if Tex::IS_TEXTURED {
+            pixel_cost += 0.4;
+        }
+
+        if Trans::IS_TRANSPARENT {
+            pixel_cost += 0.2;
+        }
 
         if !self.status.draw_to_displayed() && self.status.interlaced480() {
-            cycles / 2
-        } else {
-            cycles
+            pixels /= 2;
         }
+
+        cycles + (pixels as f64 * pixel_cost) as Cycle
     }
+
+    fn line_draw_time<Shade, Trans>(&self, mut pixels: u64) -> Cycle
+    where
+        Shade: Shading,
+        Trans: Transparency,
+    {
+        let cycles = 30;
+
+        let mut pixel_cost = 1.0;
+
+        if Shade::IS_SHADED {
+            pixel_cost += 0.5;
+        }
+
+        if Trans::IS_TRANSPARENT {
+            pixel_cost += 0.5;
+        }
+
+        if !self.status.draw_to_displayed() && self.status.interlaced480() {
+            pixels /= 2;
+        }
+
+        cycles + (pixels as f64 * pixel_cost) as Cycle
+    }
+
 
     /// Rasterize a triangle to the screen. It finds the bounding box and checks for each pixel if
     /// it's inside the triangle using barycentric coordinates. Since the Playstation renders
     /// many different kind triangles, this function takes template arguments descriping how the
-    /// triangle should be rendered, to avoid a lot of run-time branching. Colors and texture coordinates
-    /// get interpolated using the barycentric coordinates.
+    /// triangle should be rendered, to avoid a lot of run-time branching.
     ///
     /// This could be optimized in a few different ways. Most obviously using simd to rasterize
     /// multiple pixels at once.
@@ -164,33 +246,33 @@ impl Gpu {
     pub fn draw_triangle<Shade: Shading, Tex: Textureing, Trans: Transparency>(
         &mut self,
         shade: Color,
-        clut: (i32, i32),
+        clut: Point,
         v1: &Vertex,
         v2: &Vertex,
         v3: &Vertex,
     ) -> Cycle {
         let points = [v1.point, v2.point, v3.point];
 
-        // Calculate bounding box.
-        let max = Point {
+        // Calculate bounding box. The GPU doesn't draw the bottom or right most pixels.
+        let bb_max = Point {
             x: i32::max(points[0].x, i32::max(points[1].x, points[2].x)) - 1,
             y: i32::max(points[0].y, i32::max(points[1].y, points[2].y)) - 1,
         };
 
-        let min = Point {
+        let bb_min = Point {
             x: i32::min(points[0].x, i32::min(points[1].x, points[2].x)),
             y: i32::min(points[0].y, i32::min(points[1].y, points[2].y)),
         };
 
         // Clip screen bounds.
-        let max = Point {
-            x: i32::max(max.x, self.da_right as i32),
-            y: i32::max(max.y, self.da_top as i32),
+        let min = Point {
+            x: i32::max(bb_min.x, self.da_x_min),
+            y: i32::max(bb_min.y, self.da_y_min),
         };
 
-        let min = Point {
-            x: i32::min(min.x, self.da_left as i32),
-            y: i32::min(min.y, self.da_bottom as i32 - 10),
+        let max = Point {
+            x: i32::min(bb_max.x, self.da_x_max + 1),
+            y: i32::min(bb_max.y, self.da_y_max + 1),
         };
 
         // This is to keep track of how many pixels gets drawn to calculate timing.
@@ -200,41 +282,44 @@ impl Gpu {
         // triangle.
         for y in min.y..=max.y {
             for x in min.x..=max.x {
-                let p = Point::new(x, y);
-                let res = barycentric(&points, &p);
+                let res = barycentric(&points, x, y);
 
                 if res.x < 0.0 || res.y < 0.0 || res.z < 0.0 {
                     continue;
                 }
 
                 // If the triangle is shaded, we interpolate between the colors of each vertex.
-                // Otherwise the shade is just the base color/shade.
+                // Otherwise the shade is just the base color / shade.
                 let shade = if Shade::IS_SHADED {
                     let r = v1.color.r as f32 * res.x
                         + v2.color.r as f32 * res.y
                         + v3.color.r as f32 * res.z;
+
                     let g = v1.color.g as f32 * res.x
                         + v2.color.g as f32 * res.y
                         + v3.color.g as f32 * res.z;
+
                     let b = v1.color.b as f32 * res.x
                         + v2.color.b as f32 * res.y
                         + v3.color.b as f32 * res.z;
+
                     Color::from_rgb(r as u8, g as u8, b as u8)
                 } else {
                     shade
                 };
 
-                let color = if Tex::IS_TEXTURED {
+                let (color, masked) = if Tex::IS_TEXTURED {
                     let u = v1.texcoord.u as f32 * res.x
                         + v2.texcoord.u as f32 * res.y
                         + v3.texcoord.u as f32 * res.z;
+
                     let v = v1.texcoord.v as f32 * res.x
                         + v2.texcoord.v as f32 * res.y
                         + v3.texcoord.v as f32 * res.z;
 
                     let uv = TexCoord {
                         u: u as u8,
-                        v: v as u8
+                        v: v as u8,
                     };
 
                     let texel = self.load_texel(clut, uv);
@@ -245,49 +330,106 @@ impl Gpu {
 
                     // If the triangle is not textured raw, the texture color get's blended with the
                     // shade. Otherwise it doesn't.
-                    let tex_color = match Tex::IS_RAW {
+                    let color = match Tex::IS_RAW {
                         true => texel.as_color(),
                         false => texel.as_color().shade_blend(shade),
                     };
 
-                    // If both the triangle and the texel is transparent, the texture color
-                    // get's blended with the background using the blending function specified in
-                    // the status register.
-                    if Trans::IS_TRANSPARENT && texel.is_transparent() {
-                        let back = self.vram.load_16(p.x, p.y);
-                        self.status
-                            .blend_mode()
-                            .blend(tex_color, Color::from_u16(back))
-                    } else {
-                        tex_color
-                    }
+                    (color, texel.is_transparent())
                 } else {
-                    // If the triangle isn't textured, but transparent, the shade get's blended with
-                    // the background color.
-                    if Trans::IS_TRANSPARENT {
-                        let background = Color::from_u16(self.vram.load_16(p.x, p.y));
-                        self.status.blend_mode().blend(shade, background)
-                    } else {
-                        shade
-                    }
+                    (shade, false)
                 };
 
 
                 let color = match self.status.dithering_enabled() {
-                    true => color.dither(p),
+                    true => color.dither(x, y),
                     false => color,
                 };
 
                 pixels_drawn += 1;
-                self.draw_pixel(p, color);
+                self.draw_pixel::<Trans, Tex>(x, y, color, masked);
             }
         }
-        self.calc_triangle_draw_time::<Shade, Tex, Trans>(pixels_drawn)
+
+        self.triangle_draw_time::<Shade, Tex, Trans>(pixels_drawn)
     }
 
-    pub fn draw_line(&mut self, _start: Point, _end: Point) {}
+    /// Clamp a point to the draw area.
+    fn clamp_to_da(&self, point: Point) -> Point {
+        Point {
+            x: point.x.clamp(self.da_x_min, self.da_x_max),
+            y: point.y.clamp(self.da_y_min, self.da_y_max),
+        }
+    }
 
-    pub fn fill_rect(&mut self, color: Color, start: Point, dim: Point) {
+    /// Draw line using bresenham algorithm.
+    pub fn draw_line<Shade, Trans>(
+        &mut self,
+        start: Point,
+        end: Point,
+        shade: Color,
+    ) -> Cycle
+    where
+        Shade: Shading,
+        Trans: Transparency,
+    {
+        let start = self.clamp_to_da(start);
+        let end = self.clamp_to_da(end);
+
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+
+        let abs_dx = dx.abs();
+        let abs_dy = dy.abs();
+
+        let mut x = start.x;
+        let mut y = start.y;
+
+        // Lines are always dithered.
+        self.draw_pixel::<Trans, UnTextured>(x, y, shade.dither(x, y), false);
+
+        let mut pixels_drawn = 1;
+
+        if abs_dx > abs_dy {
+            let mut d = 2 * abs_dy - abs_dx; 
+
+            for _ in 0..abs_dx {
+                x = if dx < 0 { x - 1 } else { x + 1 };
+
+                if d < 0 {
+                    d += 2 * abs_dy; 
+                } else {
+                    y = if dy < 0 { y - 1 } else { y + 1 };
+                    d += 2 * abs_dy - 2 * abs_dx;
+                }
+
+                pixels_drawn += 1;
+
+                self.draw_pixel::<Trans, UnTextured>(x, y, shade.dither(x, y), false);
+            }
+        } else {
+            let mut d = 2 * abs_dx - abs_dy;
+
+            for _ in 0..abs_dy {
+                y = if dy < 0 { y - 1 } else { y + 1 };
+
+                if d < 0 {
+                    d += 2 * abs_dx; 
+                } else {
+                    x = if dx < 0 { x - 1 } else { x + 1 };
+                    d += 2 * abs_dx - 2 * abs_dy;
+                }
+
+                pixels_drawn += 1;
+
+                self.draw_pixel::<Trans, UnTextured>(x, y, shade.dither(x, y), false);
+            }
+        }
+
+        self.line_draw_time::<Shade, Trans>(pixels_drawn)
+    }
+
+    pub fn fill_rect(&mut self, start: Point, dim: Point, color: Color) {
         let color = color.as_u16();
         for y in 0..dim.y {
             for x in 0..dim.x {
@@ -295,20 +437,117 @@ impl Gpu {
             }
         }
     }
+
+    pub fn draw_rect<Tex, Trans>(
+        &mut self,
+        start: Point,
+        dim: Point,
+        shade: Color,
+        mut tc_start: TexCoord,
+        clut: Point,
+    ) -> Cycle
+    where
+        Tex: Textureing,
+        Trans: Transparency,
+    {
+        // Calculate the uv delta for each step in x and y direction. Nocash specifies that the
+        // texture flipping for rectangles doesn't work on older Playstation models, but older
+        // games shouldn't be using the feature anyway then.
+        let (u_delta, v_delta) = match Tex::IS_TEXTURED {
+            false => (0, 0),
+            true => {
+                let u = if self.tex_x_flip { -1 } else { 1 };
+                let v = if self.tex_y_flip { -1 } else { 1 };
+                (u, v)
+            }
+        };
+
+        // Clip to left and bottom draw area limits.
+        let end_x = i32::min(start.x + dim.x, self.da_x_max + 1);
+        let end_y = i32::min(start.y + dim.y, self.da_y_max + 1);
+
+        // Clip to right draw area limit.
+        let start_x = if start.x < self.da_x_min.into() {
+            if Tex::IS_TEXTURED {
+                let delta = (self.da_x_min - start.x) * u_delta;
+                tc_start.u = tc_start.u.wrapping_add(delta as u8);
+            }
+            self.da_x_min.into()
+        } else {
+            start.x 
+        };
+
+        // Clip to top draw area limit.
+        let start_y = if start.y < self.da_y_min.into() {
+            if Tex::IS_TEXTURED {
+                let delta = (self.da_y_min - start.y) * v_delta;
+                tc_start.v = tc_start.v.wrapping_add(delta as u8);
+            }
+            self.da_y_min.into()
+        } else {
+            start.y 
+        };
+
+        let mut tc = tc_start;
+
+        let mut pixels_drawn = 0;
+
+        for y in start_y..end_y {
+            tc.u = tc_start.u;
+
+            for x in start_x..end_x {
+                let (color, masked) = if Tex::IS_TEXTURED {
+                    let texel = self.load_texel(clut, tc);
+
+                    if texel.is_invisible() {
+                        tc.u = tc.u.wrapping_add(u_delta as u8);
+                        continue;
+                    }
+
+                    let tex_color = match Tex::IS_RAW {
+                        true => texel.as_color(),
+                        false => texel.as_color().shade_blend(shade),
+                    };
+
+                    let color = match Trans::IS_TRANSPARENT {
+                        false => tex_color,
+                        true => {
+                            let val = self.vram.load_16(x, y);
+                            let bg = Color::from_u16(val);
+                            self.status.blend_mode().blend(tex_color, bg)
+                        }
+                    };
+
+                    (color, texel.is_transparent())
+                } else {
+                    (shade, false)
+                };
+
+                pixels_drawn += 1;
+
+                self.draw_pixel::<Trans, Tex>(x, y, color, masked);
+
+                tc.u = tc.u.wrapping_add(u_delta as u8);
+            }
+            tc.v = tc.v.wrapping_add(v_delta as u8);
+        }
+
+        self.rect_draw_time::<Tex, Trans>(pixels_drawn)
+    }
 }
 
 #[inline]
-fn barycentric(points: &[Point; 3], p: &Point) -> Vec3 {
+fn barycentric(points: &[Point; 3], x: i32, y: i32) -> Vec3 {
     let v1 = Vec3::new(
         (points[2].x - points[0].x) as f32,
         (points[1].x - points[0].x) as f32,
-        (points[0].x - p.x) as f32,
+        (points[0].x - x) as f32,
     );
 
     let v2 = Vec3::new(
         (points[2].y - points[0].y) as f32,
         (points[1].y - points[0].y) as f32,
-        (points[0].y - p.y) as f32,
+        (points[0].y - y) as f32,
     );
 
     let u = v1.cross(v2);

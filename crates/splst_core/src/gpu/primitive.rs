@@ -1,7 +1,7 @@
 use splst_util::Bit;
 
 /// A point on the screen or in VRAM.
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
 pub struct Point {
     pub x: i32,
     pub y: i32,
@@ -26,10 +26,14 @@ impl Point {
     pub fn with_offset(self, x: i32, y: i32) -> Self {
         Self::new(self.x + x, self.y + y)
     }
+
+    pub fn transpose(self) -> Self {
+        Self::new(self.y, self.x)
+    }
 }
 
 /// Texture coordinate.
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
 pub struct TexCoord {
     pub u: u8,
     pub v: u8,
@@ -67,7 +71,7 @@ const DITHER_LUT: [[i32; 4]; 4] = [
     [-4, 0, -3, 1],
     [2, -2, 3, -1],
     [-3, 1, -4, 0],
-    [3, -1, 2, -2]
+    [3, -1, 2, -2],
 ];
 
 /// Depth of the color can be either 16 or 24 bits.
@@ -155,8 +159,8 @@ impl Color {
         }
     }
 
-    pub fn dither(self, p: Point) -> Self {
-        let (x, y) = (p.x.bit_range(0, 1), p.y.bit_range(0, 1));
+    pub fn dither(self, x: i32, y: i32) -> Self {
+        let (x, y) = (x.bit_range(0, 1), y.bit_range(0, 1));
         let d = DITHER_LUT[y as usize][x as usize];
         Self {
             r: ((self.r as i32) + d).clamp(0, 255) as u8,

@@ -8,7 +8,6 @@ use crate::Cycle;
 
 use std::fmt;
 
-/// The Playstation has three different timers, which all have different uses.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TimerId {
     Tmr0,
@@ -88,16 +87,11 @@ impl fmt::Display for SyncMode {
     }
 }
 
-/// The timers can take several differnt inputs, which effects the speed of the timers.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ClockSource {
-    /// The CPU's clock speed, approx 33MHz.
     SystemClock,
-    /// The GPU's clock speed, appox 53Mhz.
     DotClock,
-    /// Counted each GPU Hblank.
     Hblank,
-    /// The CPU's clock speed divided by 8.
     SystemClockDiv8,
 }
 
@@ -222,13 +216,19 @@ impl Mode {
         self.set_master_irq_flag(true);
         // Bit 10..12 are readonly.
         self.0 |= val & 0x3ff;
+
+        if self.sync_enabled() {
+            warn!("Sync Enabled");
+        }
     }
 
     fn load(&mut self) -> u32 {
         let val = self.0;
+
         // Overflow/target reached flags get's reset after each read.
         self.set_target_reached(false);
         self.set_overflow_reached(false);
+
         val as u32
     }
 
@@ -410,6 +410,9 @@ impl Timer {
     }
 }
 
+/// A number of registers which control the Playstation's 3 timers. All the timers can run
+/// simultaneously. Each timer can be configured to take different sources, have different targets
+/// and what to do when reaching the target such as triggering an interrupt.
 pub struct Timers {
     pub timers: [(Timer, Cycle); 3],
 }
@@ -434,8 +437,10 @@ impl Timers {
         let val = tmr.load(offset);
 
         if let Some(cycles) = tmr.predict_next_irq() {
+            schedule.unschedule(Event::RunTimer(id));
             schedule.schedule_in(cycles, Event::RunTimer(id));
         }
+
         val
     }
 
@@ -470,6 +475,7 @@ impl Timers {
         &self.timers[id as usize].0
     }
 
+    /// Update the timer and schedule the next run if required.
     pub fn run_timer(&mut self, schedule: &mut Schedule, id: TimerId) {
         self.update_timer(schedule, id);
 

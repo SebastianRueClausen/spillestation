@@ -64,6 +64,7 @@ impl StartMenu {
                         ui.button("Change").clicked()
                     });
                     if change.inner {
+                        self.bios_in_config = false;
                         self.bios = None;
                     }
                 }
