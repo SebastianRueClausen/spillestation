@@ -19,6 +19,7 @@ use crate::{Cycle, DrawInfo};
 use fifo::Fifo;
 use primitive::{Color, Point, TexCoord, Vertex};
 use rasterize::{
+    Transparent,
     Opaque,
     Shaded,
     Shading,
@@ -861,8 +862,8 @@ impl Gpu {
         let cmd = self.fifo[0].bit_range(24, 31);
 
         let cycles = match cmd {
-            // GP0(00) - Nop.
-            0x0 => {
+            // Nop.
+            0x0 | 0x8 | 0x9 => {
                 self.fifo.pop();
                 0
             }
@@ -963,6 +964,7 @@ impl Gpu {
                 self.status.0 = self.status.0.set_bit_range(11, 12, val);
                 0
             }
+            0x27 => self.gp0_tri_poly::<UnShaded, TexturedRaw, Transparent>(),
             0x28 => self.gp0_quad_poly::<UnShaded, UnTextured, Opaque>(),
             0x2c => self.gp0_quad_poly::<UnShaded, Textured, Opaque>(),
             0x2d => self.gp0_quad_poly::<UnShaded, TexturedRaw, Opaque>(),
@@ -1011,6 +1013,10 @@ impl Gpu {
                 let h = ((h - 1) & 0x1ff) + 1;
 
                 self.state = State::VramLoad(MemTransfer::new(x, y, w, h));
+                0
+            }
+            0xff => {
+                self.fifo.pop();
                 0
             }
             cmd => unimplemented!("Invalid GP0 command {:08x}.", cmd),

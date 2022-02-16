@@ -1,7 +1,5 @@
 #![feature(let_else)]
 
-mod bcd;
-mod msf;
 mod index;
 mod cue;
 pub mod sector;

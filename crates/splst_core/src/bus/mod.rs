@@ -226,8 +226,15 @@ impl Bus {
 
     pub fn handle_event(&mut self, event: Event) {
         match event {
-            Event::RunCdRom => self.cdrom.run(&mut self.schedule),
-            Event::CdRomResponse(cmd) => self.cdrom.reponse(cmd),
+            Event::RunCdRom => {
+                self.cdrom.run(&mut self.schedule)
+            }
+            Event::CdRomSectorDone => {
+                self.cdrom.sector_done(&mut self.schedule); 
+            }
+            Event::CdRomResponse(cmd) => {
+                self.cdrom.reponse(&mut self.schedule, cmd);
+            }
             Event::RunGpu => {
                 self.gpu.run(&mut self.schedule, &mut self.timers)
             }
@@ -237,8 +244,12 @@ impl Bus {
                 // self.gpu.run(&mut self.schedule, &mut self.timers);
             }
             Event::RunDmaChan(port) => self.run_dma_chan(port),
-            Event::TimerIrqEnable(id) => self.timers.enable_irq_master_flag(id),
-            Event::RunTimer(id) => self.timers.run_timer(&mut self.schedule, id),
+            Event::TimerIrqEnable(id) => {
+                self.timers.enable_irq_master_flag(id)
+            }
+            Event::RunTimer(id) => {
+                self.timers.run_timer(&mut self.schedule, id)
+            }
             Event::IrqTrigger(..) | Event::IrqCheck => {
                 // They should be caught by the CPU.
                 unreachable!()

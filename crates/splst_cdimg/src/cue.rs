@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
-use crate::bcd::Bcd;
-use crate::msf::Msf;
+use splst_util::{Bcd, Msf};
 use crate::index::{Index, IndexLookup, Storage, Binary};
 use crate::{Error, TrackMode};
 use crate::cd::CdImage;

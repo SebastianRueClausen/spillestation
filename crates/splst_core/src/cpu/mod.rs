@@ -1179,7 +1179,10 @@ impl Cpu {
                 }
                 // Load from COP2 control register.
                 0x2 => {
-                    todo!()
+                    let rt = self.access_reg(op.rt());
+                    let val = self.gte.ctrl_load(op.rd().0.into());
+
+                    self.pipeline_cop_load(rt, val);
                 }
                 // Store to COP2 data register.
                 0x4 => {
@@ -1489,31 +1492,47 @@ impl Cpu {
                 self.bus.schedule.tick(time);
                 self.fetch_load_slot();
 
-                if let Err(exp) = self.store::<Word>(aligned, val) {
-                    self.throw_exception(exp);
+                if let Err(ex) = self.store::<Word>(aligned, val) {
+                    self.throw_exception(ex);
                 }
             }
-            Err(exp) => self.throw_exception(exp),
+            Err(ex) => self.throw_exception(ex),
         }
     }
 
-    /// LWC0 - Load word from Coprocessor0.
+    /// LWC0 - Load word in Coprocessor0.
     fn op_lwc0(&mut self) {
         // This doesn't work on the COP0.
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// LWC1 - Load word from Coprocessor1.
+    /// LWC1 - Load word in Coprocessor1.
     fn op_lwc1(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// LWC2 - Load word from Coprocessor2.
-    fn op_lwc2(&mut self, _: Opcode) {
-        todo!()
+    /// LWC2 - Load word in Coprocessor2.
+    fn op_lwc2(&mut self, op: Opcode) {
+        let rs = self.access_reg(op.rs());
+
+        let addr = self
+            .read_reg(rs)
+            .wrapping_add(op.signed_imm());
+
+        self.fetch_load_slot();
+
+        match self.load::<Word>(addr) {
+            Ok((val, time)) => {
+                self.bus.schedule.tick(time);
+                self.gte.data_store(op.rt().0 as u32, val);
+            }
+            Err(ex) => {
+                self.throw_exception(ex);
+            }
+        };
     }
 
-    /// LWC3 - Load word from Coprocessor3.
+    /// LWC3 - Load word in Coprocessor3.
     fn op_lwc3(&mut self) {
         self.throw_exception(Exception::CopUnusable);
     }
@@ -1529,8 +1548,20 @@ impl Cpu {
     }
 
     /// SWC2 - Store world in Coprocessor0.
-    fn op_swc2(&mut self, _: Opcode) {
-        todo!()
+    fn op_swc2(&mut self, op: Opcode) {
+        let rs = self.access_reg(op.rs());
+
+        let val = self.gte.data_load(op.rt().0.into());
+
+        let addr = self
+            .read_reg(rs)
+            .wrapping_add(op.signed_imm());
+
+        self.fetch_load_slot();
+
+        if let Err(ex) = self.store::<Word>(addr, val) {
+            self.throw_exception(ex);
+        }
     }
 
     /// SWC3 - Store world in Coprocessor0.

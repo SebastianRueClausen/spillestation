@@ -1,4 +1,4 @@
-#![feature(let_else, binary_heap_retain)]
+#![feature(let_else, binary_heap_retain, option_result_contains)]
 
 #[macro_use]
 extern crate log;

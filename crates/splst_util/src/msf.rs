@@ -29,6 +29,36 @@ impl Msf {
         Self { min, sec, frame }
     }
 
+    pub fn next_sector(&self) -> Option<Msf> {
+        let msf = *self;
+
+        if msf.frame.raw() < 0x74 {
+            return Some(Msf {
+                min: msf.min,
+                sec: msf.sec,
+                frame: msf.frame + Bcd::ONE,
+            });
+        }
+
+        if msf.sec.raw() < 0x59 {
+            return Some(Msf {
+                min: msf.min,
+                sec: msf.sec + Bcd::ONE,
+                frame: Bcd::ZERO,
+            });
+        }
+
+        if msf.min.raw() < 0x99 {
+            return Some(Msf {
+                min: msf.min + Bcd::ONE,
+                sec: Bcd::ZERO,
+                frame: Bcd::ZERO
+            });
+        }
+
+        None
+    }
+
     pub fn from_sector(sector: usize) -> Option<Self> {
         let min = sector / (60 * 75);
         let sector = sector % (60 * 75);

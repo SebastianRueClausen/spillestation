@@ -1,6 +1,4 @@
-use splst_util::Bit;
-use crate::msf::Msf;
-use crate::bcd::Bcd;
+use splst_util::{Msf, Bcd, Bit};
 use crate::TrackFormat;
 
 pub enum SectorMode {
@@ -31,6 +29,17 @@ pub struct Sector {
 }
 
 impl Sector {
+    pub fn start_value() -> Self {
+        Self {
+            abs_msf: Msf::ZERO,
+            track_msf: Msf::ZERO,
+            index: Bcd::ZERO,
+            track: Bcd::ZERO,
+            format: TrackFormat::Audio,
+            data: Box::new([0x0; 2352]),
+        }
+    }
+
     pub fn new(desc: &SectorDescriptor, mut data: Box<[u8]>) -> Self {
         let SectorDescriptor {
             abs_msf, track_msf, index, track, format

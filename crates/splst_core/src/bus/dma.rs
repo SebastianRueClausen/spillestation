@@ -551,8 +551,24 @@ impl Dma {
 
 impl Bus {
     pub fn run_dma(&mut self) {
-        self.dma.run_chan(Port::Gpu, &mut self.gpu, &mut self.schedule, &mut self.ram);
-        self.dma.run_chan(Port::Otc, &mut OrderingTable, &mut self.schedule, &mut self.ram);
+        self.dma.run_chan(
+            Port::Gpu,
+            &mut self.gpu,
+            &mut self.schedule,
+            &mut self.ram
+        );
+        self.dma.run_chan(
+            Port::CdRom,
+            &mut self.cdrom,
+            &mut self.schedule,
+            &mut self.ram
+        );
+        self.dma.run_chan(
+            Port::Otc,
+            &mut OrderingTable,
+            &mut self.schedule,
+            &mut self.ram
+        );
     }
 
     pub fn run_dma_chan(&mut self, port: Port) {

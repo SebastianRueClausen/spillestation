@@ -101,18 +101,31 @@ impl Schedule {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 pub enum Event {
+
+    // CDROM:
     RunCdRom,
+    CdRomSectorDone,
+    CdRomResponse(CdRomCmd),
+
+    // GPU:
     RunGpu,
     GpuCmdDone,
+
+    // DMA:
     RunDmaChan(Port),
-    CdRomResponse(CdRomCmd),
+
+    // Timers:
     TimerIrqEnable(TimerId),
     RunTimer(TimerId),
+
+    // Interrups:
     IrqTrigger(Irq),
-    IoPortTransfer,
     IrqCheck,
+
+    // IO Ports:
+    IoPortTransfer,
 }
 
 impl fmt::Display for Event {
@@ -120,6 +133,12 @@ impl fmt::Display for Event {
         match self {
             Event::RunCdRom => {
                 write!(f, "Run CDROM")
+            }
+            Event::CdRomSectorDone => {
+                write!(f, "CDROM sector done")
+            }
+            Event::CdRomResponse(cmd) => {
+                write!(f, "CDROM reponse for command: {}", cmd)
             }
             Event::RunGpu => {
                 write!(f, "Run GPU")
@@ -129,9 +148,6 @@ impl fmt::Display for Event {
             }
             Event::RunDmaChan(port) => {
                 write!(f, "Run DMA Channel: {:?}", port)
-            }
-            Event::CdRomResponse(cmd) => {
-                write!(f, "CDROM reponse for command: {}", cmd)
             }
             Event::TimerIrqEnable(id) => {
                 write!(f, "Enable IRQ for timer: {}", id)

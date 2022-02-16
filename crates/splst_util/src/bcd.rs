@@ -1,5 +1,6 @@
-use splst_util::Bit;
+use crate::Bit;
 
+use std::ops::Add;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -32,6 +33,15 @@ impl Bcd {
 
     pub fn as_binary(self) -> u8 {
         (self.0 >> 4) * 10 + self.0 % 16
+    }
+}
+
+impl Add for Bcd {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        let binary = self.as_binary() + other.as_binary(); 
+        Bcd::from_binary(binary).expect("Overflow")
     }
 }
 
