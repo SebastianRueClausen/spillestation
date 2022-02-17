@@ -78,13 +78,13 @@ impl Schedule {
         }
     }
 
+    /// Unschedule all events of equal to 'event'.
     pub fn unschedule(&mut self, event: Event) {
-        self.events.retain(|entry| {
-            entry.1 != event 
-        });
+        self.events.retain(|entry| entry.1 != event);
         self.update_next_event();
     }
 
+    /// The current absolute cycle number.
     pub fn cycle(&self) -> Cycle {
         self.cycle
     }

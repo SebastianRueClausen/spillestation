@@ -2,38 +2,495 @@
 //!
 //! TODO:
 //! * Maybe switch to integer fixed point for rasterization instead of floats.
+//!
+//! * DMA chopping wouldn't work correctly with the GPU, since the GPU updates it's DMA channel
+//!   after each GP0 write, which isn't handeled by the DMA.
 
 mod fifo;
 mod primitive;
 mod rasterize;
+mod gp0;
+mod gp1;
+
 pub mod vram;
 
 use splst_util::{Bit, BitSet};
 use crate::cpu::Irq;
 use crate::bus::{DmaChan, ChanDir, BusMap, AddrUnit};
+use crate::bus::dma::Port;
 use crate::schedule::{Event, Schedule};
 use crate::timing;
 use crate::timer::Timers;
 use crate::{Cycle, DrawInfo};
 
 use fifo::Fifo;
-use primitive::{Color, Point, TexCoord, Vertex};
-use rasterize::{
-    Transparent,
-    Opaque,
-    Shaded,
-    Shading,
-    Textured,
-    TexturedRaw,
-    UnTextured,
-    Textureing,
-    Transparency,
-    UnShaded,
-};
+use primitive::Color;
+use gp0::draw_mode;
 
 use std::fmt;
 
 pub use vram::Vram;
+
+pub struct Gpu {
+    /// The current state of the GPU.
+    state: State,
+    /// The GPU FIFO. Used to recieve commands and some kinds of data.
+    fifo: Fifo,
+    /// The Video Memory used to store texture data and the image buffer(s).
+    vram: Vram,
+    /// State used to emulate the timing of the GPU such as if it's in HBlank or VBlank. Also
+    /// handles the timing differences between PAL and NTSC video modes.
+    timing: Timing,
+    /// The status register.
+    pub status: Status,
+    /// The GPUREAD register. This contains various info about the GPU, and is generated after each
+    /// GP1(10) command call. It is read through the BUS at GPUREAD, if no transfer is ongoing.
+    gpu_read: u32,
+    /// Flips the texture of rectangles on the x-axis.
+    tex_x_flip: bool,
+    /// Flips the texture of rectangles on the y-axis.
+    tex_y_flip: bool,
+    /// The width of the texture window in VRAM.
+    tex_win_w: u8,
+    /// The height of the texture window in VRAM.
+    tex_win_h: u8,
+    /// The x-coordinate of the start of the texture window in VRAM.
+    tex_win_x: u8,
+    /// The y-coordinate of the start of the texture window in VRAM.
+    tex_win_y: u8,
+    /// The right edge of the draw area in VRAM.
+    da_x_max: i32,
+    /// The left edge of the draw area in VRAM.
+    da_x_min: i32,
+    /// The top edge of the draw area in VRAM.
+    da_y_max: i32,
+    /// The bottom edge of the draw area in VRAM.
+    da_y_min: i32,
+    /// Draw offset x. This is added to the x-coordinate of vertex and point drawn.
+    pub x_offset: i16,
+    /// Draw offset y. This is added to the y-coordinate of vertex and point drawn.
+    pub y_offset: i16,
+    /// The first column to be displayed on the screen.
+    pub vram_x_start: u16,
+    /// The first line to be displayed on the screen.
+    pub vram_y_start: u16,
+    /// Which column the the display area starts on the screen.
+    pub dis_x_start: u16,
+    /// Which column the the display area ends on the screen.
+    pub dis_x_end: u16,
+    /// Which row the the display area starts on the screen.
+    pub dis_y_start: u16,
+    /// Which row the the display area ends on the screen.
+    pub dis_y_end: u16,
+}
+
+impl Gpu {
+    pub fn new() -> Self {
+        // Sets the reset values.
+        let status = Status(0x14802000);
+
+        Self {
+            state: State::Idle,
+            fifo: Fifo::new(),
+            vram: Vram::new(),
+            timing: Timing::new(status.video_mode()),
+            status,
+            gpu_read: 0x0,
+            tex_x_flip: false,
+            tex_y_flip: false,
+            tex_win_w: 0x0,
+            tex_win_h: 0x0,
+            tex_win_x: 0x0,
+            tex_win_y: 0x0,
+            da_x_max: 0x0,
+            da_x_min: 0x0,
+            da_y_max: 0x0,
+            da_y_min: 0x0,
+            x_offset: 0x0,
+            y_offset: 0x0,
+            vram_x_start: 0x0,
+            vram_y_start: 0x0,
+            dis_x_start: 0x200,
+            dis_x_end: 0xc00,
+            dis_y_start: 0x10,
+            dis_y_end: 0x100,
+        }
+    }
+
+    pub fn store<T: AddrUnit>(
+        &mut self,
+        schedule: &mut Schedule,
+        addr: u32,
+        val: u32
+    ) {
+        debug_assert_eq!(T::WIDTH, 4);
+        match addr {
+            0 => self.gp0_store(schedule, val),
+            4 => self.gp1_store(val),
+            _ => unreachable!("Invalid GPU store at offset {:08x}.", addr),
+        }
+
+        // 'dma_ready' can have changed here, which means that the GPU DMA should be updated.
+        // Maybe only check if something has changed which could change 'dma_ready', but that
+        // could be skechy. Running a DMA channel is pretty fast anyway, but maybe just running
+        // the GPU channel every 1500 cycles could be faster?
+        schedule.unschedule(Event::RunDmaChan(Port::Gpu));
+        schedule.schedule_now(Event::RunDmaChan(Port::Gpu));
+    }
+
+    pub fn load<T: AddrUnit>(
+        &mut self,
+        addr: u32,
+        schedule: &mut Schedule,
+        timers: &mut Timers
+    ) -> u32 {
+        debug_assert_eq!(T::WIDTH, 4);
+
+        // Run mainly to update the status register. Doesn't schedule a new run, so it will still
+        // just run at the regular interval.
+        self.run_internal(schedule, timers);
+
+        match addr {
+            0 => self.gpu_read(),
+            4 => self.status_read(),
+            _ => unreachable!("Invalid GPU load at offset {:08x}.", addr),
+        }
+    }
+
+    /// The GPU read register. Either loads data from the VRAM or results from the GPU 
+    fn gpu_read(&mut self) -> u32 {
+        if let State::VramLoad(ref mut tran) = self.state {
+            self.gpu_read = [0, 16].iter().fold(0, |state, shift| {
+                let val = self.vram.load_16(tran.x, tran.y) as u32;
+                tran.next();
+                state | (val << shift)
+            });
+            if tran.is_done() {
+                self.state = State::Idle;
+            }
+        }
+        self.gpu_read
+    }
+
+    /// Calculate if the GPU is ready to recieve data from the DMA.
+    pub fn dma_block_ready(&self) -> bool {
+        match self.state {
+            State::VramStore(..) => !self.fifo.is_full(),
+            State::Drawing | State::VramLoad(..) => false,
+            State::Idle => {
+                if let Some(cmd) = self.fifo.next_cmd() {
+                    // If the command is a line or polygon command, the dma ready flag get's
+                    // clearead after the first word ie. the command itself rather than when the
+                    // GPU is busy executing the command.
+                    if (0x20..=0x5a).contains(&cmd) {
+                        false
+                    } else {
+                        !self.fifo.has_full_cmd()
+                    }
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
+    fn status_read(&mut self) -> u32 {
+        self.status.0 = self.status.0
+            .set_bit(27, self.state.is_vram_load())
+            .set_bit(28, self.dma_block_ready())
+            .set_bit(26, self.state.is_idle() && self.fifo.is_empty())
+            .set_bit(25, match self.status.dma_direction() {
+                DmaDir::Off => false,
+                DmaDir::Fifo => !self.fifo.is_full(),
+                DmaDir::CpuToGp0 => self.status.dma_block_ready(),
+                DmaDir::VramToCpu => self.status.vram_to_cpu_ready(),
+            });
+
+        trace!("GPU status load");
+
+        self.status.0
+    }
+
+    fn gp0_store(&mut self, schedule: &mut Schedule, val: u32) {
+        if self.fifo.try_push(val) {
+            self.try_run_cmd(schedule);
+        }
+    }
+
+    fn try_run_cmd(&mut self, schedule: &mut Schedule) {
+        match self.state {
+            State::Idle => {
+                while self.fifo.has_full_cmd() {
+                    self.gp0_exec(schedule);
+                }
+            }
+            State::VramStore(ref mut tran) => {
+                while !self.fifo.is_empty() {
+                    let val = self.fifo.pop();
+
+                    for (lo, hi) in [(0, 15), (16, 31)] {
+                        let val = val.bit_range(lo, hi) as u16;
+                        self.vram.store_16(tran.x, tran.y, val);
+                        tran.next();
+                    }
+
+                    if tran.is_done() {
+                        self.state = State::Idle;
+                        break;
+                    }
+                }
+            }
+            State::Drawing | State::VramLoad(..) => (),
+        }
+    }
+
+    pub fn vram(&self) -> &Vram {
+        &self.vram
+    }
+
+    pub fn draw_info(&self) -> DrawInfo {
+        DrawInfo {
+            vram_x_start: self.vram_x_start as u32,
+            vram_y_start: self.vram_y_start as u32,
+        }
+    }
+
+    pub fn in_vblank(&self) -> bool {
+        self.timing.in_vblank
+    }
+
+    pub fn frame_count(&self) -> u64 {
+        self.timing.frame_count
+    }
+
+    pub fn cmd_done(&mut self) {
+        self.state = State::Idle;
+    }
+
+    /// Run and schedule next run.
+    pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
+        self.run_internal(schedule, timers);
+        schedule.schedule_in(5_000, Event::RunGpu);
+    }
+
+    /// Emulate the period since the last time the GPU run. It 
+    pub fn run_internal(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
+        self.try_run_cmd(schedule);
+
+        let elapsed = schedule.cycle() - self.timing.last_update;
+
+        self.timing.scln_prog += timing::cpu_to_gpu_cycles(elapsed);
+        self.timing.last_update = schedule.cycle();
+
+        // If the progress is less than a single scanline. This is just to have a fast path to
+        // allow running the GPU often without a big performance loss.
+        if self.timing.scln_prog < self.timing.cycles_per_scln {
+            let in_hblank = self.timing.scln_prog >= timing::HSYNC_CYCLES;
+
+            // If we have entered Hblank.
+            if in_hblank && !self.timing.in_hblank {
+                timers.hblank(schedule, 1);
+            }
+
+            self.timing.in_hblank = in_hblank;
+
+            return;
+        }
+
+        // Calculate the number of lines to be drawn.
+        let mut lines = self.timing.scln_prog / self.timing.cycles_per_scln;
+        self.timing.scln_prog %= self.timing.cycles_per_scln;
+
+        // At there must have been atleast a single Hblank, this calculates the amount.
+        // If the GPU wasn't in Hblank, it must have entered since then, which adds one to the
+        // count. We know it's going to enter into Hblank on each scanline, except the current
+        // one it's on, which is represented by 'in_hblank'.
+        let in_hblank = self.timing.scln_prog >= timing::HSYNC_CYCLES;
+        let hblank_count = u64::from(!self.timing.in_hblank)
+            + u64::from(in_hblank)
+            + lines - 1;
+
+        timers.hblank(schedule, hblank_count);
+        self.timing.in_hblank = in_hblank;
+
+        while lines > 0 {
+            // Can't move past the last line.
+            let max_lines = u64::from(self.timing.scln_count - self.timing.scln);
+
+            let line_count = lines.min(max_lines);
+            lines -= line_count;
+
+            let line_count = line_count as u16;
+            let scln = self.timing.scln + line_count;
+
+            // Calculate if the scanlines being drawn enters the display area, and clear the
+            // Vblank flag if not.
+            if self.timing.scln < self.timing.vbegin && scln >= self.timing.vend {
+                self.timing.in_vblank = false;
+
+                // TODO: Timer sync.
+            }
+
+            self.timing.scln = scln;
+
+            let in_vblank = !timing::NTSC_VERTICAL_RANGE.contains(&(scln.into()));
+
+            // If we are either leaving or entering Vblank.
+            if self.timing.in_vblank != in_vblank {
+                if in_vblank {
+                    self.timing.frame_count += 1;
+                    schedule.schedule_now(Event::IrqTrigger(Irq::VBlank));
+                }
+
+                self.timing.in_vblank = in_vblank;
+
+                // TODO: Timer sync.
+            }
+
+            if self.timing.scln >= self.timing.scln_count {
+                self.timing.scln = 0;
+
+                // Bit 13 of the status register toggle just before each new frame in interlaced
+                // 480 bit mode
+                match self.status.interlaced_480() {
+                    true => self.status.0 ^= 1 << 13,
+                    false => self.status.0 &= !(1 << 13),
+                }
+            }
+        }
+
+        // The the current line being displayed in VRAM. It's used here to determine
+        // the value of bit 31 of status.
+        let line_offset = self.timing.display_line(
+            self.status.interlaced_480(),
+            self.status.interlace_field(),
+        );
+
+        let even = (self.vram_y_start + line_offset).bit(0);
+
+        self.status.0 = self.status.0.set_bit(31, even);
+    }
+
+    fn gp1_store(&mut self, val: u32) {
+        let cmd = val.bit_range(24, 31);
+        match cmd {
+            0x0 => self.gp1_reset(),
+            0x1 => self.gp1_reset_fifo(),
+            0x2 => self.gp1_ack_gpu_irq(),
+            0x3 => self.gp1_display_enable(val),
+            0x4 => self.gp1_dma_direction(val),
+            0x5 => self.gp1_display_start(val),
+            0x6 => self.gp1_horizontal_display_range(val),
+            0x7 => self.gp1_vertical_display_range(val),
+            0x8 => self.gp1_display_mode(val),
+            0xff => {
+                warn!("Weird GP1 command: GP1(ff)");
+            }
+            _ => {
+                unimplemented!("Invalid GP1 command {:08x}.", cmd)
+            }
+        }
+    }
+
+    fn gp0_exec(&mut self, schedule: &mut Schedule) {
+        let cmd = self.fifo[0].bit_range(24, 31);
+
+        let cycles = match cmd {
+            0x0 | 0x3 | 0x6 | 0x8 | 0x9 | 0xff => {
+                self.gp0_nop();
+                None
+            }
+            0x1 => {
+                self.gp0_clear_texture_cache();
+                None
+            }
+            0x2 => {
+                self.gp0_fill_rect();
+                None
+            }
+            0xe1 => {
+                self.gp0_draw_mode();
+                None
+            }
+            0xe2 => {
+                self.gp0_texture_window_settings();
+                None
+            }
+            0xe3 => {
+                self.gp0_draw_area_top_left();
+                None
+            }
+            0xe4 => {
+                self.gp0_draw_area_bottom_right();
+                None
+            }
+            0xe5 => {
+                self.gp0_draw_offset();
+                None
+            }
+            0xe6 => {
+                self.gp0_mask_bit_setting();
+                None
+            }
+            0x27 => Some(self.gp0_tri_poly::<
+                draw_mode::UnShaded,
+                draw_mode::TexturedRaw,
+                draw_mode::Transparent,
+            >()),
+            0x28 => Some(self.gp0_quad_poly::<
+                draw_mode::UnShaded,
+                draw_mode::UnTextured,
+                draw_mode::Opaque,
+            >()),
+            0x2c => Some(self.gp0_quad_poly::<
+                draw_mode::UnShaded,
+                draw_mode::Textured,
+                draw_mode::Opaque,
+            >()),
+            0x2d => Some(self.gp0_quad_poly::<
+                draw_mode::UnShaded,
+                draw_mode::TexturedRaw,
+                draw_mode::Opaque,
+            >()),
+            0x30 => Some(self.gp0_tri_poly::<
+                draw_mode::Shaded,
+                draw_mode::UnTextured,
+                draw_mode::Opaque,
+            >()),
+            0x38 => Some(self.gp0_quad_poly::<
+                draw_mode::Shaded,
+                draw_mode::UnTextured,
+                draw_mode::Opaque,
+            >()),
+            0x40 => Some(self.gp0_line::<
+                draw_mode::UnShaded,
+                draw_mode::Opaque,
+            >()),
+            0x44 => Some(self.gp0_line::<
+                draw_mode::UnShaded,
+                draw_mode::Opaque,
+            >()),
+            0x65 => Some(self.gp0_rect::<
+                draw_mode::Textured,
+                draw_mode::Opaque,
+            >(None)),
+            0xa0 => {
+                self.gp0_copy_rect_cpu_to_vram();
+                None
+            }
+            0xc0 => {
+                self.gp0_copy_rect_vram_to_cpu();
+                None
+            }
+            cmd => unimplemented!("Invalid GP0 command {:08x}.", cmd),
+        };
+
+        if let Some(cycles) = cycles {
+            self.state = State::Drawing;
+            schedule.schedule_in(cycles, Event::GpuCmdDone);
+        }
+    }
+}
 
 /// How to blend two colors. Used mainly for blending the color of a shape being drawn with the color
 /// behind it.
@@ -82,9 +539,9 @@ impl fmt::Display for TransBlend {
 /// can output both modes, so it purely determined by bios.
 #[derive(Clone, Copy)]
 pub enum VideoMode {
-    /// ~60 Hz.
+    /// ~ 60 Hz.
     Ntsc = 60,
-    /// ~50 Hz.
+    /// ~ 50 Hz.
     Pal = 50,
 }
 
@@ -386,29 +843,30 @@ impl Status {
     /// If 'vertical_interlace' is enabled for when 'vertical_res' is 240 bits, it switches between
     /// each between the same line each frame, so this tells if the GPU actually uses two fields in
     /// VRAM.
-    fn interlaced480(self) -> bool {
+    fn interlaced_480(self) -> bool {
         self.vertical_interlace() && self.vertical_res() == 480
     }
 }
 
 struct Timing {
     /// The current scanline.
-    scln: u64,
+    scln: u16,
     /// The current progress into the scanline in dot cycles.
     scln_prog: u64,
-    in_hblank: bool,
-    in_vblank: bool,
-    last_run: Cycle,
+    /// The absolute CPU cycle the timings was last updated.
+    last_update: Cycle,
     /// The absolute number of the previous frame.
     frame_count: u64,
     /// How many cycles it takes to draw a scanline which depend on ['VideoMode'].
     cycles_per_scln: Cycle,
     /// How many scanlines there are which depend on ['VideoMode'].
-    scln_count: u64,
+    scln_count: u16,
     /// Vertical begin.
-    vbegin: u64, 
+    vbegin: u16, 
     /// Vertical end.
-    vend: u64,
+    vend: u16,
+    in_hblank: bool,
+    in_vblank: bool,
 }
 
 impl Timing {
@@ -418,26 +876,40 @@ impl Timing {
             scln_prog: 0,
             in_hblank: false,
             in_vblank: false,
-            last_run: 0,
+            last_update: 0,
             frame_count: 0,
             cycles_per_scln: vmode.cycles_per_scln(),
-            scln_count: vmode.scln_count(),
-            vbegin: vmode.vbegin(),
-            vend: vmode.vend(),
+            scln_count: vmode.scln_count() as u16,
+            vbegin: vmode.vbegin() as u16,
+            vend: vmode.vend() as u16,
         }
     }
 
     fn update_video_mode(&mut self, vmode: VideoMode) {
         self.cycles_per_scln = vmode.cycles_per_scln();
-        self.scln_count = vmode.scln_count();
-
-        self.vbegin = vmode.vbegin();
-        self.vend = vmode.vend();
+        self.scln_count = vmode.scln_count() as u16;
+        self.vbegin = vmode.vbegin() as u16;
+        self.vend = vmode.vend() as u16;
 
         // Make sure the current scanline is in range.
         self.scln %= self.scln_count;
         self.scln_prog %= self.cycles_per_scln;
+    }
 
+    /// The current displayed line in VRAM. The absolute line depend on the first line displayed.
+    fn display_line(&self, interlaced_480: bool, field: InterlaceField) -> u16 {
+        let offset = match interlaced_480 {
+            false => self.scln,
+            true => {
+                let bottom = match self.in_vblank {
+                    true => (field == InterlaceField::Bottom) as u16,
+                    false => 0,
+                };
+                (self.scln << 1) | bottom
+            }
+        };
+
+        self.scln + offset
     }
 }
 
@@ -456,751 +928,6 @@ impl State {
 
     fn is_idle(&self) -> bool {
         matches!(self, State::Idle)
-    }
-}
-
-pub struct Gpu {
-    state: State,
-    fifo: Fifo,
-    vram: Vram,
-    timing: Timing,
-    pub status: Status,
-    /// The GPUREAD register. This contains various info about the GPU, and is generated after each
-    /// GP1(10) command call. It is read through the BUS at GPUREAD, if no transfer is ongoing.
-    gpu_read: u32,
-    /// Mirros textured rectangles on the x axis if true,
-    tex_x_flip: bool,
-    /// Mirros textured rectangles on the y axis if true,
-    #[allow(dead_code)]
-    tex_y_flip: bool,
-    tex_win_w: u8,
-    tex_win_h: u8,
-    tex_win_x: u8,
-    tex_win_y: u8,
-    da_x_max: i32,
-    da_x_min: i32,
-    da_y_max: i32,
-    da_y_min: i32,
-    /// Draw offset x.
-    pub x_offset: i16,
-    /// Draw offset y.
-    pub y_offset: i16,
-    /// The first column display area in VRAM.
-    pub vram_x_start: u16,
-    /// The first line display area in VRAM.
-    pub vram_y_start: u16,
-    pub dis_x_start: u16,
-    pub dis_x_end: u16,
-    pub dis_y_start: u16,
-    pub dis_y_end: u16,
-}
-
-impl Gpu {
-    pub fn new() -> Self {
-        // Sets the reset values.
-        let status = Status(0x14802000);
-        Self {
-            state: State::Idle,
-            fifo: Fifo::new(),
-            vram: Vram::new(),
-            timing: Timing::new(status.video_mode()),
-            status,
-            gpu_read: 0x0,
-            tex_x_flip: false,
-            tex_y_flip: false,
-            tex_win_w: 0x0,
-            tex_win_h: 0x0,
-            tex_win_x: 0x0,
-            tex_win_y: 0x0,
-            da_x_max: 0x0,
-            da_x_min: 0x0,
-            da_y_max: 0x0,
-            da_y_min: 0x0,
-            x_offset: 0x0,
-            y_offset: 0x0,
-            vram_x_start: 0x0,
-            vram_y_start: 0x0,
-            dis_x_start: 0x200,
-            dis_x_end: 0xc00,
-            dis_y_start: 0x10,
-            dis_y_end: 0x100,
-        }
-    }
-
-    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
-        debug_assert_eq!(T::WIDTH, 4);
-        match addr {
-            0 => self.gp0_store(schedule, val),
-            4 => self.gp1_store(val),
-            _ => unreachable!("Invalid GPU store at offset {:08x}.", addr),
-        }
-    }
-
-    pub fn load<T: AddrUnit>(
-        &mut self,
-        addr: u32,
-        schedule: &mut Schedule,
-        timers: &mut Timers
-    ) -> u32 {
-        debug_assert_eq!(T::WIDTH, 4);
-        self.run_internal(schedule, timers);     
-        match addr {
-            0 => self.gpu_read(),
-            4 => self.status_read(),
-            _ => unreachable!("Invalid GPU load at offset {:08x}.", addr),
-        }
-    }
-
-    fn gpu_read(&mut self) -> u32 {
-        if let State::VramLoad(ref mut tran) = self.state {
-            self.gpu_read = [0, 16].iter().fold(0, |state, shift| {
-                let value = self.vram.load_16(tran.x, tran.y) as u32;
-                tran.next();
-                state | (value << shift)
-            });
-            if tran.is_done() {
-                self.state = State::Idle;
-            }
-        }
-        self.gpu_read
-    }
-
-    /// Calculate if the GPU is ready to recieve data from the DMA.
-    pub fn dma_block_ready(&self) -> bool {
-        match self.state {
-            State::VramStore(..) => !self.fifo.is_full(),
-            State::Drawing | State::VramLoad(..) => false,
-            State::Idle => {
-                if let Some(cmd) = self.fifo.next_cmd() {
-                    // If the command is a line or polygon command, the dma ready flag get's
-                    // clearead after the first word ie. the command itself rather than when the
-                    // GPU is busy executing the command.
-                    if (0x20..=0x5a).contains(&cmd) {
-                        false
-                    } else {
-                        !self.fifo.has_full_cmd()
-                    }
-                } else {
-                    true
-                }
-            }
-        }
-    }
-
-    fn status_read(&mut self) -> u32 {
-        self.status.0 = self.status.0
-            .set_bit(27, self.state.is_vram_load())
-            .set_bit(28, self.dma_block_ready())
-            .set_bit(26, self.state.is_idle() && self.fifo.is_empty())
-            .set_bit(25, match self.status.dma_direction() {
-                DmaDir::Off => false,
-                DmaDir::Fifo => !self.fifo.is_full(),
-                DmaDir::CpuToGp0 => self.status.dma_block_ready(),
-                DmaDir::VramToCpu => self.status.vram_to_cpu_ready(),
-            });
-
-        trace!("GPU status load");
-
-        self.status.0
-    }
-
-    fn gp0_store(&mut self, schedule: &mut Schedule, val: u32) {
-        self.fifo.push(val);
-        self.try_run_cmd(schedule);
-    }
-
-    fn try_run_cmd(&mut self, schedule: &mut Schedule) {
-        match self.state {
-            State::Idle => {
-                if self.fifo.has_full_cmd() {
-                    self.gp0_exec(schedule);
-                }
-            }
-            State::VramStore(ref mut tran) => {
-                if !self.fifo.is_empty() {
-                    let val = self.fifo.pop();
-
-                    for (lo, hi) in [(0, 15), (16, 31)] {
-                        let val = val.bit_range(lo, hi) as u16;
-                        self.vram.store_16(tran.x, tran.y, val);
-                        tran.next();
-                    }
-
-                    if tran.is_done() {
-                        self.state = State::Idle;
-                    }
-                }
-            }
-            State::Drawing | State::VramLoad(..) => (),
-        }
-    }
-
-    pub fn vram(&self) -> &Vram {
-        &self.vram
-    }
-
-    pub fn draw_info(&self) -> DrawInfo {
-        DrawInfo {
-            vram_x_start: self.vram_x_start as u32,
-            vram_y_start: self.vram_y_start as u32,
-        }
-    }
-
-    pub fn in_vblank(&self) -> bool {
-        self.timing.in_vblank
-    }
-
-    pub fn frame_count(&self) -> u64 {
-        self.timing.frame_count
-    }
-
-    pub fn cmd_done(&mut self) {
-        self.state = State::Idle;
-    }
-
-    /// Run and schedule next run.
-    pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
-        self.run_internal(schedule, timers);
-        schedule.schedule_in(5_000, Event::RunGpu);
-    }
-
-    /// Emulate the period since the last time the GPU run. It 
-    pub fn run_internal(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
-        self.try_run_cmd(schedule);
-
-        self.timing.scln_prog += timing::cpu_to_gpu_cycles(
-            schedule.cycle() - self.timing.last_run
-        );
-
-        self.timing.last_run = schedule.cycle();
-
-        // If the progress is less than a single scanline. This is just to have a fast path to
-        // allow running the GPU often without a big performance loss.
-        if self.timing.scln_prog < self.timing.cycles_per_scln {
-            let in_hblank = self.timing.scln_prog >= timing::HSYNC_CYCLES;
-
-            // If we have entered Hblank.
-            if in_hblank && !self.timing.in_hblank {
-                timers.hblank(schedule, 1);
-            }
-
-            self.timing.in_hblank = in_hblank;
-        } else {
-            // Calculate the number of lines to be drawn.
-            let mut lines = self.timing.scln_prog / self.timing.cycles_per_scln;
-            self.timing.scln_prog %= self.timing.cycles_per_scln;
-
-            // At there must have been atleast a single Hblank, this calculates the amount.
-            // If the GPU wasn't in Hblank, it must have entered since then, which adds one to the
-            // count. We know it's going to enter into Hblank on each scanline, except the current
-            // one it's on, which is represented by 'in_hblank'.
-            let in_hblank = self.timing.scln_prog >= timing::HSYNC_CYCLES;
-            let hblank_count = u64::from(!self.timing.in_hblank)
-                + u64::from(in_hblank)
-                + lines - 1;
-
-            timers.hblank(schedule, hblank_count);
-            self.timing.in_hblank = in_hblank;
-
-            while lines > 0 {
-                let line_count = u64::min(lines, self.timing.scln_count - self.timing.scln);
-                lines -= line_count;
-
-                let scln = self.timing.scln + line_count;
-
-                // Calculate if the scanlines being drawn enters the display area, and clear the
-                // Vblank flag if not.
-                if self.timing.scln < self.timing.vbegin && scln >= self.timing.vend {
-                    // TODO: Timer sync.
-                    self.timing.in_vblank = false;
-                }
-
-                self.timing.scln = scln;
-
-                let in_vblank = !timing::NTSC_VERTICAL_RANGE.contains(&scln);
-
-                // If we are either leaving or entering Vblank.
-                if self.timing.in_vblank != in_vblank {
-                    if in_vblank {
-                        self.timing.frame_count += 1;
-                        schedule.schedule_now(Event::IrqTrigger(Irq::VBlank));
-                    }
-                    self.timing.in_vblank = in_vblank;
-                    // TODO: Timer sync.
-                }
-
-                // Prepare new frame if we are at the end of Vblank.
-                if self.timing.scln == self.timing.scln_count {
-                    self.timing.scln = 0;
-                    // The interlace field is toggled every frame if vertical interlace is turned on.
-                    if self.status.interlaced480() {
-                        self.status.0 ^= 1 << 13;
-                    } else {
-                        self.status.0 &= !(1 << 13);
-                    }
-                }
-            }
-        }
-
-        // The the current line being displayed in VRAM. It's used here to determine
-        // the value of bit 31 of 'status'.
-        let line_offset = if self.status.interlaced480() {
-            let offset = match self.timing.in_vblank {
-                true => (self.status.interlace_field() == InterlaceField::Bottom) as u16,
-                false => 0,
-            };
-            (self.timing.scln << 1) as u16 | offset
-        } else {
-            self.timing.scln as u16
-        };
-
-        let vram_line = self.vram_y_start + line_offset;
-        self.status.0 = self.status.0.set_bit(31, vram_line.bit(0));
-    }
-
-    fn gp1_store(&mut self, val: u32) {
-        let cmd = val.bit_range(24, 31);
-        match cmd {
-            // GP1(0) - Resets the state of the GPU.
-            0x0 => {
-                self.fifo.clear();
-
-                self.status.0 = 0x14802000;
-
-                self.vram_x_start = 0;
-                self.vram_y_start = 0;
-
-                self.dis_x_start = 0x200;
-                self.dis_x_end = 0xc00;
-
-                self.dis_y_start = 0x10;
-                self.dis_y_end = 0x100;
-
-                self.tex_x_flip = false;
-                self.tex_y_flip = false;
-
-                self.tex_win_w = 0;
-                self.tex_win_h = 0;
-
-                self.tex_win_x = 0;
-                self.tex_win_y = 0;
-
-                self.da_x_max = 0;
-                self.da_x_min = 0;
-
-                self.da_y_max = 0;
-                self.da_y_min = 0;
-
-                self.x_offset = 0;
-                self.y_offset = 0;
-
-                self.timing.update_video_mode(self.status.video_mode());
-            }
-            // GP1(1) - Reset command buffer.
-            0x1 => {
-                self.fifo.clear();
-            }
-            // GP1(2) - Acknowledge GPU Interrupt.
-            0x2 => {
-                self.status.0 &= !(1 << 24); 
-            }
-            // GP1(3) - Display Enable.
-            // - 0 - Display On/Off.
-            0x3 => {
-                self.status.0 = self.status.0.set_bit(23, val.bit(0));
-            }
-            // GP1(4) - Set DMA Direction.
-            // - 0..1 - DMA direction.
-            0x4 => {
-                let val = val.bit_range(0, 1);
-                self.status.0 = self.status.0.set_bit_range(29, 30, val);
-            }
-            // GP1(5) - Start display area in VRAM.
-            // - 0..9 - x (address in VRAM).
-            // - 10..18 - y (address in VRAM).
-            0x5 => {
-                self.vram_x_start = val.bit_range(0, 9) as u16;
-                self.vram_y_start = val.bit_range(10, 18) as u16;
-            }
-            // GP1(6) - Horizontal display range.
-            // - 0..11 - column start.
-            // - 12..23 - column end.
-            0x6 => {
-                self.dis_x_start = val.bit_range(0, 11) as u16;
-                self.dis_x_end = val.bit_range(12, 23) as u16;
-            }
-            // GP1(7) - Vertical display range.
-            // - 0..11 - line start.
-            // - 12..23 - line end.
-            0x7 => {
-                self.dis_y_start = val.bit_range(0, 11) as u16;
-                self.dis_y_end = val.bit_range(12, 23) as u16;
-            }
-            // GP1(8) - Set display mode.
-            // - 0..1 - Horizontal resolution 1.
-            // - 2 - Vertical resolution.
-            // - 3 - Display mode.
-            // - 4 - Display area color depth.
-            // - 5 - Vertical interlace.
-            // - 6 - Horizontal resolution 2.
-            // - 7 - Reverseflag.
-            0x8 => {
-                self.status.0 = self.status.0
-                    .set_bit_range(17, 22, val.bit_range(0, 5))
-                    .set_bit(16, val.bit(6))
-                    .set_bit(14, val.bit(7));
-                self.timing.update_video_mode(self.status.video_mode());
-            }
-            0xff => {
-                warn!("Weird GP1 command: GP1(ff)");
-            }
-            _ => unimplemented!("Invalid GP1 command {:08x}.", cmd),
-        }
-    }
-
-    fn gp0_exec(&mut self, schedule: &mut Schedule) {
-        let cmd = self.fifo[0].bit_range(24, 31);
-
-        let cycles = match cmd {
-            // Nop.
-            0x0 | 0x8 | 0x9 => {
-                self.fifo.pop();
-                0
-            }
-            // GP0(01) - Clear texture cache.
-            0x1 => {
-                self.fifo.pop();
-                // TODO: clear texture cache.
-                0
-            }
-            // GP0(02) - Fill rectanlge in VRAM.
-            0x2 => {
-                let color = Color::from_cmd(self.fifo.pop());
-
-                let val = self.fifo.pop() as i32;
-                let start = Point {
-                    x: val & 0x3f0,
-                    y: (val >> 16) & 0x3ff,
-                };
-
-                let val = self.fifo.pop() as i32;
-                let dim = Point {
-                    x: ((val & 0x3ff) + 0xf) & !0xf,
-                    y: (val >> 16) & 0x1ff,
-                };
-
-                self.fill_rect(start, dim, color); 
-                0    
-            }
-            // GP0(e1) - Draw Mode Setting.
-            // - 0..10 - Same as status register.
-            // - 11 - Texture disabled.
-            // - 12 - Texture rectangle x-flip.
-            // - 13 - Texture rectangle y-flip.
-            // - 14..23 - Not used.
-            0xe1 => {
-                let val = self.fifo.pop();
-
-                self.status.0 = self.status.0
-                    .set_bit_range(0, 10, val.bit_range(0, 10))
-                    .set_bit(15, val.bit(11));
-
-                self.tex_x_flip = val.bit(12);
-                self.tex_y_flip = val.bit(13);
-
-                0
-            }
-            // GP0(e2) - Texture window setting.
-            // - 0..4 - Texture window mask x.
-            // - 5..9 - Texture window mask y.
-            // - 10..14 - Texture window offset x.
-            // - 15..19 - Texture window offset y.
-            0xe2 => {
-                let val = self.fifo.pop();
-                self.tex_win_w = val.bit_range(0, 4) as u8;
-                self.tex_win_h = val.bit_range(5, 9) as u8;
-                self.tex_win_x = val.bit_range(10, 14) as u8;
-                self.tex_win_y = val.bit_range(15, 19) as u8;
-                0
-            }
-            // GP0(e3) - Set draw area top left.
-            // - 0..9 - Draw area left.
-            // - 10..18 - Draw area top.
-            // TODO this differs between GPU versions.
-            0xe3 => {
-                let val = self.fifo.pop();
-                self.da_x_min = val.bit_range(0, 9) as i32;
-                self.da_y_min = val.bit_range(10, 18) as i32;
-                0
-            }
-            // GP0(e4) - Set draw area bottom right.
-            // - 0..9 - Draw area right.
-            // - 10..18 - Draw area bottom.
-            0xe4 => {
-                let val = self.fifo.pop();
-                self.da_x_max = val.bit_range(0, 9) as i32;
-                self.da_y_max = val.bit_range(10, 18) as i32;
-                0
-            }
-            // GP0(e5) - Set drawing offset.
-            // - 0..10 - x-offset.
-            // - 11..21 - y-offset.
-            // - 24..23 - Not used.
-            0xe5 => {
-                let val = self.fifo.pop();
-                let x_offset = val.bit_range(0, 10) as u16;
-                let y_offset = val.bit_range(11, 21) as u16;
-                // Because the command stores the values as 11 bit signed integers, the values have to be
-                // bit-shifted to the most significant bits in order to make Rust generate sign extension.
-                self.x_offset = ((x_offset << 5) as i16) >> 5;
-                self.y_offset = ((y_offset << 5) as i16) >> 5;
-                0
-            }
-            // GP0(e6) - Mask bit setting.
-            // - 0 - Set mask while drawing.
-            // - 1 - Check mask before drawing.
-            0xe6 => {
-                let val = self.fifo.pop().bit_range(0, 1);
-                self.status.0 = self.status.0.set_bit_range(11, 12, val);
-                0
-            }
-            0x27 => self.gp0_tri_poly::<UnShaded, TexturedRaw, Transparent>(),
-            0x28 => self.gp0_quad_poly::<UnShaded, UnTextured, Opaque>(),
-            0x2c => self.gp0_quad_poly::<UnShaded, Textured, Opaque>(),
-            0x2d => self.gp0_quad_poly::<UnShaded, TexturedRaw, Opaque>(),
-            0x30 => self.gp0_tri_poly::<Shaded, UnTextured, Opaque>(),
-            0x38 => self.gp0_quad_poly::<Shaded, UnTextured, Opaque>(),
-            0x40 => self.gp0_line::<UnShaded, Opaque>(),
-            0x44 => self.gp0_line::<UnShaded, Opaque>(),
-            0x65 => self.gp0_rect::<Textured, Opaque>(None),
-            // GP0(a0) - Copy rectangle from CPU to VRAM.
-            0xa0 => {
-                self.fifo.pop();
-                let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
-
-                let (x, y, w, h) = (
-                    pos.bit_range(00, 15) as i32,
-                    pos.bit_range(16, 31) as i32,
-                    dim.bit_range(00, 15) as i32,
-                    dim.bit_range(16, 31) as i32,
-                );
-
-                let x = x & 0x3ff;
-                let y = y & 0x1ff;
-
-                let w = ((w - 1) & 0x3ff) + 1;
-                let h = ((h - 1) & 0x1ff) + 1;
-
-                self.state = State::VramStore(MemTransfer::new(x, y, w, h));
-                0
-            }
-            // GP0(c0) - Copy rectanlge from VRAM to CPU.
-            0xc0 => {
-                self.fifo.pop();
-                let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
-
-                let (x, y, w, h) = (
-                    pos.bit_range(00, 15) as i32,
-                    pos.bit_range(16, 31) as i32,
-                    dim.bit_range(00, 15) as i32,
-                    dim.bit_range(16, 31) as i32,
-                );
-
-                let x = x & 0x3ff;
-                let y = y & 0x1ff;
-
-                let w = ((w - 1) & 0x3ff) + 1;
-                let h = ((h - 1) & 0x1ff) + 1;
-
-                self.state = State::VramLoad(MemTransfer::new(x, y, w, h));
-                0
-            }
-            0xff => {
-                self.fifo.pop();
-                0
-            }
-            cmd => unimplemented!("Invalid GP0 command {:08x}.", cmd),
-        };
-
-        if cycles != 0 {
-            self.state = State::Drawing;
-            schedule.schedule_in(cycles, Event::GpuCmdDone);
-        }
-    }
-
-    fn gp0_tri_poly<Shade, Tex, Trans>(&mut self) -> Cycle
-    where
-        Shade: Shading,
-        Tex: Textureing,
-        Trans: Transparency,
-    {
-        let mut verts = [Vertex::default(); 3];
-        let mut clut = Point::default();
-
-        let color = match Shade::IS_SHADED {
-            true => Color::from_rgb(0, 0, 0),
-            false => Color::from_cmd(self.fifo.pop()),
-        };
-
-        for (i, vertex) in verts.iter_mut().enumerate() {
-            if Shade::IS_SHADED {
-                vertex.color = Color::from_cmd(self.fifo.pop());
-            }
-
-            let pos = self.fifo.pop();
-
-            vertex.point = Point::from_cmd(pos).with_offset(
-                self.x_offset as i32,
-                self.y_offset as i32,
-            );
-
-            if Tex::IS_TEXTURED {
-                let val = self.fifo.pop();
-                match i {
-                    0 => {
-                        clut.x = val.bit_range(16, 21) as i32 * 16;
-                        clut.y = val.bit_range(22, 30) as i32;
-                    }
-                    1 => {
-                        let val = val >> 16;
-
-                        self.status.0 = self.status.0
-                            .set_bit_range(0, 8, val.bit_range(0, 8))
-                            .set_bit(11, val.bit(11));
-                    }
-                    _ => {}
-                }
-
-                vertex.texcoord = TexCoord {
-                    u: val.bit_range(0, 7) as u8,
-                    v: val.bit_range(8, 15) as u8,
-                };
-            }
-        }
-
-        let cycles = self.draw_triangle::<Shade, Tex, Trans>(
-            color, clut, &verts[0], &verts[1], &verts[2]
-        );
-
-        timing::gpu_to_cpu_cycles(cycles)
-    }
-
-    fn gp0_quad_poly<Shade, Tex, Trans>(&mut self) -> Cycle
-    where
-        Shade: Shading,
-        Tex: Textureing,
-        Trans: Transparency,
-    {
-        let mut verts = [Vertex::default(); 4];
-        let mut clut = Point::default();
-
-        let color = match Shade::IS_SHADED {
-            true => Color::from_rgb(0, 0, 0),
-            false => Color::from_cmd(self.fifo.pop()),
-        };
-
-        for (i, vertex) in verts.iter_mut().enumerate() {
-            // If it's shaded the color is always the first attribute.
-            if Shade::IS_SHADED {
-                vertex.color = Color::from_cmd(self.fifo.pop());
-            }
-
-            let pos = self.fifo.pop();
-
-            vertex.point = Point::from_cmd(pos).with_offset(
-                self.x_offset as i32,
-                self.y_offset as i32,
-            );
-
-            if Tex::IS_TEXTURED {
-                let val = self.fifo.pop();
-                match i {
-                    0 => {
-                        clut.x = val.bit_range(16, 21) as i32 * 16;
-                        clut.y = val.bit_range(22, 30) as i32;
-                    }
-                    1 => {
-                        let val = val >> 16;
-
-                        self.status.0 = self.status.0
-                            .set_bit_range(0, 8, val.bit_range(0, 8))
-                            .set_bit(11, val.bit(11));
-                    }
-                    _ => {}
-                }
-
-                vertex.texcoord = TexCoord {
-                    u: val.bit_range(0, 7) as u8,
-                    v: val.bit_range(8, 15) as u8,
-                };
-            }
-        }
-
-        let tri1 = self.draw_triangle::<Shade, Tex, Trans>(
-            color, clut, &verts[0], &verts[1], &verts[2],
-        );
-
-        let tri2 = self.draw_triangle::<Shade, Tex, Trans>(
-            color, clut, &verts[1], &verts[2], &verts[3]
-        );
-
-        timing::gpu_to_cpu_cycles(tri1 + tri2)
-    }
-
-    fn gp0_line<S: Shading, T: Transparency>(&mut self) -> Cycle {
-        let color = match S::IS_SHADED {
-            false => Color::from_cmd(self.fifo.pop()),
-            true => Color::from_rgb(0, 0, 0),
-        };
-
-        let start = Point::from_cmd(self.fifo.pop()).with_offset(
-            self.x_offset as i32,
-            self.y_offset as i32,
-        );
-
-        let end = Point::from_cmd(self.fifo.pop()).with_offset(
-            self.x_offset as i32,
-            self.y_offset as i32,
-        );
-
-        let cycles = self.draw_line::<S, T>(start, end, color);
-
-        timing::gpu_to_cpu_cycles(cycles)
-    }
-
-    fn gp0_rect<Tex, Tran>(&mut self, size: Option<i32>) -> Cycle
-    where
-        Tex: Textureing,
-        Tran: Transparency,
-    {
-        let mut uv = TexCoord::default();
-        let mut clut = Point::default();
-
-        let color = Color::from_cmd(self.fifo.pop());
-
-        let start = Point::from_cmd(self.fifo.pop()).with_offset(
-            self.x_offset as i32,
-            self.y_offset as i32,
-        );
-
-        if Tex::IS_TEXTURED {
-            let val = self.fifo.pop();
-
-            uv.u = val.bit_range(0, 07) as u8;
-            uv.v = val.bit_range(8, 15) as u8;
-
-            clut.x = val.bit_range(16, 21) as i32 * 16;
-            clut.y = val.bit_range(22, 30) as i32;
-        }
-
-        let dim = match size {
-            Some(s) => Point::new(s, s),
-            None => Point::from_cmd(self.fifo.pop()),
-        };
-
-        let cycles = self.draw_rect::<Tex, Tran>(start, dim, color, uv, clut);
-
-        timing::gpu_to_cpu_cycles(cycles)
     }
 }
 

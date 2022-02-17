@@ -1,6 +1,9 @@
+//! TODO:
+//! * The CDROM runs at fixed intervals which doesn't seem neccessary but running after every store
+//!   doesn't seem to work, likely because the CDROM executes the command immediately, which the
+//!   BIOS isn't expecting. 
 
 mod fifo;
-mod decoder;
 
 use splst_util::Bit;
 use splst_util::{Bcd, Msf};
@@ -148,7 +151,6 @@ impl CdRom {
             3 => match self.index {
                 0 => {
                     let was_active = self.data_buffer.active;
-
                     self.data_buffer.active = val.bit(7);
 
                     if self.data_buffer.active {
@@ -177,8 +179,6 @@ impl CdRom {
         match addr {
             // Status register.
             0 => {
-                debug!("CDROM status read");
-
                 let register = self.index
                     | (self.arg_fifo.is_empty() as u8) << 3
                     | (!self.arg_fifo.is_full() as u8) << 4
@@ -188,11 +188,9 @@ impl CdRom {
                 register.into()
             }
             1 => {
-                debug!("CDROM response read");
                 self.response_fifo.try_pop().unwrap_or(0x0).into()
             }
             2 => {
-                debug!("CDROM data read");
                 self.data_buffer.read_byte().into()
             }
             3 => match self.index {
@@ -254,8 +252,6 @@ impl CdRom {
                 match &mut self.cd {
                     None => unreachable!(),
                     Some(cd) => {
-                        debug!("Sector done reading");
-
                         self.position = self.position
                             .next_sector()
                             .unwrap();
@@ -279,7 +275,6 @@ impl CdRom {
     }
 
     pub fn reponse(&mut self, schedule: &mut Schedule, cmd: CdRomCmd) {
-        debug!("CDROM reponse for command: {}", cmd);
         match cmd.0 {
             // init
             0x0a => {
@@ -335,8 +330,6 @@ impl CdRom {
 
         if let Some(cmd) = self.cmd.take() {
             self.response_fifo.clear();
-
-            debug!("CDROM command {}", CdRomCmd(cmd));
 
             match cmd {
                 // status
@@ -585,8 +578,6 @@ impl ModeReg {
 
 impl DmaChan for CdRom {
     fn dma_load(&mut self, _: &mut Schedule, _: (u16, u32)) -> u32 {
-        debug!("CDROM DMA load");
-    
         let v1 = self.data_buffer.read_byte() as u32;
         let v2 = self.data_buffer.read_byte() as u32;
         let v3 = self.data_buffer.read_byte() as u32;

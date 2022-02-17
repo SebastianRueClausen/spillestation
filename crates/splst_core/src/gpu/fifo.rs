@@ -37,22 +37,35 @@ impl Fifo {
         self.tail = self.head;
     }
 
-    pub fn push(&mut self, value: u32) {
-        if  self.is_full() {
-            warn!("Pushing to a full GPU FIFO");
-            panic!();
+    #[cfg(test)]
+    pub fn push(&mut self, val: u32) {
+        if !self.is_full() {
+            self.data[self.head as usize & (Self::SIZE - 1)] = val;
+            self.head = self.head.wrapping_add(1);
         }
-        self.data[self.head as usize & (Self::SIZE - 1)] = value;
+    }
+
+    pub fn try_push(&mut self, val: u32) -> bool {
+        if self.is_full() {
+            warn!("Push to full GPU FIFO");
+            return false
+        }
+
+        self.data[self.head as usize & (Self::SIZE - 1)] = val;
         self.head = self.head.wrapping_add(1);
+
+        true
     }
 
     pub fn pop(&mut self) -> u32 {
         if self.is_empty() {
             warn!("Poping from an empty GPU FIFO");
         }
-        let value = self[0];
+
+        let val = self[0];
         self.tail = self.tail.wrapping_add(1);
-        value
+
+        val
     }
 
     pub fn next_cmd(&self) -> Option<u32> {
@@ -100,3 +113,95 @@ const CMD_LEN: [u8; 0x100] = [
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 ];
+
+#[test]
+fn pop_and_push() {
+    let mut fifo = Fifo::new();
+
+    assert!(fifo.is_empty());
+
+    fifo.push(1); 
+    fifo.push(2); 
+    fifo.push(3); 
+
+    assert_eq!(fifo.len(), 3);
+
+    fifo.push(4); 
+    fifo.push(5); 
+    fifo.push(6); 
+    fifo.push(7); 
+    fifo.push(8); 
+    fifo.push(9); 
+    fifo.push(10); 
+    fifo.push(11); 
+    fifo.push(12); 
+    fifo.push(13); 
+    fifo.push(14); 
+    fifo.push(15);
+    fifo.push(16);
+
+    assert_eq!(fifo.len(), 16); 
+
+    fifo.push(17);
+
+    assert_eq!(fifo.len(), 16); 
+    assert!(fifo.is_full());
+
+    assert_eq!(fifo[0], 1);
+    assert_eq!(fifo[1], 2);
+    assert_eq!(fifo[2], 3);
+    assert_eq!(fifo[15], 16);
+
+    assert_eq!(fifo.pop(), 1);
+    assert_eq!(fifo.pop(), 2);
+    assert_eq!(fifo.pop(), 3);
+    assert_eq!(fifo.pop(), 4);
+    assert_eq!(fifo.pop(), 5);
+    assert_eq!(fifo.pop(), 6);
+    assert_eq!(fifo.pop(), 7);
+    assert_eq!(fifo.pop(), 8);
+    assert_eq!(fifo.pop(), 9);
+    assert_eq!(fifo.pop(), 10);
+    assert_eq!(fifo.pop(), 11);
+    assert_eq!(fifo.pop(), 12);
+    assert_eq!(fifo.pop(), 13);
+
+    assert_eq!(fifo.len(), 3);
+
+    assert_eq!(fifo.pop(), 14);
+    assert_eq!(fifo.pop(), 15);
+    assert_eq!(fifo.pop(), 16);
+
+    assert!(fifo.is_empty());
+}
+
+#[test]
+fn command() {
+    use splst_util::BitSet;
+
+    let mut fifo = Fifo::new();
+
+    assert!(!fifo.has_full_cmd());
+
+    fifo.push(0_u32.set_bit_range(24, 31, 0x3f));
+
+    assert!(!fifo.has_full_cmd());
+    assert_eq!(fifo.next_cmd_len().unwrap(), 12);
+
+    fifo.push(1); 
+    fifo.push(2); 
+    fifo.push(3); 
+    fifo.push(4); 
+    fifo.push(5); 
+    fifo.push(6); 
+    fifo.push(7); 
+    fifo.push(8); 
+    fifo.push(9); 
+    fifo.push(10); 
+
+    assert!(!fifo.has_full_cmd());
+
+    fifo.push(11); 
+
+    assert!(fifo.has_full_cmd());
+}

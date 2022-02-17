@@ -432,7 +432,7 @@ impl Dma {
                             let tran = Transfer {
                                 inc: stat.ctrl.step().step_amount(),
                                 size: header.bit_range(24, 31),
-                                cursor: (stat.base + 4).bit_range(0, 23),
+                                cursor: stat.base.wrapping_add(4).bit_range(0, 23),
                             };
 
                             stat.base = header.bit_range(0, 23);
@@ -574,10 +574,28 @@ impl Bus {
     pub fn run_dma_chan(&mut self, port: Port) {
         match port {
             Port::Gpu => {
-               self.dma.run_chan(Port::Gpu, &mut self.gpu, &mut self.schedule, &mut self.ram);
+               self.dma.run_chan(
+                   Port::Gpu,
+                   &mut self.gpu,
+                   &mut self.schedule,
+                   &mut self.ram
+                );
+            }
+            Port::CdRom => {
+                self.dma.run_chan(
+                    Port::CdRom,
+                    &mut self.cdrom,
+                    &mut self.schedule,
+                    &mut self.ram
+                );
             }
             Port::Otc => {
-                self.dma.run_chan(Port::Otc, &mut OrderingTable, &mut self.schedule, &mut self.ram);
+                self.dma.run_chan(
+                    Port::Otc,
+                    &mut OrderingTable,
+                    &mut self.schedule,
+                    &mut self.ram
+                );
             }
             _ => todo!(),
         }
@@ -612,7 +630,7 @@ impl DmaChan for OrderingTable {
         if words_left == 1 {
             0x00ff_ffff
         } else {
-            addr.wrapping_sub(4).bit_range(0, 21)
+            addr.wrapping_sub(4).bit_range(0, 20)
         }
     }
 

@@ -1,92 +1,15 @@
 use super::primitive::{Color, Point, TexCoord, Texel, Vertex};
 use super::{Gpu, TexelDepth};
+use super::gp0::draw_mode;
 use crate::Cycle;
 
 use ultraviolet::vec::Vec3;
 
-/// The shading mode of a draw call.
-pub trait Shading {
-    const IS_SHADED: bool;
-}
-
-/// Not shaded ie. each vertex doesn't have a color attribute.
-pub struct UnShaded;
-
-impl Shading for UnShaded {
-    const IS_SHADED: bool = false;
-}
-
-/// Shaded i.e. each vertex has a color attribute. The colors get's interpolated between each
-/// vertex using linear interpolation.
-pub struct Shaded;
-
-impl Shading for Shaded {
-    const IS_SHADED: bool = true;
-}
-
-/// The texture mode of a draw call.
-pub trait Textureing {
-    const IS_TEXTURED: bool;
-    const IS_RAW: bool;
-}
-
-/// The shap is only colored by shading.
-pub struct UnTextured;
-
-impl Textureing for UnTextured {
-    const IS_TEXTURED: bool = false;
-    const IS_RAW: bool = false;
-}
-
-/// The shape is textured and get's blended with with shading.
-pub struct Textured;
-
-impl Textureing for Textured {
-    const IS_TEXTURED: bool = true;
-    const IS_RAW: bool = false;
-}
-
-/// The shape is textured and doesn't get blended with shading.
-pub struct TexturedRaw;
-
-impl Textureing for TexturedRaw {
-    const IS_TEXTURED: bool = true;
-    const IS_RAW: bool = true;
-}
-
-/// The transparency mode of a draw call, basically how the color of a shape get's blended with the
-/// background color.
-pub trait Transparency {
-    const IS_TRANSPARENT: bool;
-}
-
-/// The shape is transparent or semi-transparent, which means the color of the shape get's blended
-/// with the backgroud color.
-pub struct Transparent;
-
-impl Transparency for Transparent {
-    const IS_TRANSPARENT: bool = true;
-}
-
-/// The shape is opaque and doesn't get blended with the background.
-pub struct Opaque;
-
-impl Transparency for Opaque {
-    const IS_TRANSPARENT: bool = false;
-}
-
 impl Gpu {
-    /// Draw a pixel to the screen.
-    fn draw_pixel<Tran, Tex>(
-        &mut self,
-        x: i32,
-        y: i32,
-        color: Color,
-        masked: bool
-    )
+    fn draw_pixel<Tran, Tex>(&mut self, x: i32, y: i32, color: Color, masked: bool)
     where
-        Tran: Transparency,
-        Tex: Textureing
+        Tran: draw_mode::Transparency,
+        Tex: draw_mode::Textureing
     {
         let color = match Tran::IS_TRANSPARENT {
             false => color,
@@ -109,13 +32,15 @@ impl Gpu {
     }
 
     /// Load a texel at a given texture coordinate.
-    fn load_texel(&self, clut: Point, coord: TexCoord) -> Texel {
-        let u = (coord.u & !(self.tex_win_w * 8)) | ((self.tex_win_x & self.tex_win_w) * 8);
-        let v = (coord.v & !(self.tex_win_h * 8)) | ((self.tex_win_y & self.tex_win_h) * 8);
+    fn load_texel(
+        &self,
+        clut: Point,
+        coord: TexCoord,
+        tex_param_cache: TexParamCache
+    ) -> Texel {
+        let u = (coord.u & tex_param_cache.tex_win_u) as i32;
+        let v = (coord.v & tex_param_cache.tex_win_v) as i32;
        
-        let u = u as i32;
-        let v = v as i32;
-        
         match self.status.texture_depth() {
             TexelDepth::B4 => {
                 let val = self.vram.load_16(
@@ -151,9 +76,9 @@ impl Gpu {
     // Calculate the amount of cycles to draw a triangle.
     fn triangle_draw_time<Shade, Tex, Trans>(&self, mut pixels: u64) -> Cycle
     where
-        Shade: Shading,
-        Tex: Textureing,
-        Trans: Transparency,
+        Shade: draw_mode::Shading,
+        Tex: draw_mode::Textureing,
+        Trans: draw_mode::Transparency,
     {
         let mut cycles = 0;
 
@@ -178,7 +103,7 @@ impl Gpu {
         }
 
         // Hack for now until we emulate only drawing to non displayed lines.
-        if !self.status.draw_to_displayed() && self.status.interlaced480() {
+        if !self.status.draw_to_displayed() && self.status.interlaced_480() {
             pixels /= 2;
         }
 
@@ -187,8 +112,8 @@ impl Gpu {
 
     fn rect_draw_time<Tex, Trans>(&self, mut pixels: u64) -> Cycle
     where
-        Tex: Textureing,
-        Trans: Transparency,
+        Tex: draw_mode::Textureing,
+        Trans: draw_mode::Transparency,
     {
         let cycles = 30;
 
@@ -202,7 +127,7 @@ impl Gpu {
             pixel_cost += 0.2;
         }
 
-        if !self.status.draw_to_displayed() && self.status.interlaced480() {
+        if !self.status.draw_to_displayed() && self.status.interlaced_480() {
             pixels /= 2;
         }
 
@@ -211,8 +136,8 @@ impl Gpu {
 
     fn line_draw_time<Shade, Trans>(&self, mut pixels: u64) -> Cycle
     where
-        Shade: Shading,
-        Trans: Transparency,
+        Shade: draw_mode::Shading,
+        Trans: draw_mode::Transparency,
     {
         let cycles = 30;
 
@@ -226,7 +151,7 @@ impl Gpu {
             pixel_cost += 0.5;
         }
 
-        if !self.status.draw_to_displayed() && self.status.interlaced480() {
+        if !self.status.draw_to_displayed() && self.status.interlaced_480() {
             pixels /= 2;
         }
 
@@ -235,22 +160,32 @@ impl Gpu {
 
 
     /// Rasterize a triangle to the screen. It finds the bounding box and checks for each pixel if
-    /// it's inside the triangle using barycentric coordinates. Since the Playstation renders
-    /// many different kind triangles, this function takes template arguments descriping how the
-    /// triangle should be rendered, to avoid a lot of run-time branching.
+    /// it's inside the triangle using barycentric coordinates.    ///
     ///
     /// This could be optimized in a few different ways. Most obviously using simd to rasterize
     /// multiple pixels at once.
     ///
     /// TODO: Add support for drawing only to non-interlaced fields.
-    pub fn draw_triangle<Shade: Shading, Tex: Textureing, Trans: Transparency>(
+    pub fn draw_triangle<Shade, Tex, Trans>(
         &mut self,
         shade: Color,
         clut: Point,
         v1: &Vertex,
         v2: &Vertex,
         v3: &Vertex,
-    ) -> Cycle {
+    ) -> Cycle
+    where
+        Shade: draw_mode::Shading,
+        Tex: draw_mode::Textureing,
+        Trans: draw_mode::Transparency,
+    {
+        let tex_param_cache = TexParamCache::new(
+            self.tex_win_w,
+            self.tex_win_h,
+            self.tex_win_x,
+            self.tex_win_y,
+        );
+
         let points = [v1.point, v2.point, v3.point];
 
         // Calculate bounding box. The GPU doesn't draw the bottom or right most pixels.
@@ -322,7 +257,7 @@ impl Gpu {
                         v: v as u8,
                     };
 
-                    let texel = self.load_texel(clut, uv);
+                    let texel = self.load_texel(clut, uv, tex_param_cache);
 
                     if texel.is_invisible() {
                         continue;
@@ -370,8 +305,8 @@ impl Gpu {
         shade: Color,
     ) -> Cycle
     where
-        Shade: Shading,
-        Trans: Transparency,
+        Shade: draw_mode::Shading,
+        Trans: draw_mode::Transparency,
     {
         let start = self.clamp_to_da(start);
         let end = self.clamp_to_da(end);
@@ -386,7 +321,9 @@ impl Gpu {
         let mut y = start.y;
 
         // Lines are always dithered.
-        self.draw_pixel::<Trans, UnTextured>(x, y, shade.dither(x, y), false);
+        self.draw_pixel::<Trans, draw_mode::UnTextured>(
+            x, y, shade.dither(x, y), false
+        );
 
         let mut pixels_drawn = 1;
 
@@ -405,7 +342,9 @@ impl Gpu {
 
                 pixels_drawn += 1;
 
-                self.draw_pixel::<Trans, UnTextured>(x, y, shade.dither(x, y), false);
+                self.draw_pixel::<Trans, draw_mode::UnTextured>(
+                    x, y, shade.dither(x, y), false
+                );
             }
         } else {
             let mut d = 2 * abs_dx - abs_dy;
@@ -422,7 +361,9 @@ impl Gpu {
 
                 pixels_drawn += 1;
 
-                self.draw_pixel::<Trans, UnTextured>(x, y, shade.dither(x, y), false);
+                self.draw_pixel::<Trans, draw_mode::UnTextured>(
+                    x, y, shade.dither(x, y), false
+                );
             }
         }
 
@@ -447,12 +388,19 @@ impl Gpu {
         clut: Point,
     ) -> Cycle
     where
-        Tex: Textureing,
-        Trans: Transparency,
+        Tex: draw_mode::Textureing,
+        Trans: draw_mode::Transparency,
     {
+        let tex_param_cache = TexParamCache::new(
+            self.tex_win_w,
+            self.tex_win_h,
+            self.tex_win_x,
+            self.tex_win_y,
+        );
+
         // Calculate the uv delta for each step in x and y direction. Nocash specifies that the
         // texture flipping for rectangles doesn't work on older Playstation models, but older
-        // games shouldn't be using the feature anyway then.
+        // games shouldn't be using the feature anyway.
         let (u_delta, v_delta) = match Tex::IS_TEXTURED {
             false => (0, 0),
             true => {
@@ -497,7 +445,7 @@ impl Gpu {
 
             for x in start_x..end_x {
                 let (color, masked) = if Tex::IS_TEXTURED {
-                    let texel = self.load_texel(clut, tc);
+                    let texel = self.load_texel(clut, tc, tex_param_cache);
 
                     if texel.is_invisible() {
                         tc.u = tc.u.wrapping_add(u_delta as u8);
@@ -512,8 +460,7 @@ impl Gpu {
                     let color = match Trans::IS_TRANSPARENT {
                         false => tex_color,
                         true => {
-                            let val = self.vram.load_16(x, y);
-                            let bg = Color::from_u16(val);
+                            let bg = Color::from_u16(self.vram.load_16(x, y));
                             self.status.blend_mode().blend(tex_color, bg)
                         }
                     };
@@ -524,7 +471,6 @@ impl Gpu {
                 };
 
                 pixels_drawn += 1;
-
                 self.draw_pixel::<Trans, Tex>(x, y, color, masked);
 
                 tc.u = tc.u.wrapping_add(u_delta as u8);
@@ -556,5 +502,28 @@ fn barycentric(points: &[Point; 3], x: i32, y: i32) -> Vec3 {
         Vec3::new(-1.0, 1.0, 1.0)
     } else {
         Vec3::new(1.0 - (u.x + u.y) / u.z, u.y / u.z, u.x / u.z)
+    }
+}
+
+/// Cache for static info used to render each textured pixel.
+#[derive(Clone, Copy)]
+struct TexParamCache {
+    /// !(self.tex_win_w * 8) | ((self.tex_win_x & self.tex_win_w) * 8).
+    tex_win_u: u8,
+    /// !(self.tex_win_h * 8) | ((self.tex_win_y & self.tex_win_h) * 8).
+    tex_win_v: u8,
+}
+
+impl TexParamCache {
+    fn new(
+        tex_win_w: u8,
+        tex_win_h: u8,
+        tex_win_x: u8,
+        tex_win_y: u8,
+    ) -> Self {
+        Self {
+            tex_win_u: !(tex_win_w * 8) | ((tex_win_x & tex_win_w) * 8),
+            tex_win_v: !(tex_win_h * 8) | ((tex_win_y & tex_win_h) * 8),
+        }
     }
 }
