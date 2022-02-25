@@ -13,6 +13,8 @@ pub mod vram;
 pub mod schedule;
 pub mod start_menu;
 
+mod keys;
+
 use crate::render::{Renderer, SurfaceSize};
 
 use egui::{ClippedMesh, CtxRef};

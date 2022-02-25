@@ -1,6 +1,11 @@
 #![feature(vec_retain_mut)]
+
 //! The frontend of the emulator. Handles the window, input/output, rendering, GUI and controls the
 //! emulator itself.
+//!
+//! TODO:
+//! - Find some way to make the emulator sleep in emulation mode if we are keeping up. Right now it
+//!   will just continue to run for very small intervals all the time.
 
 #[macro_use]
 extern crate log;
@@ -9,7 +14,7 @@ mod config;
 mod gui;
 mod render;
 
-use splst_core::{System, Bios, timing};
+use splst_core::{System, Bios, timing, Input, Button};
 use crate::render::{Renderer, SurfaceSize};
 use config::Config;
 use gui::{app_menu::AppMenu, GuiCtx};
@@ -19,8 +24,9 @@ use winit::event::{ElementState, Event, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{WindowBuilder, Window};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -35,6 +41,8 @@ enum Stage {
     StartMenu(StartMenu),
     Running {
         system: System,
+        key_bindings: HashMap<VirtualKeyCode, Button>,
+        input: Input,
         app_menu: Box<AppMenu>,
         /// The last time 'system' ran.
         last_update: Instant,
@@ -52,8 +60,6 @@ pub struct Frontend {
     window: Window,
     /// When the last frame was drawn.
     last_draw: Instant,
-    /// How long each frame should last. This depends on the systems video mode ie. if it's NTSC or
-    /// PAL.
     frame_time: Duration,
 }
 
@@ -118,15 +124,27 @@ impl Frontend {
                             self.gui_ctx.set_scale_factor(self.window.scale_factor() as f32);
                         }
                         // Handle keyboard input.
-                        WindowEvent::KeyboardInput { input, .. } => {
-                            if let Stage::Running { ref mut app_menu, .. } = self.stage {
-                                if let (Some(VirtualKeyCode::Escape), ElementState::Pressed)
-                                    = (input.virtual_keycode, input.state)
-                                {
-                                    app_menu.toggle_open(); 
+                        WindowEvent::KeyboardInput { input: key_event, .. } => {
+                            if let Stage::Running {
+                                ref mut app_menu,
+                                ref mut input,
+                                ref key_bindings,
+                                ..
+                            } = self.stage {
+                                match (key_event.virtual_keycode, key_event.state) {
+                                    (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
+                                        app_menu.toggle_open(); 
+                                    }
+                                    (Some(key), ElementState::Pressed) => {
+                                        if let Some(button) = key_bindings.get(&key) {
+                                            input.controllers[0].set_button(button, true);
+                                        }
+                                    }
+                                    _ => {
+                                        self.gui_ctx.handle_window_event(event);
+                                    }
                                 }
                             }
-                            self.gui_ctx.handle_window_event(event);
                         }
                         _ => {
                             self.gui_ctx.handle_window_event(event);
@@ -161,12 +179,14 @@ impl Frontend {
                             }
                         });
 
-                        if let Some((bios, cd)) = items {
+                        if let Some((bios, cd, key_bindings)) = items {
                             self.stage = Stage::Running {
                                 system: System::new(bios, cd),
                                 app_menu: Box::new(AppMenu::new()),
                                 last_update: Instant::now(),
                                 mode: RunMode::Emulation,
+                                key_bindings,
+                                input: Input::new(),
                             }
                         }
                     }
@@ -177,6 +197,7 @@ impl Frontend {
                         ref mut app_menu,
                         ref mut last_update,
                         mode,
+                        ..
                     } => {
                         match mode {
                             RunMode::Debug => {
@@ -204,20 +225,32 @@ impl Frontend {
             .expect("Failed to create window");
 
         let renderer = Renderer::new(&window);
+
+        // TODO: Change frame rate to handle both PAL and NTSC.
         let frame_time = Duration::from_secs_f32(1.0 / timing::NTSC_FPS as f32);
 
         let start_menu = match Config::load() {
             Err(err) => {
                 trace!("Failed to load/find config file");
-                StartMenu::with_error(err.to_string())
+                StartMenu::new(None, None, Some(err.to_string()))
             }
             Ok(config) => {
                 match Bios::from_file(Path::new(&config.bios)) {
                     Err(err) => {
                         trace!("Failed to read BIOS from config file");
-                        StartMenu::with_error(err.to_string())
+                        StartMenu::new(
+                            None,
+                            Some(config.key_bindings),
+                            Some(err.to_string()),
+                        )
                     }
-                    Ok(bios) => StartMenu::with_bios(bios, config.bios),
+                    Ok(bios) => {
+                        StartMenu::new(
+                            Some(WithPath::new(bios, config.bios.clone())),
+                            Some(config.key_bindings),
+                            None,
+                        )
+                    }
                 }
             }
         };
@@ -231,5 +264,24 @@ impl Frontend {
             window,
             frame_time,
         }
+    }
+}
+
+pub struct WithPath<T> {
+    item: T,
+    name: String,
+    path: PathBuf, 
+}
+
+impl<T> WithPath<T> {
+    fn new(item: T, path: PathBuf) -> Self {
+        let name = path.components()
+            .last()
+            .map(|c| c.as_os_str())
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .to_string();
+
+        Self { item, path, name }
     }
 }

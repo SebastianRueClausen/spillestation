@@ -1,57 +1,111 @@
-use splst_core::Bios;
+use splst_core::{Bios, Button};
 use splst_cdimg::CdImage;
 use crate::Config;
+use crate::WithPath;
+use crate::gui::keys;
 
+use winit::event::VirtualKeyCode;
 use native_dialog::FileDialog;
+
 use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+
+struct KeyBindings {
+    bindings: [Option<VirtualKeyCode>; BUTTON_COUNT],
+    recording: Option<Button>,
+}
+
+impl KeyBindings {
+    fn new(bindings: [Option<VirtualKeyCode>; BUTTON_COUNT]) -> Self {
+        Self { bindings, recording: None }
+    }
+}
 
 pub struct StartMenu {
-    bios: Option<(PathBuf, Bios)>,
-    cd_image: Option<(PathBuf, CdImage)>,
+    bios: Option<WithPath<Bios>>,
+    cd_image: Option<WithPath<CdImage>>,
     error: Option<String>,
     bios_path: String,
     cd_path: String,
     bios_in_config: bool,
+    key_bindings: KeyBindings,
 }
 
 impl StartMenu {
-    pub fn with_bios(bios: Bios, path: PathBuf) -> Self {
+    pub fn new(
+        bios: Option<WithPath<Bios>>,
+        key_bindings: Option<HashMap<VirtualKeyCode, Button>>,
+        error: Option<String>,
+    ) -> Self {
+        let mut bindings = [None; BUTTON_COUNT];
+        if let Some(keys) = key_bindings {
+            for (k, v) in &keys {
+                bindings[*v as usize] = Some(*k);
+            }
+        }
         Self {
-            bios: Some((path, bios)),
+            bios,
+            error,
             cd_image: None,
-            error: None,
             bios_path: String::new(),
             cd_path: String::new(),
-            bios_in_config: true,
+            bios_in_config: bios.is_some(),
+            key_bindings: KeyBindings::new(bindings),
         }
     }
 
-    pub fn with_error(error: String) -> Self {
-        Self {
-            bios: None,
-            cd_image: None,
-            error: Some(error),
-            bios_path: String::new(),
-            cd_path: String::new(),
-            bios_in_config: false,
+    fn key_bindings(&mut self, ui: &mut egui::Ui) {
+        if let Some(button) = self.key_bindings.recording {
+            for event in ui.input().events {
+                if let egui::Event::Key { key, pressed: true, ..  } = event {
+                    self.key_bindings.recording = None;
+                    self.key_bindings.bindings[button as usize] = Some(
+                        keys::egui_to_winit_key(key)
+                    ); 
+                    break;
+                }
+            }
         }
+        ui.group(|ui| {
+            egui::ScrollArea::new([false, true]).show(ui, |ui| {
+                egui::Grid::new("key_bindings").show(ui, |ui| {
+                    self.key_bindings.bindings
+                        .iter()
+                        .zip(BUTTONS_NAMES.iter())
+                        .zip(BUTTONS.iter())
+                        .for_each(|((key, name), button)| {
+                            ui.label(*name);
+                            let key = key
+                                .map(|key| keys::keycode_name(key))
+                                .unwrap_or("None");
+                            ui.label(key);
+                            if ui.button("change").clicked() {
+                                self.key_bindings.recording = Some(*button);     
+                            }
+                        });
+                });
+            });
+        });
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) -> Option<(Bios, Option<CdImage>)> {
+    fn bios_and_game(
+        &mut self,
+        ui: &mut egui::Ui
+    ) -> Option<(Bios, Option<CdImage>, HashMap<VirtualKeyCode, Button>)> {
         ui.group(|ui| {
             match self.bios {
-                Some((ref path, _)) => {
-                    let filename = path.components()
-                        .last()
-                        .map(|c| c.as_os_str())
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy();
+                Some(ref bios) => {
                     let change = ui.horizontal(|ui| {
                         if !self.bios_in_config {
-                            ui.label(format!("BIOS Loaded '{}' ✔", filename));
+                            ui.label(format!("BIOS Loaded '{}' ✔", bios.name));
                             if ui.button("Save to Config File").clicked() {
                                 let res = Config::store(&Config {
-                                    bios: path.clone()
+                                    bios: bios.path.clone(),
+                                    key_bindings: self.key_bindings.bindings
+                                        .iter()
+                                        .zip(BUTTONS.iter())
+                                        .filter_map(|(k, b)| k.map(|k| (k, *b)))
+                                        .collect(),
                                 });
                                 match res {
                                     Err(err) => self.error = Some(err.to_string()),
@@ -59,10 +113,11 @@ impl StartMenu {
                                 }
                             }
                         } else {
-                            ui.label(format!("BIOS loaded '{}' and saved in Config File ✔", filename));
+                            ui.label(format!("BIOS loaded '{}' and saved in Config File ✔", bios.name));
                         }
                         ui.button("Change").clicked()
                     });
+
                     if change.inner {
                         self.bios_in_config = false;
                         self.bios = None;
@@ -90,7 +145,9 @@ impl StartMenu {
                         if ui.button("Load").clicked() {
                             match Bios::from_file(Path::new(&self.bios_path)) {
                                 Err(err) => self.error = Some(err.to_string()),
-                                Ok(bios) => self.bios = Some((PathBuf::from(self.bios_path.clone()), bios)),
+                                Ok(bios) => self.bios = Some(WithPath::new(
+                                    bios, PathBuf::from(self.bios_path.clone()),
+                                )),
                             }
                         }
                     });
@@ -100,16 +157,12 @@ impl StartMenu {
             ui.allocate_space(ui.available_size() / 32.0);
 
             match self.cd_image {
-                Some((ref path, _)) => {
-                    let filename = path.components()
-                        .last()
-                        .map(|c| c.as_os_str())
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy();
+                Some(cd_image) => {
                     let change = ui.horizontal(|ui| {
-                        ui.label(format!("Game Loaded '{}' ✔", filename));
+                        ui.label(format!("Game Loaded '{}' ✔", cd_image.name));
                         ui.button("Change").clicked()
                     });
+
                     if change.inner {
                         self.cd_image = None; 
                     }
@@ -136,7 +189,9 @@ impl StartMenu {
                         if ui.button("Load").clicked() {
                             match splst_cdimg::open_cd(Path::new(&self.cd_path)) {
                                 Err(err) => self.error = Some(err.to_string()),
-                                Ok(cd) => self.cd_image = Some((PathBuf::from(self.cd_path.clone()), cd)),
+                                Ok(cd) => self.cd_image = Some(WithPath::new(
+                                    cd, PathBuf::from(self.cd_path.clone()),
+                                )),
                             }
                         }
                     });
@@ -163,8 +218,18 @@ impl StartMenu {
                     }
                     (true, true) => {
                         return Some((
-                            self.bios.take().map(|(_, bios)| bios).unwrap(),
-                            self.cd_image.take() .map(|(_, cd)| cd)
+                            self.bios
+                                .take()
+                                .map(|bios| bios.item)
+                                .unwrap(),
+                            self.cd_image
+                                .take()
+                                .map(|cd| cd.item),
+                            self.key_bindings.bindings
+                                .iter()
+                                .zip(BUTTONS.iter())
+                                .filter_map(|(k, b)| k.map(|k| (k, *b)))
+                                .collect(),
                         ));
                     }
                 }
@@ -173,8 +238,18 @@ impl StartMenu {
             if ui.button("Start without Game").clicked() {
                 if self.bios.is_some() {
                     return Some((
-                        self.bios.take().map(|(_, bios)| bios).unwrap(),
-                        self.cd_image.take().map(|(_, cd)| cd)
+                        self.bios
+                            .take()
+                            .map(|bios| bios.item)
+                            .unwrap(),
+                        self.cd_image
+                            .take()
+                            .map(|cd| cd.item),
+                        self.key_bindings.bindings
+                            .iter()
+                            .zip(BUTTONS.iter())
+                            .filter_map(|(k, b)| k.map(|k| (k, *b)))
+                            .collect(),
                     ));
                 } else {
                     self.error = Some(
@@ -187,7 +262,10 @@ impl StartMenu {
         val.inner
     }
 
-    pub fn show_area(&mut self, ctx: &egui::CtxRef) -> Option<(Bios, Option<CdImage>)> {
+    pub fn show_area(
+        &mut self,
+        ctx: &egui::CtxRef,
+    ) -> Option<(Bios, Option<CdImage>, HashMap<VirtualKeyCode, Button>)> {
         egui::CentralPanel::default().show(ctx, |ui| {
             let space = ui.available_size() / 16.0;
             ui.allocate_space(space);
@@ -199,8 +277,49 @@ impl StartMenu {
                 ));
             });
             ui.allocate_space(space);
-            self.show(ui)
+            self.bios_and_game(ui)
         })
         .inner
     }
 }
+
+const BUTTON_COUNT: usize = 16;
+
+const BUTTONS_NAMES: [&str; BUTTON_COUNT] = [
+    "Select",
+    "L3",
+    "R3",
+    "Start",
+    "Up",
+    "Right",
+    "Down",
+    "Left",
+    "L2",
+    "R2",
+    "L1",
+    "R1",
+    "Triangle",
+    "Circle",
+    "Cross",
+    "Square",
+];
+
+const BUTTONS: [Button; BUTTON_COUNT] = [
+    Button::Select,
+    Button::L3,
+    Button::R3,
+    Button::Start,
+    Button::JoyUp,
+    Button::JoyRight,
+    Button::JoyDown,
+    Button::JoyLeft,
+    Button::L2,
+    Button::R2,
+    Button::L1,
+    Button::R1,
+    Button::Triangle,
+    Button::Circle,
+    Button::Cross,
+    Button::Square,
+
+];

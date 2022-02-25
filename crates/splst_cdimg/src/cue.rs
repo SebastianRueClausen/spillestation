@@ -6,10 +6,10 @@ use crate::{Error, TrackMode};
 use crate::cd::CdImage;
 
 use itertools::Itertools;
+use memmap2::Mmap;
 
 use std::path::{Path, PathBuf};
 use std::fs::File;
-use std::io::Read;
 
 #[derive(Debug, Clone, Copy)]
 struct TrackEntry {
@@ -204,10 +204,12 @@ pub fn parse_cue(input: &str, folder: &Path) -> Result<CdImage, Error> {
     let binaries = binaries
         .iter()
         .map(|path| {
-            let mut data = Vec::new();
-            File::open(path)?.read_to_end(&mut data)?;
+            let file = File::open(path)?;
+            let mmap = unsafe {
+                Mmap::map(&file)?
+            };
             Ok(Binary {
-                data: data.into_boxed_slice()
+                data: mmap,
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;

@@ -11,7 +11,7 @@ splst_cdimg = { path = "../splst_cdimg" }
 egui = "0.16"
 egui_wgpu_backend = "0.16"
 egui-winit = { version = "0.16", default-features = false, features = ["links"] }
-winit = "0.26.0"
+winit = { version = "0.26.0", features = ["serde"] }
 wgpu = { version = "0.12", features = [ "spirv" ] }
 pollster = "0.2.4"
 ultraviolet = { version = "0.8.1" }

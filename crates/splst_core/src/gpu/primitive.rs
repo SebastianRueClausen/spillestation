@@ -1,6 +1,5 @@
 use splst_util::Bit;
 
-/// A point on the screen or in VRAM.
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
 pub struct Point {
     pub x: i32,
@@ -13,10 +12,10 @@ impl Point {
     }
 
     pub fn from_cmd(val: u32) -> Self {
+        // Each coordinate takes up 16 bits, but are signed at at the 11nth bit.
         fn sign_extend(val: u32) -> i32 {
             ((val << 21) as i32) >> 21
         }
-
         Self {
             x: sign_extend(val), 
             y: sign_extend(val >> 16),
@@ -110,7 +109,7 @@ impl Color {
         (r >> 3) | (g << 2) | (b << 7)
     }
 
-    /// The shading used when blending with the shading. Basically multiplying the two colors
+    /// The shading used when blending with the shading. Multiplying the two colors
     /// together and dividing by 128.
     pub fn shade_blend(self, other: Self) -> Self {
         let r = (self.r as u16) * (other.r as u16);
@@ -123,7 +122,7 @@ impl Color {
         }
     }
 
-    /// Average blending. Finds the average between the two colors.
+    /// Average blending.
     pub fn avg_blend(self, other: Self) -> Self {
         Self {
             r: (self.r / 2).saturating_add(other.r / 2),
@@ -132,7 +131,7 @@ impl Color {
         }
     }
 
-    /// Add blending. Adds the colors together.
+    /// Add blending.
     pub fn add_blend(self, other: Self) -> Self {
         Self {
             r: other.r.saturating_add(self.r),
@@ -141,7 +140,7 @@ impl Color {
         }
     }
 
-    /// Subtract blending. Subtracts the other color from self.
+    /// Subtract blending.
     pub fn sub_blend(self, other: Self) -> Self {
         Self {
             r: other.r.saturating_sub(self.r),
@@ -150,7 +149,7 @@ impl Color {
         }
     }
 
-    /// Add and divide by 4 blending. Divide self by 4 and add with other.
+    /// Add and divide by 4 blending.
     pub fn add_div_blend(self, other: Self) -> Self {
         Self {
             r: (other.r as i32 + ((self.r / 4) as i32)).clamp(0, 255) as u8,
@@ -161,7 +160,9 @@ impl Color {
 
     pub fn dither(self, x: i32, y: i32) -> Self {
         let (x, y) = (x.bit_range(0, 1), y.bit_range(0, 1));
+
         let d = DITHER_LUT[y as usize][x as usize];
+
         Self {
             r: ((self.r as i32) + d).clamp(0, 255) as u8,
             g: ((self.g as i32) + d).clamp(0, 255) as u8,
@@ -171,13 +172,13 @@ impl Color {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
-pub struct Vertex {
+pub struct PolyVertex {
     pub point: Point,
     pub color: Color,
     pub texcoord: TexCoord,
 }
 
-impl Default for Vertex {
+impl Default for PolyVertex {
     fn default() -> Self {
         Self {
             point: Point::new(0, 0),
@@ -186,3 +187,19 @@ impl Default for Vertex {
         }
     }
 }
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub struct LineVertex {
+    pub point: Point,
+    pub color: Color,
+}
+
+impl Default for LineVertex {
+    fn default() -> Self {
+        Self {
+            point: Point::new(0, 0),
+            color: Color::from_rgb(255, 0, 0),
+        }
+    }
+}
+

@@ -46,27 +46,25 @@ impl fmt::Display for TimerId {
 
 /// All the possible sync mode for all the timers. The kind of sync modes vary from counter to
 /// counter.
+///
+/// # The naming follows the convention:
+///
+/// - 'Pause' - The timer is paused during V/H Blank.
+/// - 'Reset' - The timer resets to 0 when entering V/H Blank.
+/// - 'ResetAndRun' - Reset the counter to 0 when entering V/H Blank and pause when not in H/V Blank.
+/// - 'Wait' - Wait until V/H Blank and switch to 'FreeRun'.
+///
 #[derive(PartialEq, Eq)]
 pub enum SyncMode {
-    /// Pause the counter during Hblank.
     HblankPause,
-    /// Reset the counter to 0 when entering Hblank.
     HblankReset,
-    /// Reset the counter to 0 when entering Hblank, and pause when not in Hblank.
     HblankResetAndRun,
-    /// Wait until Hblank occours and switch to free run.
     HblankWait,
-    /// Pause the counter during Vblank.
     VblankPause,
-    /// Reset the counter to 0 when entering Vblank.
     VblankReset,
-    /// Reset the counter to 0 when entering Vblank, and pause when not in Vblank.
     VblankResetAndRun,
-    /// Wait until Vblank occours and switch to free run.
     VblankWait,
-    /// Stop at current value.
     Stop,
-    /// Run until stopped.
     FreeRun,
 }
 
@@ -120,7 +118,7 @@ impl fmt::Display for ClockSource {
         write!(f, "{}", match *self {
             ClockSource::SystemClock => "system clock",
             ClockSource::DotClock => "dot clock",
-            ClockSource::Hblank => "Hblank",
+            ClockSource::Hblank => "hblank",
             ClockSource::SystemClockDiv8 => "system clock / 8",
         })
     }
@@ -184,13 +182,12 @@ impl Mode {
     /// The source of the timers clock.
     pub fn clock_source(self, timer: TimerId) -> ClockSource {
         match (timer, self.0.bit_range(8, 9)) {
-            // All the timers can run at system clock speed.
-            (TimerId::Tmr0 | TimerId::Tmr1, 0 | 2) | (TimerId::Tmr2, 2 | 3) => {
-                ClockSource::SystemClock
-            }
+            (TimerId::Tmr0, 0 | 2) => ClockSource::SystemClock,
+            (TimerId::Tmr1, 0 | 2) => ClockSource::SystemClock,
+            (TimerId::Tmr2, 0 | 1) => ClockSource::SystemClock,
             (TimerId::Tmr0, 1 | 3) => ClockSource::DotClock,
             (TimerId::Tmr1, 1 | 3) => ClockSource::Hblank,
-            (TimerId::Tmr2, 0 | 1) => ClockSource::SystemClockDiv8,
+            (TimerId::Tmr2, 2 | 3) => ClockSource::SystemClockDiv8,
             _ => unreachable!(),
         }
     }
@@ -211,11 +208,12 @@ impl Mode {
     }
 
     fn store(&mut self, val: u16) {
+        // Bit 10..12 are readonly.
+        self.0 |= val & 0x3ff;
+
         // In toggle mode, the irq master flag is always set after each store. When not in toggle
         // mode, it will more or less always be on.
         self.set_master_irq_flag(true);
-        // Bit 10..12 are readonly.
-        self.0 |= val & 0x3ff;
 
         if self.sync_enabled() {
             warn!("Sync Enabled");
@@ -290,9 +288,11 @@ impl Timer {
             4 => {
                 self.counter = 0;
                 self.has_triggered = false;
+
                 self.mode.store(value as u16);
 
                 trace!("Timer {} mode set", self.id);
+
                 if self.mode.sync_enabled() {
                     warn!("Sync enabled for timer {}", self.id);
                 }
@@ -310,12 +310,11 @@ impl Timer {
                 schedule.schedule_now(Event::IrqTrigger(self.id.irq_kind()));
             }
 
+            // In toggle mode, the irq master flag is toggled each IRQ. Otherwise it's always
+            // set besides a few cycles after the IRQ has been triggered.
             if self.mode.irq_toggle_mode() {
-                // In toggle mode, the irq master flag is toggled each IRQ.
                 self.mode.set_master_irq_flag(!self.mode.master_irq_flag());   
             } else {
-                // Nocash says that the master IRQ flag is always on when not in toggle mode except
-                // for a few cycles when the IRQ is triggered. This is to emulate that.
                 self.mode.set_master_irq_flag(false);
                 schedule.schedule_in(20, Event::TimerIrqEnable(self.id));
             }
@@ -324,9 +323,11 @@ impl Timer {
 
     fn target_reached(&mut self, schedule: &mut Schedule) {
         self.mode.set_target_reached(true);
+
         if self.mode.reset_on_target() {
             self.counter = 0;
         }
+
         if self.mode.irq_on_target() {
             self.trigger_irq(schedule);
         }
@@ -353,6 +354,7 @@ impl Timer {
                 if self.mode.irq_on_overflow() {
                     self.trigger_irq(schedule);
                 }
+
                 self.mode.set_overflow_reached(true);
             }
         }
@@ -363,11 +365,7 @@ impl Timer {
         if !self.mode.irq_on_overflow() && !self.mode.irq_on_target() {
             return None;
         }
-        /*
-        if !self.mode.master_irq_flag() {
-            return None;
-        }
-        */
+
         if !self.mode.irq_repeat() && self.has_triggered {
             return None;
         }
@@ -398,9 +396,9 @@ impl Timer {
     }
 
     fn run(&mut self, schedule: &mut Schedule, mut ticks: u64) {
-        while let (value, false) = ticks.overflowing_sub(u16::MAX.into()) {
+        while let Some(val) = ticks.checked_sub(u16::MAX.into()) {
             self.add_to_counter(schedule, u16::MAX);
-            ticks = value;
+            ticks = val;
         };
         self.add_to_counter(schedule, ticks as u16);
     }
@@ -410,7 +408,7 @@ impl Timer {
     }
 }
 
-/// A number of registers which control the Playstation's 3 timers. All the timers can run
+/// A number of registers which control the Playstations 3 timers. All the timers can run
 /// simultaneously. Each timer can be configured to take different sources, have different targets
 /// and what to do when reaching the target such as triggering an interrupt.
 pub struct Timers {

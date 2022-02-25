@@ -137,7 +137,11 @@ impl Bus {
                 (val, 3)
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
-                (self.io_port.load(addr - IoPort::BUS_BEGIN), 3)
+                let val = self.io_port.load(
+                    &mut self.schedule,
+                    addr - IoPort::BUS_BEGIN,
+                );
+                (val, 3)
             }
             _ => {
                 warn!("BUS data error when loading at address {addr:08x}");
@@ -202,11 +206,7 @@ impl Bus {
                 self.gpu.store::<T>(&mut self.schedule, addr - Gpu::BUS_BEGIN, val);
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
-                self.io_port.store(
-                    &mut self.schedule,
-                    addr - IoPort::BUS_BEGIN,
-                    val
-                );
+                self.io_port.store(&mut self.schedule, addr - IoPort::BUS_BEGIN, val);
             }
             _ => {
                 warn!("BUS data error when storing at address {:?}", addr);
@@ -224,6 +224,10 @@ impl Bus {
         &self.timers
     }
 
+    pub fn io_port_mut(&mut self) -> &mut IoPort {
+        &mut self.io_port
+    }
+
     pub fn handle_event(&mut self, event: Event) {
         match event {
             Event::RunCdRom => {
@@ -239,7 +243,7 @@ impl Bus {
                 self.gpu.run(&mut self.schedule, &mut self.timers)
             }
             Event::GpuCmdDone => {
-                self.gpu.cmd_done();
+                self.gpu.cmd_done(&mut self.schedule);
                 // self.schedule.unschedule(Event::RunGpu);
                 // self.gpu.run(&mut self.schedule, &mut self.timers);
             }

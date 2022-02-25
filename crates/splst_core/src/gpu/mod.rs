@@ -23,11 +23,12 @@ use crate::timing;
 use crate::timer::Timers;
 use crate::{Cycle, DrawInfo};
 
-use fifo::Fifo;
+use fifo::{Fifo, PushAction};
 use primitive::Color;
 use gp0::draw_mode;
 
 use std::fmt;
+use std::ops::Range;
 
 pub use vram::Vram;
 
@@ -86,14 +87,27 @@ pub struct Gpu {
 
 impl Gpu {
     pub fn new() -> Self {
-        // Sets the reset values.
+        let dis_x_start = 0x200;
+        let dis_y_start = 0x0;
+
+        let dis_x_end = 0xc00;
+        let dis_y_end = 0x100;
+
         let status = Status(0x14802000);
+
+        let timing = Timing::new(
+            status.video_mode(),
+            dis_x_start,
+            dis_y_start,
+            dis_x_end,
+            dis_y_end,
+        );
 
         Self {
             state: State::Idle,
             fifo: Fifo::new(),
             vram: Vram::new(),
-            timing: Timing::new(status.video_mode()),
+            timing,
             status,
             gpu_read: 0x0,
             tex_x_flip: false,
@@ -110,10 +124,10 @@ impl Gpu {
             y_offset: 0x0,
             vram_x_start: 0x0,
             vram_y_start: 0x0,
-            dis_x_start: 0x200,
-            dis_x_end: 0xc00,
-            dis_y_start: 0x10,
-            dis_y_end: 0x100,
+            dis_x_start,
+            dis_x_end,
+            dis_y_start,
+            dis_y_end,
         }
     }
 
@@ -163,7 +177,7 @@ impl Gpu {
             self.gpu_read = [0, 16].iter().fold(0, |state, shift| {
                 let val = self.vram.load_16(tran.x, tran.y) as u32;
                 tran.next();
-                state | (val << shift)
+                (val << shift) | state
             });
             if tran.is_done() {
                 self.state = State::Idle;
@@ -211,36 +225,24 @@ impl Gpu {
         self.status.0
     }
 
+    /// Store value in the GP0 register.
     fn gp0_store(&mut self, schedule: &mut Schedule, val: u32) {
-        if self.fifo.try_push(val) {
-            self.try_run_cmd(schedule);
-        }
-    }
-
-    fn try_run_cmd(&mut self, schedule: &mut Schedule) {
         match self.state {
-            State::Idle => {
-                while self.fifo.has_full_cmd() {
-                    self.gp0_exec(schedule);
+            State::Idle => match self.fifo.push_cmd(val) {
+                Some(PushAction::FullCmd) => self.gp0_exec(schedule),
+                Some(PushAction::ImmCmd) => self.gp0_imm_exec(val),
+                None => (),
+            }
+            State::VramStore(_) => {
+                self.fifo.push(val);
+                self.fifo_to_vram_store();
+            }
+            State::Drawing => {
+                if let Some(PushAction::ImmCmd) = self.fifo.push_cmd(val) {
+                    self.gp0_imm_exec(val);
                 }
             }
-            State::VramStore(ref mut tran) => {
-                while !self.fifo.is_empty() {
-                    let val = self.fifo.pop();
-
-                    for (lo, hi) in [(0, 15), (16, 31)] {
-                        let val = val.bit_range(lo, hi) as u16;
-                        self.vram.store_16(tran.x, tran.y, val);
-                        tran.next();
-                    }
-
-                    if tran.is_done() {
-                        self.state = State::Idle;
-                        break;
-                    }
-                }
-            }
-            State::Drawing | State::VramLoad(..) => (),
+            State::VramLoad(_) => (),
         }
     }
 
@@ -263,8 +265,9 @@ impl Gpu {
         self.timing.frame_count
     }
 
-    pub fn cmd_done(&mut self) {
+    pub fn cmd_done(&mut self, schedule: &mut Schedule) {
         self.state = State::Idle;
+        self.try_gp0_exec(schedule);
     }
 
     /// Run and schedule next run.
@@ -274,8 +277,8 @@ impl Gpu {
     }
 
     /// Emulate the period since the last time the GPU run. It 
-    pub fn run_internal(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
-        self.try_run_cmd(schedule);
+    fn run_internal(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
+        self.try_gp0_exec(schedule);
 
         let elapsed = schedule.cycle() - self.timing.last_update;
 
@@ -323,9 +326,12 @@ impl Gpu {
             let line_count = line_count as u16;
             let scln = self.timing.scln + line_count;
 
+            let vstart = self.timing.vertical_range.start;
+            let vend = self.timing.vertical_range.end;
+
             // Calculate if the scanlines being drawn enters the display area, and clear the
             // Vblank flag if not.
-            if self.timing.scln < self.timing.vbegin && scln >= self.timing.vend {
+            if self.timing.scln < vstart && scln >= vend {
                 self.timing.in_vblank = false;
 
                 // TODO: Timer sync.
@@ -333,7 +339,7 @@ impl Gpu {
 
             self.timing.scln = scln;
 
-            let in_vblank = !timing::NTSC_VERTICAL_RANGE.contains(&(scln.into()));
+            let in_vblank = !self.timing.vertical_range.contains(&(scln.into()));
 
             // If we are either leaving or entering Vblank.
             if self.timing.in_vblank != in_vblank {
@@ -371,6 +377,7 @@ impl Gpu {
         self.status.0 = self.status.0.set_bit(31, even);
     }
 
+    /// Store value in GP0 register.
     fn gp1_store(&mut self, val: u32) {
         let cmd = val.bit_range(24, 31);
         match cmd {
@@ -392,40 +399,63 @@ impl Gpu {
         }
     }
 
-    fn gp0_exec(&mut self, schedule: &mut Schedule) {
-        let cmd = self.fifo[0].bit_range(24, 31);
+    /// Transfer data from the FIFO into VRAM until there either isn't any data left in the FIFO or
+    /// or the transfer is done. Should only be called when the state of the GPU is
+    /// ['State::VramStore'], otherwise nothing will happen.
+    fn fifo_to_vram_store(&mut self) {
+        if let State::VramStore(ref mut tran) = self.state {
+            while !self.fifo.is_empty() {
+                let val = self.fifo.pop();
 
-        let cycles = match cmd {
-            0x0 | 0x3 | 0x6 | 0x8 | 0x9 | 0xff => {
-                self.gp0_nop();
-                None
+                for (lo, hi) in [(0, 15), (16, 31)] {
+                    let val = val.bit_range(lo, hi) as u16;
+                    self.vram.store_16(tran.x, tran.y, val);
+                    tran.next();
+                }
+
+                if tran.is_done() {
+                    self.state = State::Idle;
+                    break;
+                }
             }
+        }
+    }
+
+    /// Execute "immediate" GP0 commands which never enters the FIFO.
+    fn gp0_imm_exec(&mut self, val: u32) {
+        match val.bit_range(24, 31) {
+            0x0 | 0x3..=0x1e => (),
+            0xe3 => self.gp0_draw_area_top_left(val),
+            0xe4 => self.gp0_draw_area_bottom_right(val),
+            0xe5 => self.gp0_draw_offset(val),
+            cmd => {
+                unreachable!("Invalid immediate GP0 command GP0({:08x})", cmd);
+            }
+        }
+    }
+
+    fn try_gp0_exec(&mut self, schedule: &mut Schedule) {
+        if let State::Idle = self.state {
+            if self.fifo.has_full_cmd() {
+                self.gp0_exec(schedule);
+            }
+        }
+    }
+    
+    /// Execute GP0 command in FIFO. Should only be called if the FIFO has a full command.
+    fn gp0_exec(&mut self, schedule: &mut Schedule) {
+        let cycles = match self.fifo[0].bit_range(24, 31) {
             0x1 => {
                 self.gp0_clear_texture_cache();
                 None
             }
-            0x2 => {
-                self.gp0_fill_rect();
-                None
-            }
+            0x2 => Some(self.gp0_fill_rect()),
             0xe1 => {
                 self.gp0_draw_mode();
                 None
             }
             0xe2 => {
                 self.gp0_texture_window_settings();
-                None
-            }
-            0xe3 => {
-                self.gp0_draw_area_top_left();
-                None
-            }
-            0xe4 => {
-                self.gp0_draw_area_bottom_right();
-                None
-            }
-            0xe5 => {
-                self.gp0_draw_offset();
                 None
             }
             0xe6 => {
@@ -452,6 +482,11 @@ impl Gpu {
                 draw_mode::TexturedRaw,
                 draw_mode::Opaque,
             >()),
+            0x2f => Some(self.gp0_quad_poly::<
+                draw_mode::UnShaded,
+                draw_mode::TexturedRaw,
+                draw_mode::Transparent,
+            >()),
             0x30 => Some(self.gp0_tri_poly::<
                 draw_mode::Shaded,
                 draw_mode::UnTextured,
@@ -470,6 +505,10 @@ impl Gpu {
                 draw_mode::UnShaded,
                 draw_mode::Opaque,
             >()),
+            0x55 => Some(self.gp0_line::<
+                draw_mode::Shaded,
+                draw_mode::Opaque,
+            >()),
             0x65 => Some(self.gp0_rect::<
                 draw_mode::Textured,
                 draw_mode::Opaque,
@@ -480,6 +519,15 @@ impl Gpu {
             }
             0xc0 => {
                 self.gp0_copy_rect_vram_to_cpu();
+                
+                // There might be data in the FIFO here to be transfered to VRAM, and if no data
+                // is written to GP0, then it might not be transfered for a while.
+                self.fifo_to_vram_store(); 
+
+                None
+            }
+            0xff => {
+                self.gp0_useless();
                 None
             }
             cmd => unimplemented!("Invalid GP0 command {:08x}.", cmd),
@@ -553,25 +601,13 @@ impl VideoMode {
         }
     }
 
-    fn scln_count(self) -> Cycle {
-        match self {
+    fn scln_count(self) -> u16 {
+        let val = match self {
             VideoMode::Ntsc => timing::NTSC_SCLN_COUNT,
             VideoMode::Pal => timing::PAL_SCLN_COUNT,
-        }
-    }
+        };
 
-    fn vbegin(self) -> Cycle {
-        match self {
-            VideoMode::Ntsc => timing::NTSC_VBEGIN,
-            VideoMode::Pal => timing::PAL_VBEGIN,
-        }
-    }
-
-    fn vend(self) -> Cycle {
-        match self {
-            VideoMode::Ntsc => timing::NTSC_VEND,
-            VideoMode::Pal => timing::PAL_VEND,
-        }
+        val as u16
     }
 }
 
@@ -642,8 +678,8 @@ pub enum TexelDepth {
 }
 
 impl TexelDepth {
-    fn from_value(value: u32) -> Self {
-        match value {
+    fn from_value(val: u32) -> Self {
+        match val {
             0 => TexelDepth::B4,
             1 => TexelDepth::B8,
             2 | 3 => TexelDepth::B15,
@@ -663,12 +699,17 @@ impl fmt::Display for TexelDepth {
 }
 
 /// An ongoing memory transfer between Bus and VRAM.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct MemTransfer {
+    /// The current x coordinate.
     x: i32,
+    /// The current y coordinate.
     y: i32,
+    /// The leftmost x coordinate in VRAM.
     x_start: i32,
+    /// The rightmost x coordinate.
     x_end: i32,
+    /// The biggest y coordinate.
     y_end: i32,
 }
 
@@ -683,6 +724,7 @@ impl MemTransfer {
         }
     }
 
+    /// The next halfword in the transfer. Will go past the end of the transfer.
     fn next(&mut self) {
         self.x += 1;
         if self.x == self.x_end {
@@ -702,17 +744,17 @@ impl MemTransfer {
 pub struct Status(pub u32);
 
 impl Status {
-    /// Texture page x base coordinate. N * 64.
+    /// Texture page x base coordinate.
     pub fn tex_page_x(self) -> i32 {
         self.0.bit_range(0, 3) as i32 * 64
     }
 
-    /// Texture page y base coordinate. N * 256.
+    /// Texture page y base coordinate.
     pub fn tex_page_y(self) -> i32 {
         self.0.bit(4) as i32 * 256
     }
 
-    /// How to blend source and destination colors.
+    /// How to background and texture/shade colors.
     pub fn blend_mode(self) -> TransBlend {
         TransBlend::from_value(self.0.bit_range(5, 6))
     }
@@ -722,11 +764,15 @@ impl Status {
         TexelDepth::from_value(self.0.bit_range(7, 8))
     }
 
+    /// Ditering is noice added to primitives used to create in illusion of greater color depth.
     pub fn dithering_enabled(self) -> bool {
         self.0.bit(9)
     }
 
-    /// Draw pixels to display if true.
+    /// If this is set, the GPU will draw to both displayed and non displayed lines, otherwise it
+    /// will only draw to lines not being displayed. For this to have any effect, the GPU has to
+    /// have interlace enabled and vertical resolution has to be 480. If this is case, draw times
+    /// takes almost twice as long if this is set.
     pub fn draw_to_display(self) -> bool {
         self.0.bit(10)
     }
@@ -736,12 +782,14 @@ impl Status {
         self.0.bit(11)
     }
 
-    /// Draw pixels with mask bit set if true.
+    /// Draw pixels with mask bit set.
     pub fn draw_masked_pixels(self) -> bool {
         self.0.bit(12)
     }
 
-    /// The interlace field currently being displayed.
+    /// The interlace field currently being displayed. If interlace is disabled and/or vertical
+    /// resolution 240, this will always be ['InterlaceField::Top'], otherwise it changes each
+    /// frame.
     pub fn interlace_field(self) -> InterlaceField {
         match self.0.bit(13) {
             false => InterlaceField::Bottom,
@@ -754,27 +802,36 @@ impl Status {
         self.0.bit(14)
     }
 
+    /// If textures are disabled primitives which otherwise would be textured are instead colored
+    /// by either shading or base color.
     pub fn texture_disabled(self) -> bool {
         self.0.bit(15)
     }
 
+    /// Horizontal resolution.
     pub fn horizontal_res(self) -> u32 {
-        match self.0.bit(16) {
-            true => 368,
-            false => match self.0.bit_range(17, 18) {
-                0 => 256,
-                1 => 480,
-                2 => 512,
-                3 => 640,
-                _ => unreachable!("Invalid vres"),
-            },
-        }
+        const RES: [u32; 8] = [
+            256,
+            480,
+            512,
+            640,
+            368,
+            368,
+            368,
+            368,
+        ];
+
+        let idx = self.0.bit(16) as u32 | (self.0.bit_range(17, 18) << 2);
+
+        RES[idx as usize]
     }
 
+    /// Vertical resolution.
     pub fn vertical_res(self) -> u32 {
         240 * (self.0.bit(19) as u32 + 1)
     }
 
+    /// See ['VideoMode'].
     pub fn video_mode(self) -> VideoMode {
         match self.0.bit(20) {
             false => VideoMode::Ntsc,
@@ -782,7 +839,9 @@ impl Status {
         }
     }
 
-    /// Depth of each pixel being drawn.
+    /// Depth of each pixel being drawn. This affects how the display area in VRAM is displayed not
+    /// how it's drawn. Drawing primitives such as triangles, rectangles or lines always draws
+    /// 15 bit depth. 24 bit image data has to be uploaded via direct VRAM transfers.
     pub fn color_depth(self) -> ColorDepth {
         match self.0.bit(21) {
             false => ColorDepth::B15,
@@ -801,8 +860,8 @@ impl Status {
         self.0.bit(22)
     }
 
-    /// Tells if the GPU should draw to the screen currently being displayed in interlace mode.
-    pub fn draw_to_displayed(self) -> bool {
+    /// If image data gets send to the TV.
+    pub fn display_enabled(self) -> bool {
         self.0.bit(23)
     }
 
@@ -848,6 +907,7 @@ impl Status {
     }
 }
 
+#[derive(Debug)]
 struct Timing {
     /// The current scanline.
     scln: u16,
@@ -861,44 +921,83 @@ struct Timing {
     cycles_per_scln: Cycle,
     /// How many scanlines there are which depend on ['VideoMode'].
     scln_count: u16,
-    /// Vertical begin.
-    vbegin: u16, 
-    /// Vertical end.
-    vend: u16,
+    /// The range of displayed lines.
+    vertical_range: Range<u16>,
+    /// The range of dot cycles into lines that are displayed.
+    horizontal_range: Range<u16>,
     in_hblank: bool,
     in_vblank: bool,
 }
 
 impl Timing {
-    fn new(vmode: VideoMode) -> Self {
-        Self {
+    fn new(
+        mode: VideoMode,
+        dis_x_start: u16,
+        dis_x_end: u16,
+        dis_y_start: u16,
+        dis_y_end: u16,
+    ) -> Self {
+        let mut timing = Self {
             scln: 0,
             scln_prog: 0,
             in_hblank: false,
             in_vblank: false,
             last_update: 0,
             frame_count: 0,
-            cycles_per_scln: vmode.cycles_per_scln(),
-            scln_count: vmode.scln_count() as u16,
-            vbegin: vmode.vbegin() as u16,
-            vend: vmode.vend() as u16,
-        }
+            cycles_per_scln: 0,
+            scln_count: 0,
+            horizontal_range: 0..0,
+            vertical_range: 0..0,
+        };
+
+        timing.update(
+            mode,
+            dis_x_start,
+            dis_y_start,
+            dis_x_end,
+            dis_y_end
+        );
+
+        timing
     }
 
-    fn update_video_mode(&mut self, vmode: VideoMode) {
-        self.cycles_per_scln = vmode.cycles_per_scln();
-        self.scln_count = vmode.scln_count() as u16;
-        self.vbegin = vmode.vbegin() as u16;
-        self.vend = vmode.vend() as u16;
+    fn update(
+        &mut self,
+        mode: VideoMode,
+        dis_x_start: u16,
+        dis_y_start: u16,
+        dis_x_end: u16,
+        dis_y_end: u16,
+    ) {
+        // Update constants.
+        self.cycles_per_scln = mode.cycles_per_scln();
+        self.scln_count = mode.scln_count();
 
         // Make sure the current scanline is in range.
         self.scln %= self.scln_count;
         self.scln_prog %= self.cycles_per_scln;
+  
+        // Hblank status could have changed.
+        self.in_hblank = self.cycles_per_scln >= timing::HSYNC_CYCLES;
+
+        self.vertical_range = {
+            let start = u16::min(dis_y_start as u16, self.scln_count);
+            let end = u16::min(dis_y_end as u16, self.scln_count);
+
+            start..end
+        };
+
+        self.horizontal_range = {
+            let start = u16::min(dis_x_start as u16, self.cycles_per_scln as u16);
+            let end = u16::min(dis_x_end as u16, self.cycles_per_scln as u16);
+
+            start..end
+        };
     }
 
     /// The current displayed line in VRAM. The absolute line depend on the first line displayed.
-    fn display_line(&self, interlaced_480: bool, field: InterlaceField) -> u16 {
-        let offset = match interlaced_480 {
+    fn display_line(&self, i480: bool, field: InterlaceField) -> u16 {
+        let offset = match i480 {
             false => self.scln,
             true => {
                 let bottom = match self.in_vblank {
@@ -914,6 +1013,7 @@ impl Timing {
 }
 
 /// The current state of the GPU.
+#[derive(Debug)]
 enum State {
     Idle,
     Drawing,

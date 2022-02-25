@@ -1,6 +1,7 @@
 //! This module emulates the Playstations GPU command buffer.
 
 use splst_util::Bit;
+use super::gp0;
 
 use std::ops::Index;
 
@@ -8,6 +9,7 @@ pub struct Fifo {
     data: [u32; Self::SIZE],
     head: u32,
     tail: u32,
+    cmd_words_left: Option<u8>,
 }
 
 impl Fifo {
@@ -18,11 +20,12 @@ impl Fifo {
             data: [0x0; Self::SIZE],
             head: 0,
             tail: 0,
+            cmd_words_left: None,
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.head.wrapping_sub(self.tail) as usize
+    pub fn len(&self) -> u8 {
+        self.head.wrapping_sub(self.tail) as u8
     }
 
     pub fn is_empty(&self) -> bool {
@@ -30,31 +33,68 @@ impl Fifo {
     }
 
     pub fn is_full(&self) -> bool {
-        self.len() == Self::SIZE
+        self.len() as usize == Self::SIZE
     }
 
     pub fn clear(&mut self) {
         self.tail = self.head;
     }
 
-    #[cfg(test)]
+    fn push_internal(&mut self, val: u32) {
+        self.data[self.head as usize % Self::SIZE] = val;
+        self.head = self.head.wrapping_add(1);
+    }
+
+    /// Push data to the FIFO. Should never be called if 'val' could be a command or argument to a
+    /// command.
     pub fn push(&mut self, val: u32) {
         if !self.is_full() {
-            self.data[self.head as usize & (Self::SIZE - 1)] = val;
-            self.head = self.head.wrapping_add(1);
+            self.push_internal(val);
+        } else {
+            warn!("Push data to full GPU FIFO, value {}", val);
         }
     }
 
-    pub fn try_push(&mut self, val: u32) -> bool {
+    /// Push command data to the FIFO.
+    pub fn push_cmd(&mut self, val: u32) -> Option<PushAction> {
         if self.is_full() {
-            warn!("Push to full GPU FIFO");
-            return false
+            let cmd = val.bit_range(24, 31);
+
+            if gp0::cmd_is_imm(cmd) {
+                return Some(PushAction::ImmCmd);
+            }
+
+            warn!("Push command to full GPU FIFO, either argument or GP0({:0x})", cmd);
+
+            if let Some(cmd) = self.next_cmd() {
+                warn!("The next command is GP0({:0x}), which has len {}", cmd, gp0::cmd_fifo_len(cmd));
+            }
+
+            return None;
         }
 
-        self.data[self.head as usize & (Self::SIZE - 1)] = val;
-        self.head = self.head.wrapping_add(1);
+        let words_left = match self.cmd_words_left.take() {
+            Some(words_left) => words_left,
+            None => {
+                let cmd = val.bit_range(24, 31);
 
-        true
+                if gp0::cmd_is_imm(cmd) {
+                    return Some(PushAction::ImmCmd);
+                }
+
+                gp0::cmd_fifo_len(cmd)
+            }
+        };
+
+        self.push_internal(val);
+
+        match words_left - 1 {
+            0 => Some(PushAction::FullCmd),
+            words => {
+                self.cmd_words_left = Some(words);
+                None
+            }
+        }
     }
 
     pub fn pop(&mut self) -> u32 {
@@ -76,8 +116,8 @@ impl Fifo {
         }
     }
 
-    pub fn next_cmd_len(&self) -> Option<usize> {
-        self.next_cmd().map(|cmd| usize::from(CMD_LEN[cmd as usize]))
+    pub fn next_cmd_len(&self) -> Option<u8> {
+        self.next_cmd().map(|cmd| gp0::cmd_fifo_len(cmd))
     }
 
     pub fn has_full_cmd(&self) -> bool {
@@ -85,34 +125,27 @@ impl Fifo {
     }
 }
 
-impl Index<usize> for Fifo {
+impl Index<u8> for Fifo {
     type Output = u32;
 
-    fn index(&self, index: usize) -> &Self::Output {
+    fn index(&self, index: u8) -> &Self::Output {
         debug_assert!(index < self.len());
-        &self.data[self.tail.wrapping_add(index as u32) as usize & (Self::SIZE - 1)]
+        
+        let idx = self.tail.wrapping_add(index as u32) as usize % Self::SIZE;
+
+        &self.data[idx]
     }
 }
 
-/// Number of words in each GP0 command.
-const CMD_LEN: [u8; 0x100] = [
-    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    4, 4, 4, 4, 7, 7, 7, 7, 5, 5, 5, 5, 9, 9, 9, 9,
-    6, 6, 6, 6, 9, 9, 9, 9, 8, 8, 8, 8, 12, 12, 12, 12,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    3, 3, 3, 3, 4, 4, 4, 4, 2, 2, 2, 2, 3, 3, 3, 3,
-    2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-];
+#[derive(Debug, PartialEq, Eq)]
+pub enum PushAction {
+    /// If the pushed value is an immediate command, in which case it won't be pushed to the FIFO.
+    /// This can only be the case if the FIFO isn't expecting the argument to a previous command.
+    ImmCmd,
+    /// If the pushed value was the last argument to a command and this a command is ready to be
+    /// executed.
+    FullCmd,
+}
 
 #[test]
 fn pop_and_push() {
@@ -176,9 +209,8 @@ fn pop_and_push() {
 }
 
 #[test]
-fn command() {
+fn cmd() {
     use splst_util::BitSet;
-
     let mut fifo = Fifo::new();
 
     assert!(!fifo.has_full_cmd());
@@ -204,4 +236,19 @@ fn command() {
     fifo.push(11); 
 
     assert!(fifo.has_full_cmd());
+}
+
+#[test]
+fn cmd2() {
+    use splst_util::BitSet;
+    let mut fifo = Fifo::new();
+
+    assert_eq!(fifo.push_cmd(0x0_u32.set_bit_range(24, 31, 0x30)), None);
+
+    for _ in 0..4 {
+        assert_eq!(fifo.push_cmd(0x0), None); 
+    }
+
+    assert!(matches!(fifo.push_cmd(0x0), Some(PushAction::FullCmd)));
+    assert!(matches!(fifo.push_cmd(0x0), Some(PushAction::ImmCmd)));
 }

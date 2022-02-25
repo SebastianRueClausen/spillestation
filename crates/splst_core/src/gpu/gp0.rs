@@ -4,23 +4,27 @@ use crate::Cycle;
 use crate::timing;
 
 use super::{Gpu, State, MemTransfer};
-use super::primitive::{Vertex, Point, Color, TexCoord};
+use super::primitive::{PolyVertex, LineVertex, Point, Color, TexCoord};
 
 impl Gpu {
-    /// Represent multiple commands which does nothing.
-    pub fn gp0_nop(&mut self) {
-        self.fifo.pop(); 
+    /// GP0 commands which does nothing but aren't immediate.
+    pub fn gp0_useless(&mut self) {
+        self.fifo.pop();
     }
 
-    // GP0(01) - Clear texture cache.
+    /// GP0(01) - Clear texture cache.
     pub fn gp0_clear_texture_cache(&mut self) {
         self.fifo.pop();
 
         // TODO: Clear texture cache.
     }
 
-    // GP0(02) - Fill rectanlge in VRAM.
-    pub fn gp0_fill_rect(&mut self) {
+    /// GP0(02) - Fill rectanlge in VRAM.
+    ///
+    /// Fill rectangle in VRAM with a solid color. The position isn't affected by draw offset
+    /// or clipped to the draw area (As far as i know). The size and start are given in halfword
+    /// steps but are rounded to the nearest multiple of 0x10. It's not affected by mask settings.
+    pub fn gp0_fill_rect(&mut self) -> Cycle {
         let color = Color::from_cmd(self.fifo.pop());
 
         let val = self.fifo.pop() as i32;
@@ -35,15 +39,20 @@ impl Gpu {
             y: (val >> 16) & 0x1ff,
         };
 
-        self.fill_rect(start, dim, color); 
+        self.fill_rect(start, dim, color);
+    
+        let line_time = (dim.x / 8) + 9;
+
+        (46 + line_time * dim.y) as Cycle
     }
 
-    // GP0(e1) - Draw Mode Setting.
-    // - 0..10 - Same as status register.
-    // - 11 - Texture disabled.
-    // - 12 - Texture rectangle x-flip.
-    // - 13 - Texture rectangle y-flip.
-    // - 14..23 - Not used.
+    /// GP0(e1) - Draw Mode Setting.
+    ///
+    /// - 0..10 - Same as status register.
+    /// - 11 - Texture disabled.
+    /// - 12 - Texture rectangle x-flip.
+    /// - 13 - Texture rectangle y-flip.
+    /// - 14..23 - Not used.
     pub fn gp0_draw_mode(&mut self) {
         let val = self.fifo.pop();
         let stat = val.bit_range(0, 10);
@@ -57,11 +66,12 @@ impl Gpu {
          
     }
 
-    // GP0(e2) - Texture window setting.
-    // - 0..4 - Texture window mask x.
-    // - 5..9 - Texture window mask y.
-    // - 10..14 - Texture window offset x.
-    // - 15..19 - Texture window offset y.
+    /// GP0(e2) - Texture window setting.
+    ///
+    /// - 0..4 - Texture window mask x.
+    /// - 5..9 - Texture window mask y.
+    /// - 10..14 - Texture window offset x.
+    /// - 15..19 - Texture window offset y.
     pub fn gp0_texture_window_settings(&mut self) {
         let val = self.fifo.pop();
 
@@ -71,34 +81,31 @@ impl Gpu {
         self.tex_win_y = val.bit_range(15, 19) as u8;
     }
 
-    // GP0(e3) - Set draw area top left.
-    // - 0..9 - Draw area left.
-    // - 10..18 - Draw area top.
-    pub fn gp0_draw_area_top_left(&mut self) {
-        let val = self.fifo.pop();
-
+    /// GP0(e3) - Set draw area top left (Immediate).
+    ///
+    /// - 0..9 - Draw area left.
+    /// - 10..18 - Draw area top.
+    pub fn gp0_draw_area_top_left(&mut self, val: u32) {
         // TODO: This differs between GPU versions.
         self.da_x_min = val.bit_range(0, 9) as i32;
         self.da_y_min = val.bit_range(10, 18) as i32;
     }
 
-    // GP0(e4) - Set draw area bottom right.
-    // - 0..9 - Draw area right.
-    // - 10..18 - Draw area bottom.
-    pub fn gp0_draw_area_bottom_right(&mut self) {
-        let val = self.fifo.pop();
-
+    /// GP0(e4) - Set draw area bottom right (Immediate).
+    ///
+    /// - 0..9 - Draw area right.
+    /// - 10..18 - Draw area bottom.
+    pub fn gp0_draw_area_bottom_right(&mut self, val: u32) {
         self.da_x_max = val.bit_range(0, 9) as i32;
         self.da_y_max = val.bit_range(10, 18) as i32;
     }
 
-    // GP0(e5) - Set drawing offset.
-    // - 0..10 - x-offset.
-    // - 11..21 - y-offset.
-    // - 24..23 - Not used.
-    pub fn gp0_draw_offset(&mut self) {
-        let val = self.fifo.pop();
-
+    /// GP0(e5) - Set drawing offset (Immediate).
+    ///
+    /// - 0..10 - x-offset.
+    /// - 11..21 - y-offset.
+    /// - 24..23 - Not used.
+    pub fn gp0_draw_offset(&mut self, val: u32) {
         let x_offset = val.bit_range(0, 10) as u16;
         let y_offset = val.bit_range(11, 21) as u16;
 
@@ -108,9 +115,10 @@ impl Gpu {
         self.y_offset = ((y_offset << 5) as i16) >> 5;
     }
 
-    // GP0(e6) - Mask bit setting.
-    // - 0 - Set mask while drawing.
-    // - 1 - Check mask before drawing.
+    /// GP0(e6) - Mask bit setting.
+    ///
+    /// - 0 - Set mask while drawing.
+    /// - 1 - Check mask before drawing.
     pub fn gp0_mask_bit_setting(&mut self) {
         let val = self.fifo
             .pop()
@@ -119,7 +127,11 @@ impl Gpu {
         self.status.0 = self.status.0.set_bit_range(11, 12, val);
     }
 
-    // GP0(a0) - Copy rectangle from CPU to VRAM.
+    /// GP0(a0) - Copy rectangle from CPU to VRAM.
+    ///
+    /// Transfers the a block of data from the CPU directly to VRAM. It's often used to transfer
+    /// textures. Size and dimension are both given in halfwords steps and it's affected by mask bit.
+    /// Data is send to the GPU via DMA or the GP0 register.
     pub fn gp0_copy_rect_cpu_to_vram(&mut self) {
         self.fifo.pop();
         let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
@@ -131,6 +143,8 @@ impl Gpu {
             dim.bit_range(16, 31) as i32,
         );
 
+        // From Nocash.
+
         let x = x & 0x3ff;
         let y = y & 0x1ff;
 
@@ -140,7 +154,9 @@ impl Gpu {
         self.state = State::VramStore(MemTransfer::new(x, y, w, h));
     }
 
-    // GP0(c0) - Copy rectanlge from VRAM to CPU.
+    /// GP0(c0) - Copy rectanlge from VRAM to CPU.
+    ///
+    /// Copy rectangle from VRAM to memory. Data can be read via the DMA or GPUREAD register.
     pub fn gp0_copy_rect_vram_to_cpu(&mut self) {
         self.fifo.pop();
         let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
@@ -151,6 +167,8 @@ impl Gpu {
             dim.bit_range(00, 15) as i32,
             dim.bit_range(16, 31) as i32,
         );
+
+        // From Nocash.
 
         let x = x & 0x3ff;
         let y = y & 0x1ff;
@@ -168,7 +186,7 @@ impl Gpu {
         Tex: draw_mode::Textureing,
         Trans: draw_mode::Transparency,
     {
-        let mut verts = [Vertex::default(); 3];
+        let mut verts = [PolyVertex::default(); 3];
         let mut clut = Point::default();
 
         let color = match Shade::IS_SHADED {
@@ -216,7 +234,7 @@ impl Gpu {
             color, clut, &verts[0], &verts[1], &verts[2]
         );
 
-        timing::gpu_to_cpu_cycles(cycles)
+        timing::gpu_to_cpu_cycles(cycles + 82)
     }
 
     /// Handle GP0 quad(Four point) polygon command.
@@ -226,7 +244,7 @@ impl Gpu {
         Tex: draw_mode::Textureing,
         Trans: draw_mode::Transparency,
     {
-        let mut verts = [Vertex::default(); 4];
+        let mut verts = [PolyVertex::default(); 4];
         let mut clut = Point::default();
 
         let color = match Shade::IS_SHADED {
@@ -279,7 +297,7 @@ impl Gpu {
             color, clut, &verts[1], &verts[2], &verts[3]
         );
 
-        timing::gpu_to_cpu_cycles(tri1 + tri2)
+        timing::gpu_to_cpu_cycles(tri1 + tri2 + 82 + 46)
     }
 
     /// Handle GP0 line commands.
@@ -293,26 +311,42 @@ impl Gpu {
             true => Color::from_rgb(0, 0, 0),
         };
 
-        let start = Point::from_cmd(self.fifo.pop()).with_offset(
-            self.x_offset as i32,
-            self.y_offset as i32,
-        );
+        let start = LineVertex {
+            color: match Shade::IS_SHADED {
+                true => Color::from_cmd(self.fifo.pop()),
+                false => Color::from_rgb(0, 0, 0),
+            },
+            point: {
+                Point::from_cmd(self.fifo.pop()).with_offset(
+                    self.x_offset as i32,
+                    self.y_offset as i32,
+                )
+            },
+        };
 
-        let end = Point::from_cmd(self.fifo.pop()).with_offset(
-            self.x_offset as i32,
-            self.y_offset as i32,
-        );
+        let end = LineVertex {
+            color: match Shade::IS_SHADED {
+                true => Color::from_cmd(self.fifo.pop()),
+                false => Color::from_rgb(0, 0, 0),
+            },
+            point: {
+                Point::from_cmd(self.fifo.pop()).with_offset(
+                    self.x_offset as i32,
+                    self.y_offset as i32,
+                )
+            },
+        };
 
         let cycles = self.draw_line::<Shade, Trans>(start, end, color);
 
         timing::gpu_to_cpu_cycles(cycles)
     }
 
-    /// Handle GP0 rectangle commands.
-    pub fn gp0_rect<Tex, Tran>(&mut self, size: Option<i32>) -> Cycle
+    /// GP0 rectangle commands.
+    pub fn gp0_rect<Tex, Trans>(&mut self, size: Option<i32>) -> Cycle
     where
         Tex: draw_mode::Textureing,
-        Tran: draw_mode::Transparency,
+        Trans: draw_mode::Transparency,
     {
         let mut uv = TexCoord::default();
         let mut clut = Point::default();
@@ -339,7 +373,7 @@ impl Gpu {
             None => Point::from_cmd(self.fifo.pop()),
         };
 
-        let cycles = self.draw_rect::<Tex, Tran>(start, dim, color, uv, clut);
+        let cycles = self.draw_rect::<Tex, Trans>(start, dim, color, uv, clut);
 
         timing::gpu_to_cpu_cycles(cycles)
     }
@@ -418,4 +452,63 @@ pub mod draw_mode {
     impl Transparency for Opaque {
         const IS_TRANSPARENT: bool = false;
     }
+}
+
+pub fn cmd_fifo_len(cmd: u32) -> u8 {
+    CMD_LEN[cmd as usize] 
+}
+
+/// Number of words in each GP0 command.
+const CMD_LEN: [u8; 0x100] = [
+    1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    4, 4, 4, 4, 7, 7, 7, 7, 5, 5, 5, 5, 9, 9, 9, 9,
+    6, 6, 6, 6, 9, 9, 9, 9, 8, 8, 8, 8, 12, 12, 12, 12,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    3, 3, 3, 3, 4, 4, 4, 4, 2, 2, 2, 2, 3, 3, 3, 3,
+    2, 2, 2, 2, 3, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+];
+
+pub fn cmd_is_imm(cmd: u32) -> bool {
+    let imm = CMD_IS_IMM[(cmd / 16) as usize];
+    imm.bit((cmd % 16) as usize)
+}
+
+/// If the command is "immediate", meaning they never to end up in the FIFO and can be
+/// executed while other commands are executing (or at least while drawing).
+const CMD_IS_IMM: [u16; 0x10] = [
+    0b1111111111111001,
+    0b0111111111111111,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000000000,
+    0b0000000000111000,
+    0b0000000000000000,
+];
+
+#[test]
+fn imm_cmds() {
+    assert_eq!(cmd_is_imm(0x0), true);
+    assert_eq!(cmd_is_imm(0x1), false);
+    assert_eq!(cmd_is_imm(0x2), false);
+    assert_eq!(cmd_is_imm(0x3), true);
+    assert_eq!(cmd_is_imm(0x30), false);
 }

@@ -1,4 +1,4 @@
-use super::primitive::{Color, Point, TexCoord, Texel, Vertex};
+use super::primitive::{Color, Point, TexCoord, Texel, PolyVertex, LineVertex};
 use super::{Gpu, TexelDepth};
 use super::gp0::draw_mode;
 use crate::Cycle;
@@ -6,6 +6,8 @@ use crate::Cycle;
 use ultraviolet::vec::Vec3;
 
 impl Gpu {
+
+    /// Draw a single pixel to the screen. It handles transparency and texture but not dithering.
     fn draw_pixel<Tran, Tex>(&mut self, x: i32, y: i32, color: Color, masked: bool)
     where
         Tran: draw_mode::Transparency,
@@ -15,16 +17,17 @@ impl Gpu {
             false => color,
             true => {
                 let bg = Color::from_u16(self.vram.load_16(x, y));
-
-                if Tex::IS_TEXTURED {
-                    if masked {
-                        self.status.blend_mode().blend(color, bg)
-                    } else {
-                        color 
+                match Tex::IS_TEXTURED {
+                    true => {
+                        if masked {
+                            self.status.blend_mode().blend(color, bg)
+                        } else {
+                            color
+                        }
                     }
-                } else {
-                    let bg = Color::from_u16(self.vram.load_16(x, y));
-                    self.status.blend_mode().blend(color, bg)
+                    false => {
+                        self.status.blend_mode().blend(color, bg)
+                    }
                 }
             }
         };
@@ -73,7 +76,7 @@ impl Gpu {
         }
     }
 
-    // Calculate the amount of cycles to draw a triangle.
+    /// Calculate the amount of GPU cycles to draw a triangle.
     fn triangle_draw_time<Shade, Tex, Trans>(&self, mut pixels: u64) -> Cycle
     where
         Shade: draw_mode::Shading,
@@ -95,21 +98,58 @@ impl Gpu {
         let mut pixel_cost = 1.0;
 
         if Tex::IS_TEXTURED || Shade::IS_SHADED {
-            pixel_cost += 1.0;
+            pixel_cost += 0.8;
         }
 
         if Trans::IS_TRANSPARENT {
-            pixel_cost += 0.5;
+            pixel_cost += 0.3;
         }
 
-        // Hack for now until we emulate only drawing to non displayed lines.
-        if !self.status.draw_to_displayed() && self.status.interlaced_480() {
+        // Hack for now until we emulate only drawing to not displayed lines.
+        if !self.status.draw_to_display() && self.status.interlaced_480() {
             pixels /= 2;
         }
 
         cycles + (pixels as f64 * pixel_cost) as Cycle
     }
 
+    /// Timings from mednafen.
+    fn _triangle_draw_time_mdnf<Shade, Tex, Trans>(&self, pixels: u64) -> Cycle
+    where
+        Shade: draw_mode::Shading,
+        Tex: draw_mode::Textureing,
+        Trans: draw_mode::Transparency,
+    {
+        let mut draw_time = 0;
+
+        draw_time += if Shade::IS_SHADED {
+            if Tex::IS_TEXTURED {
+                150 * 3
+            } else {
+                96 * 3
+            }
+        } else if Tex::IS_TEXTURED {
+            60 * 3 
+        } else {
+            0
+        };
+
+        draw_time += if Tex::IS_TEXTURED || Shade::IS_SHADED {
+            pixels * 2
+        } else if Trans::IS_TRANSPARENT || !self.status.draw_masked_pixels() {
+            (pixels / 2) * 3
+        } else {
+            pixels
+        };
+
+        if !self.status.draw_to_display() && self.status.interlaced_480() {
+            draw_time /= 2;
+        }
+
+        draw_time
+    }
+
+    /// The amount of GPU cycles to draw a rectangle.
     fn rect_draw_time<Tex, Trans>(&self, mut pixels: u64) -> Cycle
     where
         Tex: draw_mode::Textureing,
@@ -127,20 +167,20 @@ impl Gpu {
             pixel_cost += 0.2;
         }
 
-        if !self.status.draw_to_displayed() && self.status.interlaced_480() {
+        if !self.status.draw_to_display() && self.status.interlaced_480() {
             pixels /= 2;
         }
 
         cycles + (pixels as f64 * pixel_cost) as Cycle
     }
 
+    /// Amount of GPU cycles to draw a line.
     fn line_draw_time<Shade, Trans>(&self, mut pixels: u64) -> Cycle
     where
         Shade: draw_mode::Shading,
         Trans: draw_mode::Transparency,
     {
         let cycles = 30;
-
         let mut pixel_cost = 1.0;
 
         if Shade::IS_SHADED {
@@ -151,7 +191,7 @@ impl Gpu {
             pixel_cost += 0.5;
         }
 
-        if !self.status.draw_to_displayed() && self.status.interlaced_480() {
+        if !self.status.draw_to_display() && self.status.interlaced_480() {
             pixels /= 2;
         }
 
@@ -170,9 +210,9 @@ impl Gpu {
         &mut self,
         shade: Color,
         clut: Point,
-        v1: &Vertex,
-        v2: &Vertex,
-        v3: &Vertex,
+        v1: &PolyVertex,
+        v2: &PolyVertex,
+        v3: &PolyVertex,
     ) -> Cycle
     where
         Shade: draw_mode::Shading,
@@ -298,27 +338,50 @@ impl Gpu {
     }
 
     /// Draw line using bresenham algorithm.
+    ///
+    /// TODO: Redo all of this.
     pub fn draw_line<Shade, Trans>(
         &mut self,
-        start: Point,
-        end: Point,
-        shade: Color,
+        mut start: LineVertex,
+        mut end: LineVertex,
+        shade: Color
     ) -> Cycle
     where
         Shade: draw_mode::Shading,
         Trans: draw_mode::Transparency,
     {
-        let start = self.clamp_to_da(start);
-        let end = self.clamp_to_da(end);
+        start.point = self.clamp_to_da(start.point);
+        end.point = self.clamp_to_da(end.point);
 
-        let dx = end.x - start.x;
-        let dy = end.y - start.y;
+        let dx = end.point.x - start.point.x;
+        let dy = end.point.y - start.point.y;
 
         let abs_dx = dx.abs();
         let abs_dy = dy.abs();
 
-        let mut x = start.x;
-        let mut y = start.y;
+        let longest = abs_dx.max(abs_dy) as u8;
+
+        // Color delta values.
+        // FIXME: Pretty sure this is wrong.
+        let (dr, dg, db) = match Shade::IS_SHADED {
+            false => (0, 0, 0),
+            true => (
+                end.color.r.abs_diff(start.color.r) / longest,
+                end.color.g.abs_diff(start.color.g) / longest,
+                end.color.b.abs_diff(start.color.b) / longest,
+            ),
+        };
+
+        // Keep track of position.
+        let mut x = start.point.x;
+        let mut y = start.point.y;
+
+        // Keep track of color values. Only used if the line is shaded.
+        let (mut r, mut g, mut b) = (
+            start.color.r,
+            start.color.g,
+            start.color.b,
+        );
 
         // Lines are always dithered.
         self.draw_pixel::<Trans, draw_mode::UnTextured>(
@@ -340,10 +403,21 @@ impl Gpu {
                     d += 2 * abs_dy - 2 * abs_dx;
                 }
 
-                pixels_drawn += 1;
+                let color = match Shade::IS_SHADED {
+                    false => shade,
+                    true => {
+                        r = r.wrapping_add(dr);
+                        g = g.wrapping_add(dg);
+                        b = b.wrapping_add(db);
 
+                        Color::from_rgb(r, g, b)
+                    }
+                };
+
+                pixels_drawn += 1;
+            
                 self.draw_pixel::<Trans, draw_mode::UnTextured>(
-                    x, y, shade.dither(x, y), false
+                    x, y, color.dither(x, y), false
                 );
             }
         } else {
@@ -359,10 +433,21 @@ impl Gpu {
                     d += 2 * abs_dx - 2 * abs_dy;
                 }
 
+                let color = match Shade::IS_SHADED {
+                    false => shade,
+                    true => {
+                        r = r.wrapping_add(dr);
+                        g = g.wrapping_add(dg);
+                        b = b.wrapping_add(db);
+
+                        Color::from_rgb(r, g, b)
+                    }
+                };
+
                 pixels_drawn += 1;
 
                 self.draw_pixel::<Trans, draw_mode::UnTextured>(
-                    x, y, shade.dither(x, y), false
+                    x, y, color.dither(x, y), false
                 );
             }
         }
@@ -370,6 +455,7 @@ impl Gpu {
         self.line_draw_time::<Shade, Trans>(pixels_drawn)
     }
 
+    /// Fill rectangle in VRAM with a solid color.
     pub fn fill_rect(&mut self, start: Point, dim: Point, color: Color) {
         let color = color.as_u16();
         for y in 0..dim.y {
@@ -403,11 +489,10 @@ impl Gpu {
         // games shouldn't be using the feature anyway.
         let (u_delta, v_delta) = match Tex::IS_TEXTURED {
             false => (0, 0),
-            true => {
-                let u = if self.tex_x_flip { -1 } else { 1 };
-                let v = if self.tex_y_flip { -1 } else { 1 };
-                (u, v)
-            }
+            true => (
+                if self.tex_x_flip { -1 } else { 1 },
+                if self.tex_y_flip { -1 } else { 1 },
+            ),
         };
 
         // Clip to left and bottom draw area limits.
@@ -498,7 +583,7 @@ fn barycentric(points: &[Point; 3], x: i32, y: i32) -> Vec3 {
 
     let u = v1.cross(v2);
 
-    if f32::abs(u.z) < 1.0 {
+    if u.z.abs() < 1.0 {
         Vec3::new(-1.0, 1.0, 1.0)
     } else {
         Vec3::new(1.0 - (u.x + u.y) / u.z, u.y / u.z, u.x / u.z)

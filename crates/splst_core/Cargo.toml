@@ -13,6 +13,7 @@ splst_util = { path = "../splst_util" }
 splst_cdimg = { path = "../splst_cdimg" }
 splst_asm = { path = "../splst_asm" }
 
+serde = { version = "1.0", features = ["derive"] }
 ultraviolet = { version = "0.8.1" }
 thiserror = "*"
 log = "*"

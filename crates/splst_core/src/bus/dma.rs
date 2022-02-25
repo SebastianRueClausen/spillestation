@@ -12,279 +12,6 @@ use crate::bus::{Ram, Word, Bus, BusMap, Schedule, Event};
 
 use std::ops::{Index, IndexMut};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Port {
-    MdecIn = 0,
-    MdecOut = 1,
-    Gpu = 2,
-    CdRom = 3,
-    Spu = 4,
-    Pio = 5,
-    /// Depth ordering table. It's only used to initialize/reset it.
-    Otc = 6,
-}
-
-/// Register holding the size information for manual and request transfers.
-#[derive(Clone, Copy)]
-struct BlockCtrl {
-    size: u16,
-    count: u16,
-}
-
-impl BlockCtrl {
-    fn new(val: u32) -> Self {
-        Self {
-            size: val.bit_range(0, 15) as u16,
-            count: val.bit_range(16, 31) as u16,
-        }
-    }
-
-    fn load(self) -> u32 {
-        self.size as u32 | (self.count as u32) << 16
-    }
-}
-
-/// DMA can transfer either from or to RAM.
-#[derive(Debug, Copy, Clone)]
-pub enum ChanDir {
-    ToRam,
-    ToPort,
-}
-
-#[derive(PartialEq, Eq, Copy, Clone)]
-pub enum SyncMode {
-    /// Start immediately and transfer all at once. Used to send textures to the VRAM and
-    /// initializing the ordering table.
-    Manual = 0,
-    /// Transfer blocks when the signaled by the devices.
-    Request = 1,
-    /// A linked list of (generally) smaller blocks. It's only used to send commands to GP0.
-    LinkedList = 2,
-}
-
-/// Which way to step from the base address. Either increment or decrement one word.
-#[derive(Copy, Clone)]
-pub enum Step {
-    Inc,
-    Dec,
-}
-
-impl Step {
-    /// The step amount. This is the amount to add to the base address each word and uses
-    /// wrap around to avoid branching each word transfered.
-    fn step_amount(self) -> u32 {
-        match self {
-            Step::Inc => 4,
-            Step::Dec => (-4_i32) as u32,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ChanCtrl(u32);
-
-impl ChanCtrl {
-    /// Check if Channel is either from or to CPU.
-    fn direction(self) -> ChanDir {
-        match self.0.bit(0) {
-            false => ChanDir::ToRam,
-            true => ChanDir::ToPort,
-        }
-    }
-
-    fn step(self) -> Step {
-        match self.0.bit(1) {
-            false => Step::Inc,
-            true => Step::Dec,
-        }
-    }
-
-    /// Chopping means that the CPU get's to run at intervals while transfering.
-    fn chopping_enabled(self) -> bool {
-        self.0.bit(8)
-    }
-
-    fn sync_mode(self) -> SyncMode {
-        match self.0.bit_range(9, 10)  {
-            0 => SyncMode::Manual,
-            1 => SyncMode::Request,
-            2 => SyncMode::LinkedList,
-            _ => unreachable!("Invalid sync mode"),
-        }
-    }
-
-    /// If the channel itself is enabled. If it's not, then the channel doesn't run.
-    fn enabled(self) -> bool {
-        self.0.bit(24)
-    }
-
-    /// How many cycles to run in the interval between CPU chop.
-    fn dma_chop_size(self) -> u32 {
-        self.0.bit_range(16, 18) << 1
-    }
-
-    /// How many cycles the CPU get's to run when chopping.
-    fn cpu_chop_size(self) -> Cycle {
-        (self.0.bit_range(20, 22) << 1) as Cycle
-    }
-
-    /// This is only used when in manual sync mode. It must be set for the transfer to start.
-    fn start(self) -> bool {
-        self.0.bit(28)
-    }
-
-    fn mark_as_finished(&mut self) {
-        // Clear both enabled and start flags.
-        self.0 = self.0
-            .set_bit(24, false)
-            .set_bit(28, false);
-    }
-
-    fn store(&mut self, port: Port, val: u32) {
-        if port == Port::Otc {
-            self.0 &= 0x5100_0000;
-            self.0 |= 2;
-        }
-        self.0 = val;
-        if self.chopping_enabled() {
-            warn!("Chopping enabled for port {:?}", port);
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Transfer {
-    cursor: u32,
-    size: u32,
-    /// The increment each step. This is required since the start address may be both the highest
-    /// or lowest address.
-    inc: u32,
-}
-
-/// The registers and info about a DMA channel.
-pub struct ChanStat {
-    port: Port,
-    base: u32,
-    block_ctrl: BlockCtrl,
-    ctrl: ChanCtrl,
-    transfer: Option<Transfer>,
-}
-
-impl ChanStat {
-    fn new(port: Port) -> Self {
-        Self {
-            port,
-            base: 0x0,
-            block_ctrl: BlockCtrl::new(0x0),
-            ctrl: ChanCtrl(0x0),
-            transfer: None,
-        }
-    }
-
-    /// Load a channel register.
-    fn load(&self, offset: u32) -> u32 {
-        match offset {
-            0 => self.base,
-            4 => self.block_ctrl.load(),
-            8 => self.ctrl.0,
-            _ => unreachable!("Invalid load in channel at offset {offset}"),
-        }
-    }
-
-    /// Store value in channel register.
-    fn store(&mut self, offset: u32, val: u32) {
-        match offset {
-            0 => self.base = val.bit_range(0, 23),
-            4 => self.block_ctrl = BlockCtrl::new(val),
-            8 => self.ctrl.store(self.port, val),
-            _ => unreachable!("Invalid store at in channel at offset {:08x}", offset),
-        }
-    }
-}
-
-// TODO: Add support for this.
-#[derive(Copy, Clone)]
-struct CtrlReg(u32);
-
-impl CtrlReg {
-    #[allow(dead_code)]
-    pub fn channel_priority(self, channel: Port) -> u32 {
-        let base = (channel as usize) << 2;
-        self.0.bit_range(base, base + 2)
-    }
-
-    #[allow(dead_code)]
-    pub fn channel_enabled(self, channel: Port) -> bool {
-        let base = (channel as usize) << 2;
-        self.0.bit(base + 3)
-    }
-}
-
-/// DMA Interrupt register.
-#[derive(Copy, Clone)]
-pub struct IrqReg(u32);
-
-impl IrqReg {
-    /// If this is set, a interrupt will always be triggered when a channel is done or this
-    /// register is written to.
-    fn force_irq(self) -> bool {
-        self.0.bit(15)
-    }
-
-    /// If interrupts are enabled for each channel.
-    fn channel_irq_enabled(self, channel: Port) -> bool {
-        self.0.bit(channel as usize + 16)
-    }
-
-    /// Master flag to enabled or disabled interrupts. ['force_irq'] has higher precedence.
-    fn master_irq_enabled(self) -> bool {
-        self.0.bit(23)
-    }
-
-    /// This is set when a channel is done with a transfer, if interrupts are enabled for the
-    /// channed.
-    #[allow(dead_code)]
-    fn channel_irq_flag(self, channel: Port) -> bool {
-        self.0.bit(channel as usize + 24)
-    }
-
-    fn set_channel_irq_flag(&mut self, channel: Port) {
-        self.0 = self.0.set_bit(24 + channel as usize, true);
-    }
-
-    /// This is a readonly and is updated whenever ['Interrupt'] is changed in any way.
-    fn master_irq_flag(self) -> bool {
-        self.0.bit(31)
-    }
-
-    /// If this ever get's set, an interrupt is triggered.
-    fn update_master_irq_flag(&mut self, schedule: &mut Schedule) {
-        // If this is true, then the DMA should trigger an interrupt if 'master_irq_flag' isn't
-        // already on. If the force_irq flag is set, then it will always trigger an interrupt.
-        // Otherwise it will trigger if any of the flags are set and 'master_irq_enabled' is on.
-        let result = self.force_irq()
-            || self.master_irq_enabled()
-            && self.0.bit_range(24, 30) != 0;
-
-        if result {
-            if !self.master_irq_flag() {
-                self.0 = self.0.set_bit(31, true);
-                schedule.schedule_now(Event::IrqTrigger(Irq::Dma));
-            }
-        } else {
-            self.0 = self.0.set_bit(31, false);
-        }
-    }
-
-    fn store(&mut self, schedule: &mut Schedule, val: u32) {
-        let mask = 0x00ff_803f;
-        self.0 &= !mask;
-        self.0 |= val & mask;
-        self.0 &= !(val & 0x7f00_0000);
-        self.update_master_irq_flag(schedule);
-    }
-}
-
 /// The DMA is a chip used by the Playstation to transfer data between RAM and some BUS mapped devices.
 /// It can be a lot faster than CPU loads, even though the CPU is stopped during transfers.
 ///
@@ -599,6 +326,279 @@ impl Bus {
             }
             _ => todo!(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Port {
+    MdecIn = 0,
+    MdecOut = 1,
+    Gpu = 2,
+    CdRom = 3,
+    Spu = 4,
+    Pio = 5,
+    /// Depth ordering table. It's only used to initialize/reset it.
+    Otc = 6,
+}
+
+/// Register holding the size information for manual and request transfers.
+#[derive(Clone, Copy)]
+struct BlockCtrl {
+    size: u16,
+    count: u16,
+}
+
+impl BlockCtrl {
+    fn new(val: u32) -> Self {
+        Self {
+            size: val.bit_range(0, 15) as u16,
+            count: val.bit_range(16, 31) as u16,
+        }
+    }
+
+    fn load(self) -> u32 {
+        self.size as u32 | (self.count as u32) << 16
+    }
+}
+
+/// DMA can transfer either from or to RAM.
+#[derive(Debug, Copy, Clone)]
+pub enum ChanDir {
+    ToRam,
+    ToPort,
+}
+
+#[derive(PartialEq, Eq, Copy, Clone)]
+pub enum SyncMode {
+    /// Start immediately and transfer all at once. Used to send textures to the VRAM and
+    /// initializing the ordering table.
+    Manual = 0,
+    /// Transfer blocks when the signaled by the devices.
+    Request = 1,
+    /// A linked list of (generally) smaller blocks. It's only used to send commands to GP0.
+    LinkedList = 2,
+}
+
+/// Which way to step from the base address. Either increment or decrement one word.
+#[derive(Copy, Clone)]
+pub enum Step {
+    Inc,
+    Dec,
+}
+
+impl Step {
+    /// The step amount. This is the amount to add to the base address each word and uses
+    /// wrap around to avoid branching each word transfered.
+    fn step_amount(self) -> u32 {
+        match self {
+            Step::Inc => 4,
+            Step::Dec => (-4_i32) as u32,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ChanCtrl(u32);
+
+impl ChanCtrl {
+    /// Check if Channel is either from or to CPU.
+    fn direction(self) -> ChanDir {
+        match self.0.bit(0) {
+            false => ChanDir::ToRam,
+            true => ChanDir::ToPort,
+        }
+    }
+
+    fn step(self) -> Step {
+        match self.0.bit(1) {
+            false => Step::Inc,
+            true => Step::Dec,
+        }
+    }
+
+    /// Chopping means that the CPU get's to run at intervals while transfering.
+    fn chopping_enabled(self) -> bool {
+        self.0.bit(8)
+    }
+
+    fn sync_mode(self) -> SyncMode {
+        match self.0.bit_range(9, 10)  {
+            0 => SyncMode::Manual,
+            1 => SyncMode::Request,
+            2 => SyncMode::LinkedList,
+            _ => unreachable!("Invalid sync mode"),
+        }
+    }
+
+    /// If the channel itself is enabled. If it's not, then the channel doesn't run.
+    fn enabled(self) -> bool {
+        self.0.bit(24)
+    }
+
+    /// How many cycles to run in the interval between CPU chop.
+    fn dma_chop_size(self) -> u32 {
+        self.0.bit_range(16, 18) << 1
+    }
+
+    /// How many cycles the CPU get's to run when chopping.
+    fn cpu_chop_size(self) -> Cycle {
+        (self.0.bit_range(20, 22) << 1) as Cycle
+    }
+
+    /// This is only used when in manual sync mode. It must be set for the transfer to start.
+    fn start(self) -> bool {
+        self.0.bit(28)
+    }
+
+    fn mark_as_finished(&mut self) {
+        // Clear both enabled and start flags.
+        self.0 = self.0
+            .set_bit(24, false)
+            .set_bit(28, false);
+    }
+
+    fn store(&mut self, port: Port, val: u32) {
+        if port == Port::Otc {
+            self.0 &= 0x5100_0000;
+            self.0 |= 2;
+        }
+        self.0 = val;
+        if self.chopping_enabled() {
+            warn!("Chopping enabled for port {:?}", port);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Transfer {
+    cursor: u32,
+    size: u32,
+    /// The increment each step. This is required since the start address may be both the highest
+    /// or lowest address.
+    inc: u32,
+}
+
+/// The registers and info about a DMA channel.
+pub struct ChanStat {
+    port: Port,
+    base: u32,
+    block_ctrl: BlockCtrl,
+    ctrl: ChanCtrl,
+    transfer: Option<Transfer>,
+}
+
+impl ChanStat {
+    fn new(port: Port) -> Self {
+        Self {
+            port,
+            base: 0x0,
+            block_ctrl: BlockCtrl::new(0x0),
+            ctrl: ChanCtrl(0x0),
+            transfer: None,
+        }
+    }
+
+    /// Load a channel register.
+    fn load(&self, offset: u32) -> u32 {
+        match offset {
+            0 => self.base,
+            4 => self.block_ctrl.load(),
+            8 => self.ctrl.0,
+            _ => unreachable!("Invalid load in channel at offset {offset}"),
+        }
+    }
+
+    /// Store value in channel register.
+    fn store(&mut self, offset: u32, val: u32) {
+        match offset {
+            0 => self.base = val.bit_range(0, 23),
+            4 => self.block_ctrl = BlockCtrl::new(val),
+            8 => self.ctrl.store(self.port, val),
+            _ => unreachable!("Invalid store at in channel at offset {:08x}", offset),
+        }
+    }
+}
+
+// TODO: Add support for this.
+#[derive(Copy, Clone)]
+struct CtrlReg(u32);
+
+impl CtrlReg {
+    #[allow(dead_code)]
+    pub fn channel_priority(self, channel: Port) -> u32 {
+        let base = (channel as usize) << 2;
+        self.0.bit_range(base, base + 2)
+    }
+
+    #[allow(dead_code)]
+    pub fn channel_enabled(self, channel: Port) -> bool {
+        let base = (channel as usize) << 2;
+        self.0.bit(base + 3)
+    }
+}
+
+/// DMA Interrupt register.
+#[derive(Copy, Clone)]
+pub struct IrqReg(u32);
+
+impl IrqReg {
+    /// If this is set, a interrupt will always be triggered when a channel is done or this
+    /// register is written to.
+    fn force_irq(self) -> bool {
+        self.0.bit(15)
+    }
+
+    /// If interrupts are enabled for each channel.
+    fn channel_irq_enabled(self, channel: Port) -> bool {
+        self.0.bit(channel as usize + 16)
+    }
+
+    /// Master flag to enabled or disabled interrupts. ['force_irq'] has higher precedence.
+    fn master_irq_enabled(self) -> bool {
+        self.0.bit(23)
+    }
+
+    /// This is set when a channel is done with a transfer, if interrupts are enabled for the
+    /// channed.
+    #[allow(dead_code)]
+    fn channel_irq_flag(self, channel: Port) -> bool {
+        self.0.bit(channel as usize + 24)
+    }
+
+    fn set_channel_irq_flag(&mut self, channel: Port) {
+        self.0 = self.0.set_bit(24 + channel as usize, true);
+    }
+
+    /// This is a readonly and is updated whenever ['Interrupt'] is changed in any way.
+    fn master_irq_flag(self) -> bool {
+        self.0.bit(31)
+    }
+
+    /// If this ever get's set, an interrupt is triggered.
+    fn update_master_irq_flag(&mut self, schedule: &mut Schedule) {
+        // If this is true, then the DMA should trigger an interrupt if 'master_irq_flag' isn't
+        // already on. If the force_irq flag is set, then it will always trigger an interrupt.
+        // Otherwise it will trigger if any of the flags are set and 'master_irq_enabled' is on.
+        let result = self.force_irq()
+            || self.master_irq_enabled()
+            && self.0.bit_range(24, 30) != 0;
+
+        if result {
+            if !self.master_irq_flag() {
+                self.0 = self.0.set_bit(31, true);
+                schedule.schedule_now(Event::IrqTrigger(Irq::Dma));
+            }
+        } else {
+            self.0 = self.0.set_bit(31, false);
+        }
+    }
+
+    fn store(&mut self, schedule: &mut Schedule, val: u32) {
+        let mask = 0x00ff_803f;
+        self.0 &= !mask;
+        self.0 |= val & mask;
+        self.0 &= !(val & 0x7f00_0000);
+        self.update_master_irq_flag(schedule);
     }
 }
 

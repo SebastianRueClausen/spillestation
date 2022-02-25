@@ -5,6 +5,8 @@ use crate::cd::{Toc, Track};
 
 use std::cmp::Ordering;
 
+use memmap2::Mmap;
+
 pub struct Index<T> {
     pub sector: usize,
     pub index: Bcd,
@@ -132,5 +134,5 @@ pub enum Storage {
 }
 
 pub struct Binary {
-    pub data: Box<[u8]>,
+    pub data: Mmap,
 }

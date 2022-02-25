@@ -7,3 +7,4 @@ edition = "2021"
 splst_util = { path = "../splst_util" }
 thiserror = "*"
 itertools = "0.10.0"
+memmap2 = "0.5.3"

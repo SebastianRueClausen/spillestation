@@ -1,29 +1,34 @@
+use splst_core::Button;
+
 use directories_next::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use winit::event::VirtualKeyCode;
 
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::collections::HashMap;
 use std::fs;
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
-    #[error("Failed to find config directory")]
+    #[error("failed to find config directory")]
     ConfigDir,
 
-    #[error("Failed to load config file: {0}")]
+    #[error("failed to load config file: {0}")]
     Io(#[from] io::Error),
 
-    #[error("Failed to serialize config file: {0}")]
+    #[error("failed to serialize config file: {0}")]
     Serialize(#[from] toml::ser::Error),
 
-    #[error("Failed to deserialize config file: {0}")]
+    #[error("failed to deserialize config file: {0}")]
     Deserialize(#[from] toml::de::Error),
 }
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct Config {
     pub bios: PathBuf,
+    pub key_bindings: HashMap<VirtualKeyCode, Button>,
 }
 
 impl Config {

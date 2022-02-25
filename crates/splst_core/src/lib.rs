@@ -1,4 +1,4 @@
-#![feature(let_else, binary_heap_retain, option_result_contains)]
+#![feature(let_else, binary_heap_retain, option_result_contains, int_abs_diff)]
 
 #[macro_use]
 extern crate log;
@@ -8,8 +8,8 @@ mod test;
 
 mod cdrom;
 mod spu;
-mod io_port;
 
+pub mod io_port;
 pub mod schedule;
 pub mod timer;
 pub mod bus;
@@ -19,15 +19,26 @@ pub mod cpu;
 
 use splst_cdimg::CdImage;
 
-use std::time::Duration;
-
 pub use cpu::Cpu;
 pub use gpu::Vram;
+pub use io_port::{Button, ButtonState};
 pub use bus::bios::Bios;
+
+use std::time::Duration;
 
 /// Used to represent an absolute CPU cycle number. This will never overflow, unless the emulator runs
 /// for 17,725 years.
 pub type Cycle = u64;
+
+pub struct Input {
+    pub controllers: [Option<ButtonState>; 2],
+}
+
+impl Input {
+    pub fn new() -> Self {
+        Self { controllers: [None; 2] }
+    }
+}
 
 pub struct DrawInfo {
     pub vram_x_start: u32,
@@ -38,6 +49,10 @@ pub struct DrawInfo {
 pub enum StopReason {
     Time,
     Break,
+}
+
+pub trait VidOut {
+    fn new_frame(&mut self, draw_info: &DrawInfo, vram: &Vram);
 }
 
 pub trait Debugger {
@@ -90,7 +105,14 @@ impl System {
     }
 
     /// Run at full speed for a given amount of time.
-    pub fn run(&mut self, time: Duration, out: &mut impl VidOut) {
+    pub fn run(
+        &mut self,
+        time: Duration,
+        input: &Input,
+        out: &mut impl VidOut,
+    ) {
+        self.cpu.bus_mut().io_port_mut().give_input(input); 
+
         // Since 'Duration' can't be constant for now, it has to be
         // calculated each run even though the number is constant.
         let cycle_time = Duration::from_secs(1) / timing::CPU_HZ as u32;
@@ -113,6 +135,7 @@ impl System {
         &mut self,
         hz: u64,
         mut time: Duration,
+        input: &Input,
         out: &mut impl VidOut,
         dbg: &mut impl Debugger,
     ) -> (Duration, StopReason) {
@@ -128,7 +151,6 @@ impl System {
                 return (time, StopReason::Break);
             }
         }
-
         (time, StopReason::Time)
     }
 
@@ -136,12 +158,14 @@ impl System {
     pub fn step_debug(
         &mut self,
         steps: u64,
+        input: &Input,
         out: &mut impl VidOut,
         dbg: &mut impl Debugger,
     ) -> StopReason {
         for _ in 0..steps {
             self.cpu.step(dbg);
             self.maybe_draw_frame(out);
+
             if dbg.should_stop() {
                 return StopReason::Break;
             }
@@ -150,6 +174,3 @@ impl System {
     }
 }
 
-pub trait VidOut {
-    fn new_frame(&mut self, draw_info: &DrawInfo, vram: &Vram);
-}
