@@ -1,20 +1,6 @@
 //! This module implements GUI used for debugging and more. It uses the egui crate to render it to
 //! the screen.
 
-pub mod app;
-pub mod app_menu;
-pub mod cpu;
-pub mod fps;
-pub mod gpu;
-pub mod irq;
-pub mod mem;
-pub mod timer;
-pub mod vram;
-pub mod schedule;
-pub mod start_menu;
-
-mod keys;
-
 use crate::render::{Renderer, SurfaceSize};
 
 use egui::{ClippedMesh, CtxRef};
@@ -22,7 +8,6 @@ use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
 use egui_winit::State as WinState;
 use winit::window::Window;
 
-pub use app::App;
 /// All the egui stuff required to draw gui to the screen.
 pub struct GuiCtx {
     pub egui_ctx: CtxRef,

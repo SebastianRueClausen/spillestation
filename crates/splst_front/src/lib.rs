@@ -10,23 +10,26 @@
 #[macro_use]
 extern crate log;
 
-mod config;
 mod gui;
+mod start_menu;
 mod render;
 
-use splst_core::{System, Bios, timing, Input, Button};
+mod debug;
+mod config;
+mod keys;
+
+use splst_core::{System, timing};
 use crate::render::{Renderer, SurfaceSize};
+use gui::GuiCtx;
+use start_menu::StartMenu;
+use debug::DebugMenu;
 use config::Config;
-use gui::{app_menu::AppMenu, GuiCtx};
-use gui::start_menu::StartMenu;
 
 use winit::event::{ElementState, Event, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{WindowBuilder, Window};
 
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -41,12 +44,11 @@ enum Stage {
     StartMenu(StartMenu),
     Running {
         system: System,
-        key_bindings: HashMap<VirtualKeyCode, Button>,
-        input: Input,
-        app_menu: Box<AppMenu>,
+        app_menu: Box<DebugMenu>,
         /// The last time 'system' ran.
         last_update: Instant,
         mode: RunMode,
+        show_settings: bool,
     },
 }
 
@@ -54,6 +56,7 @@ enum Stage {
 /// running the emulator and rendering the output of the playstation to.
 pub struct Frontend {
     stage: Stage,
+    config: Config,
     gui_ctx: GuiCtx,
     renderer: Renderer,
     event_loop: EventLoop<()>,
@@ -124,25 +127,37 @@ impl Frontend {
                             self.gui_ctx.set_scale_factor(self.window.scale_factor() as f32);
                         }
                         // Handle keyboard input.
-                        WindowEvent::KeyboardInput { input: key_event, .. } => {
-                            if let Stage::Running {
+                        WindowEvent::KeyboardInput { input: key_event, .. } => match self.stage {
+                            Stage::Running {
                                 ref mut app_menu,
-                                ref mut input,
-                                ref key_bindings,
+                                ref mut show_settings,
                                 ..
-                            } = self.stage {
+                            } => {
                                 match (key_event.virtual_keycode, key_event.state) {
                                     (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
                                         app_menu.toggle_open(); 
                                     }
-                                    (Some(key), ElementState::Pressed) => {
-                                        if let Some(button) = key_bindings.get(&key) {
-                                            input.controllers[0].set_button(button, true);
+                                    (Some(VirtualKeyCode::Tab), ElementState::Pressed) => {
+                                        *show_settings = !*show_settings; 
+                                    }
+                                    (Some(key), state) if *show_settings => {
+                                        if !self.config.handle_key_open(key, state) {
+                                            self.gui_ctx.handle_window_event(event);
+                                        }
+                                    }
+                                    (Some(key), state) if !*show_settings => {
+                                        if !self.config.handle_key_closed(key, state) {
+                                            self.gui_ctx.handle_window_event(event);
                                         }
                                     }
                                     _ => {
                                         self.gui_ctx.handle_window_event(event);
                                     }
+                                }
+                            }
+                            Stage::StartMenu(_) => {
+                                if let Some(key) = key_event.virtual_keycode {
+                                    self.config.handle_key_open(key, key_event.state);
                                 }
                             }
                         }
@@ -155,38 +170,46 @@ impl Frontend {
                     Stage::Running {
                         ref mut app_menu,
                         ref mut mode,
+                        ref system,
+                        show_settings,
                         ..
                     } => {
                         self.renderer.render(|encoder, view, renderer| {
                             let res = self.gui_ctx.render(renderer, encoder, view, &self.window, |gui| {
                                 app_menu.show(gui, mode);
+                                if show_settings {
+                                    self.config.show(Some(system.bios()), gui);
+                                }
                             });
-                            if let Err(ref err) = res {
+                            if let Err(err) = res {
                                 app_menu.close_apps();
                                 error!("Failed to render GUI: {}", err);
                             }
                         });
                     }
                     Stage::StartMenu(ref mut menu) => {
-                        let mut items = None;
+                        let mut bios = None;
 
                         self.renderer.render(|encoder, view, renderer| {
                             let res = self.gui_ctx.render(renderer, encoder, view, &self.window, |gui| {
-                                items = menu.show_area(gui);
+                                bios = menu.show_area(&mut self.config, gui);
                             });
-                            if let Err(ref err) = res {
+                            if let Err(err) = res {
                                 error!("Failed to render GUI: {}", err);
                             }
                         });
 
-                        if let Some((bios, cd, key_bindings)) = items {
+                        if let Some(bios) = bios {
                             self.stage = Stage::Running {
-                                system: System::new(bios, cd),
-                                app_menu: Box::new(AppMenu::new()),
+                                system: System::new(
+                                    bios,
+                                    self.config.disc.disc(),
+                                    self.config.controller.controllers(),
+                                ),
+                                app_menu: Box::new(DebugMenu::new()),
                                 last_update: Instant::now(),
                                 mode: RunMode::Emulation,
-                                key_bindings,
-                                input: Input::new(),
+                                show_settings: false,
                             }
                         }
                     }
@@ -201,10 +224,17 @@ impl Frontend {
                     } => {
                         match mode {
                             RunMode::Debug => {
-                                app_menu.update_tick(last_update.elapsed(), system, &mut self.renderer);
+                                app_menu.update_tick(
+                                    last_update.elapsed(),
+                                    system,
+                                    &mut self.renderer
+                                );
                             }
                             RunMode::Emulation => {
-                                system.run(last_update.elapsed(), &mut self.renderer);
+                                system.run(
+                                    last_update.elapsed(),
+                                    &mut self.renderer
+                                );
                             }
                         }
                         *last_update = Instant::now();
@@ -225,63 +255,20 @@ impl Frontend {
             .expect("Failed to create window");
 
         let renderer = Renderer::new(&window);
+        let config = Config::load_from_file().unwrap_or_default();
 
         // TODO: Change frame rate to handle both PAL and NTSC.
         let frame_time = Duration::from_secs_f32(1.0 / timing::NTSC_FPS as f32);
 
-        let start_menu = match Config::load() {
-            Err(err) => {
-                trace!("Failed to load/find config file");
-                StartMenu::new(None, None, Some(err.to_string()))
-            }
-            Ok(config) => {
-                match Bios::from_file(Path::new(&config.bios)) {
-                    Err(err) => {
-                        trace!("Failed to read BIOS from config file");
-                        StartMenu::new(
-                            None,
-                            Some(config.key_bindings),
-                            Some(err.to_string()),
-                        )
-                    }
-                    Ok(bios) => {
-                        StartMenu::new(
-                            Some(WithPath::new(bios, config.bios.clone())),
-                            Some(config.key_bindings),
-                            None,
-                        )
-                    }
-                }
-            }
-        };
-
         Self {
-            stage: Stage::StartMenu(start_menu),
+            stage: Stage::StartMenu(StartMenu::new()),
             gui_ctx: GuiCtx::new(window.scale_factor() as f32, &renderer),
             last_draw: Instant::now(),
+            config,
             renderer,
             event_loop,
             window,
             frame_time,
         }
-    }
-}
-
-pub struct WithPath<T> {
-    item: T,
-    name: String,
-    path: PathBuf, 
-}
-
-impl<T> WithPath<T> {
-    fn new(item: T, path: PathBuf) -> Self {
-        let name = path.components()
-            .last()
-            .map(|c| c.as_os_str())
-            .unwrap_or(path.as_os_str())
-            .to_string_lossy()
-            .to_string();
-
-        Self { item, path, name }
     }
 }

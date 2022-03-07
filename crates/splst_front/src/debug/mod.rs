@@ -1,10 +1,23 @@
+
+pub mod menu;
+pub mod cpu;
+pub mod fps;
+pub mod gpu;
+pub mod irq;
+pub mod mem;
+pub mod timer;
+pub mod vram;
+pub mod schedule;
+
 use splst_core::System;
 use crate::render::Renderer;
 
 use std::time::Duration;
 
-/// Egui App/Window.
-pub trait App {
+pub use menu::DebugMenu;
+
+/// Egui Debug App/Window.
+pub trait DebugApp {
     /// Show the app as a window.
     fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool);
 

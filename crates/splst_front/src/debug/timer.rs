@@ -1,4 +1,4 @@
-use super::App;
+use super::DebugApp;
 
 use splst_core::timer::{Timers, TimerId};
 use splst_core::System;
@@ -35,7 +35,7 @@ impl TimerView {
     }
 }
 
-impl App for TimerView {
+impl DebugApp for TimerView {
     fn name(&self) -> &'static str {
         "Timer View"
     }

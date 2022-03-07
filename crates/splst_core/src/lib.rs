@@ -1,4 +1,4 @@
-#![feature(let_else, binary_heap_retain, option_result_contains, int_abs_diff)]
+#![feature(let_else, binary_heap_retain, option_result_contains)]
 
 #[macro_use]
 extern crate log;
@@ -17,28 +17,17 @@ pub mod gpu;
 pub mod timing;
 pub mod cpu;
 
-use splst_cdimg::CdImage;
-
 pub use cpu::Cpu;
 pub use gpu::Vram;
-pub use io_port::{Button, ButtonState};
+pub use io_port::{IoSlot, Button, ButtonState, ControllerPort, Controllers};
 pub use bus::bios::Bios;
+pub use cdrom::Disc;
 
 use std::time::Duration;
 
 /// Used to represent an absolute CPU cycle number. This will never overflow, unless the emulator runs
 /// for 17,725 years.
 pub type Cycle = u64;
-
-pub struct Input {
-    pub controllers: [Option<ButtonState>; 2],
-}
-
-impl Input {
-    pub fn new() -> Self {
-        Self { controllers: [None; 2] }
-    }
-}
 
 pub struct DrawInfo {
     pub vram_x_start: u32,
@@ -58,13 +47,10 @@ pub trait VidOut {
 pub trait Debugger {
     /// Called when loading an instruction.
     fn instruction_load(&mut self, addr: u32);
-
     /// Callec when loading data. 
     fn data_load(&mut self, addr: u32);
-
     /// Called when storing data.
     fn data_store(&mut self, addr: u32);
-
     /// Called after every cycle. The ['System'] will stop if it returns true.
     fn should_stop(&mut self) -> bool;
 }
@@ -91,8 +77,16 @@ pub struct System {
 }
 
 impl System {
-    pub fn new(bios: Bios, cd: Option<CdImage>) -> Self {
-        Self { cpu: Cpu::new(bios, cd), last_frame: 0 }
+    pub fn new(
+        bios: Bios,
+        disc: Disc,
+        controllers: Controllers,
+    ) -> Self {
+        Self { cpu: Cpu::new(bios, disc, controllers), last_frame: 0 }
+    }
+
+    pub fn bios(&self) -> &Bios {
+        &self.cpu.bus.bios()
     }
 
     fn maybe_draw_frame(&mut self, out: &mut impl VidOut) {
@@ -108,11 +102,8 @@ impl System {
     pub fn run(
         &mut self,
         time: Duration,
-        input: &Input,
         out: &mut impl VidOut,
     ) {
-        self.cpu.bus_mut().io_port_mut().give_input(input); 
-
         // Since 'Duration' can't be constant for now, it has to be
         // calculated each run even though the number is constant.
         let cycle_time = Duration::from_secs(1) / timing::CPU_HZ as u32;
@@ -135,7 +126,6 @@ impl System {
         &mut self,
         hz: u64,
         mut time: Duration,
-        input: &Input,
         out: &mut impl VidOut,
         dbg: &mut impl Debugger,
     ) -> (Duration, StopReason) {
@@ -158,7 +148,6 @@ impl System {
     pub fn step_debug(
         &mut self,
         steps: u64,
-        input: &Input,
         out: &mut impl VidOut,
         dbg: &mut impl Debugger,
     ) -> StopReason {

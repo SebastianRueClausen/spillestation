@@ -1,6 +1,6 @@
 //! GUI app to view the content of the playstations VRAM.
 
-use super::App;
+use super::DebugApp;
 
 use splst_core::System;
 use crate::render::Renderer;
@@ -22,7 +22,7 @@ pub struct VramView {
     matrix: [[Cell; COLUMNS]; ROWS],
 }
 
-impl App for VramView {
+impl DebugApp for VramView {
     fn name(&self) -> &'static str {
         "VRAM View"
     }

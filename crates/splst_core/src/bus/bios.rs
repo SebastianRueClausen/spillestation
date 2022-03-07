@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Error, Debug)]
 pub enum BiosError {
@@ -16,10 +16,20 @@ pub enum BiosError {
 
 pub struct Bios {
     data: Box<[u8]>,
+    path: PathBuf,
+    name: String, 
 }
 
 impl Bios {
     pub const SIZE: usize = 1024 * 512;
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
     pub fn from_file(path: &Path) -> Result<Self, BiosError> {
         let mut file = File::open(path)?;
@@ -27,10 +37,16 @@ impl Bios {
 
         file.read_to_end(&mut data)?;
 
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .to_string();
+
         if data.len() != Self::SIZE {
             Err(BiosError::InvalidSize(data.len()))
         } else {
-            Ok(Self::new(data.into_boxed_slice()))
+            Ok(Self::new(data.into_boxed_slice(), path, name))
         }
     }
 
@@ -47,11 +63,15 @@ impl Bios {
             data[i + base] = *byte;
         }
 
-        Self::new(Box::from(data))
+        Self::new(Box::from(data), &Path::new(""), "custom".to_string())
     }
 
-    pub fn new(data: Box<[u8]>) -> Self {
-        Self { data }
+    pub fn new(data: Box<[u8]>, path: &Path, name: String) -> Self {
+        Self {
+            data,
+            name,
+            path: path.to_path_buf(),
+        }
     }
 
     pub fn load<T: AddrUnit>(&mut self, addr: u32) -> u32 {

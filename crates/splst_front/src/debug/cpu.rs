@@ -2,7 +2,7 @@
 //! * Pressing enter to add a checkpoint should check at least that the App is focused or
 //!   something.
 
-use super::App;
+use super::DebugApp;
 
 use splst_core::cpu::{Cpu, REGISTER_NAMES};
 use splst_core::{System, StopReason, Debugger};
@@ -38,7 +38,7 @@ impl CpuStatus {
     }
 }
 
-impl App for CpuStatus {
+impl DebugApp for CpuStatus {
     fn name(&self) -> &'static str {
         "CPU Status"
     }
@@ -320,7 +320,7 @@ impl CpuCtrl {
     }
 }
 
-impl App for CpuCtrl {
+impl DebugApp for CpuCtrl {
     fn name(&self) -> &'static str {
         "CPU Control"
     }

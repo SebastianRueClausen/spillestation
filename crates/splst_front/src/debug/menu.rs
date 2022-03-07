@@ -1,6 +1,6 @@
 //! The main controller and menu of all the GUI apps.
 
-use super::App;
+use super::DebugApp;
 use super::cpu::{CpuCtrl, CpuStatus};
 use super::fps::FrameCounter;
 use super::gpu::GpuStatus;
@@ -16,15 +16,12 @@ use crate::RunMode;
 
 use std::time::Duration;
 
-/// Controller/Menu for all the apps available. It's responsible for both updating, rendering and
-/// controlling when they are visible. It also provides a menu for opening and closing apps.
-pub struct AppMenu {
-    apps: Vec<(Box<dyn App>, bool)>,
-    /// If the menu itself is open.
+pub struct DebugMenu {
+    apps: Vec<(Box<dyn DebugApp>, bool)>,
     pub open: bool,
 }
 
-impl AppMenu {
+impl DebugMenu {
     pub fn new() -> Self {
         Self {
             open: false,

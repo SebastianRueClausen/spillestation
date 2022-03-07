@@ -1,6 +1,6 @@
 //! Simple FPS counter GUI app.
 
-use super::app::App;
+use super::DebugApp;
 
 use std::fmt::Write;
 use std::time::Duration;
@@ -25,7 +25,7 @@ impl Default for FrameCounter {
     }
 }
 
-impl App for FrameCounter {
+impl DebugApp for FrameCounter {
     fn name(&self) -> &'static str {
         "Frame Counter"
     }

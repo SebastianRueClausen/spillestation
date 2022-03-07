@@ -1,4 +1,4 @@
-use super::App;
+use super::DebugApp;
 
 use splst_core::bus::{Byte, Word};
 use splst_core::cpu::Opcode;
@@ -57,7 +57,7 @@ impl Default for MemView {
     }
 }
 
-impl App for MemView {
+impl DebugApp for MemView {
     fn name(&self) -> &'static str {
         "Memory View"
     }

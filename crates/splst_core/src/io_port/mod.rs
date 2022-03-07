@@ -7,12 +7,13 @@ use splst_util::{Bit, BitSet};
 use crate::bus::BusMap;
 use crate::schedule::{Schedule, Event};
 use crate::cpu::Irq;
-use crate::{Cycle, Input};
+use crate::Cycle;
 
-use controller::DigitalCtrl;
 use memcard::MemCard;
 
-pub use controller::{Button, ButtonState};
+use std::fmt;
+
+pub use controller::{Button, ButtonState, ControllerPort, Controllers};
 
 /// Controller and Memory Card I/O ports.
 pub struct IoPort {
@@ -29,11 +30,11 @@ pub struct IoPort {
     tx_val: u8,
 
     memcards: [Option<MemCard>; 2],
-    controllers: [Option<DigitalCtrl>; 2],
+    controllers: Controllers,
 }
 
 impl IoPort {
-    pub fn new() -> Self {
+    pub fn new(controllers: Controllers) -> Self {
         Self {
             state: State::Idle,
             active_device: None,
@@ -48,10 +49,7 @@ impl IoPort {
             tx_val: 0x0,
 
             memcards: [None, None],
-            controllers: [
-                Some(DigitalCtrl::new()),
-                None
-            ],
+            controllers,
         }
     }
 
@@ -151,26 +149,6 @@ impl IoPort {
         }
     }
 
-    pub fn give_input(&mut self, input: &Input) {
-        input.controllers
-            .iter()
-            .zip(self.controllers.iter_mut())
-            .for_each(|(buttons, state)| {
-                *state = match (buttons, state.take()) {
-                    (Some(buttons), Some(mut state)) => {
-                        state.buttons = *buttons;
-                        Some(state)
-                    }
-                    (Some(buttons), None) => {
-                        Some(DigitalCtrl::with_button_state(*buttons))
-                    }
-                    (None, _) => {
-                        None
-                    }
-                };
-            });
-    }
-
     fn can_begin_transfer(&self) -> bool {
         self.tx_fifo.is_some()
             && self.ctrl.select()
@@ -182,10 +160,9 @@ impl IoPort {
     }
 
     fn reset_device_states(&mut self) {
-        self.controllers
+        self.controllers.0
             .iter_mut()
-            .flatten()
-            .for_each(|c| c.reset_state());
+            .for_each(|c| c.borrow_mut().reset());
     }
 
     fn begin_transfer(&mut self, schedule: &mut Schedule) {
@@ -232,9 +209,9 @@ impl IoPort {
     }
 
     fn make_transfer(&mut self, schedule: &mut Schedule) {
-        let index = self.ctrl.slot_num() as usize;
+        let index = self.ctrl.io_slot() as usize;
 
-        let ctrl = &mut self.controllers[index];
+        let ctrl = &mut self.controllers[self.ctrl.io_slot()];
         let memcard = &mut self.memcards[index];
 
         // Set rx_enabled.
@@ -242,9 +219,9 @@ impl IoPort {
 
         let (val, ack) = match self.active_device {
             None => {
-                match (ctrl, memcard) {
-                    (None, None) => (0xff, false),
-                    (Some(ctrl), _) => {
+                match (&mut (*ctrl.borrow_mut()), memcard) {
+                    (ControllerPort::Unconnected, None) => (0xff, false),
+                    (ControllerPort::Digital(ctrl), _) => {
                         let (val, ack) = ctrl.transfer(self.tx_val);
 
                         if ack {
@@ -253,7 +230,7 @@ impl IoPort {
 
                         (val, ack)
                     }
-                    (None, Some(memcard)) => {
+                    (ControllerPort::Unconnected, Some(memcard)) => {
                         let (val, ack) = memcard.transfer(self.tx_val);
             
                         if ack {
@@ -264,9 +241,9 @@ impl IoPort {
                     }
                 }
             }
-            Some(Device::Controller) => match ctrl {
-                Some(ctrl) => ctrl.transfer(self.tx_val),
-                None => (0xff, false),
+            Some(Device::Controller) => match &mut (*ctrl.borrow_mut()) {
+                ControllerPort::Digital(ctrl) => ctrl.transfer(self.tx_val),
+                ControllerPort::Unconnected => (0xff, false),
             }
             Some(Device::MemCard) => match memcard {
                 Some(memcard) => memcard.transfer(self.tx_val),
@@ -294,10 +271,22 @@ impl IoPort {
     }
 }
 
-#[derive(Clone, Copy)]
-enum SlotNum {
+#[derive(Clone, Copy, PartialEq)]
+pub enum IoSlot {
     Slot1,
     Slot2,
+}
+
+impl fmt::Display for IoSlot {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "slot {}", *self as usize + 1)
+    }
+}
+
+impl Default for IoSlot {
+    fn default() -> Self {
+        IoSlot::Slot1
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -377,10 +366,10 @@ impl CtrlReg {
         self.0.bit(12)
     }
 
-    fn slot_num(self) -> SlotNum {
+    fn io_slot(self) -> IoSlot {
         match self.0.bit(13) {
-            false => SlotNum::Slot1,
-            true => SlotNum::Slot2,
+            false => IoSlot::Slot1,
+            true => IoSlot::Slot2,
         }
     }
 }

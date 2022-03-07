@@ -10,6 +10,7 @@ use memmap2::Mmap;
 
 use std::path::{Path, PathBuf};
 use std::fs::File;
+use std::io::Read;
 
 #[derive(Debug, Clone, Copy)]
 struct TrackEntry {
@@ -190,8 +191,17 @@ fn token_to_bcd(line: usize, token: &str) -> Result<Bcd, Error> {
     })
 }
 
-pub fn parse_cue(input: &str, folder: &Path) -> Result<CdImage, Error> {
-    let (binaries, track_entries, index_entries) = parse(input, folder)?;
+pub fn parse_cue(path: &Path) -> Result<CdImage, Error> {
+    let folder = path.parent().ok_or_else(|| {
+        Error::PathError(format!(
+            "Can't find parent folder for cue file with path: {}", path.display()
+        ))
+    })?;
+
+    let mut source = String::new();
+    File::open(path)?.read_to_string(&mut source)?;
+
+    let (binaries, track_entries, index_entries) = parse(&source, folder)?;
 
     // The absolute index for all files. Cue always skips the first 2 seconds.
     let mut abs = Msf::from_sector(150).unwrap(); 
@@ -282,13 +292,15 @@ pub fn parse_cue(input: &str, folder: &Path) -> Result<CdImage, Error> {
                 ));
             }
 
-            abs = Msf::from_sector(sectors_left).and_then(|m| m.checked_add(abs)).ok_or(
-                Error::cue_err(idx.line, "Absolute MFS more than maximum of '99:99:99'")
-            )?;
+            abs = Msf::from_sector(sectors_left)
+                .and_then(|m| m.checked_add(abs))
+                .ok_or(
+                    Error::cue_err(idx.line, "Absolute MFS more than maximum of '99:99:99'")
+                )?;
         }
     }
 
-    Ok(CdImage::new(IndexLookup::new(indices, abs.sector()), binaries))
+    Ok(CdImage::new(path, IndexLookup::new(indices, abs.sector()), binaries))
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! Represent the memory of the playstation 1.
+//! Represent the memory BUS of the playstation 1.
 //!
 //! TODO:
 //! * Add a debug peek funktion to read from devices without side effects. For now reading data
@@ -14,15 +14,14 @@ pub mod scratchpad;
 mod raw;
 
 use splst_util::Bit;
-use splst_cdimg::CdImage;
 use crate::Cycle;
 use crate::schedule::{Event, Schedule};
 use crate::gpu::Gpu;
-use crate::cdrom::CdRom;
+use crate::cdrom::{CdRom, Disc};
 use crate::cpu::IrqState;
 use crate::timer::Timers;
 use crate::spu::Spu;
-use crate::io_port::IoPort;
+use crate::io_port::{IoPort, Controllers};
 use bios::Bios;
 use dma::Dma;
 use ram::Ram;
@@ -48,7 +47,7 @@ pub struct Bus {
 }
 
 impl Bus {
-    pub fn new(bios: Bios, cd: Option<CdImage>) -> Self {
+    pub fn new(bios: Bios, disc: Disc, controllers: Controllers) -> Self {
         let mut schedule = Schedule::new();
 
         schedule.schedule_in(5_000, Event::RunGpu);
@@ -62,10 +61,10 @@ impl Bus {
             ram: Ram::new(),
             dma: Dma::new(),
             gpu: Gpu::new(),
-            cdrom: CdRom::new(cd),
+            cdrom: CdRom::new(disc),
             timers: Timers::new(),
             spu: Spu::new(),
-            io_port: IoPort::new(),
+            io_port: IoPort::new(controllers),
             mem_ctrl: MemCtrl::new(),
             cache_ctrl: CacheCtrl(0),
             ram_size: RamSize(0),
@@ -222,6 +221,10 @@ impl Bus {
 
     pub fn timers(&self) -> &Timers {
         &self.timers
+    }
+
+    pub fn bios(&self) -> &Bios {
+        &self.bios
     }
 
     pub fn io_port_mut(&mut self) -> &mut IoPort {

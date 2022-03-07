@@ -1,8 +1,80 @@
 use splst_util::{Bit, BitSet};
+use super::IoSlot;
 
 use serde::{Serialize, Deserialize};
 
-/// The sony digital controller.
+use std::fmt;
+use std::ops::{Index, IndexMut};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+/// Controller connection.
+pub enum ControllerPort {
+    Unconnected,
+    Digital(DigitalController),
+}
+
+impl ControllerPort {
+    pub fn reset(&mut self) {
+        match self {
+            ControllerPort::Digital(ctrl) => ctrl.reset_state(),
+            ControllerPort::Unconnected => (),
+        }
+    }
+
+    pub fn unconnected() -> ControllerPort {
+        ControllerPort::Unconnected
+    }
+
+    pub fn digital() -> ControllerPort {
+        ControllerPort::Digital(DigitalController::new())
+    }
+}
+
+impl Default for ControllerPort {
+    fn default() -> Self {
+        ControllerPort::Unconnected
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct Controllers(pub(super) [Rc<RefCell<ControllerPort>>; 2]);
+
+impl Controllers {
+    pub fn set_button(&mut self, slot: IoSlot, button: Button, pressed: bool) {
+        match *self[slot].borrow_mut() {
+            ControllerPort::Unconnected => {
+                warn!("Button pressed for unconnected controller");
+            }
+            ControllerPort::Digital(ref mut ctrl) => {
+                ctrl.buttons.set_button(button, pressed);
+            }
+        }
+    }
+
+    pub fn reset(&mut self, slot: IoSlot) {
+        match *self[slot].borrow_mut() {
+            ControllerPort::Digital(ref mut ctrl) => ctrl.reset_state(),
+            ControllerPort::Unconnected => (),
+        }
+    }
+}
+
+impl Index<IoSlot> for Controllers {
+    type Output = Rc<RefCell<ControllerPort>>;
+
+    fn index(&self, idx: IoSlot) -> &Self::Output {
+        &self.0[idx as usize]
+    }
+}
+
+impl IndexMut<IoSlot> for Controllers {
+    fn index_mut(&mut self, idx: IoSlot) -> &mut Self::Output {
+        &mut self.0[idx as usize]
+    }
+}
+
+/// The Sony digital controller.
 ///      ___                      ___
 ///   __/_L_\__  Digital Pad   __/_R_\__
 ///  /    _    \--------------/         \
@@ -17,12 +89,12 @@ use serde::{Serialize, Deserialize};
 /// The original controller sold with the playstation from 1994 to 1997 when the analog controller
 /// and dualschock controller became the standard. It's the same layout as the dualschock but
 /// without the joypads.
-pub struct DigitalCtrl {
+pub struct DigitalController {
     pub(super) buttons: ButtonState, 
     pub(super) state: TransferState,
 }
 
-impl DigitalCtrl {
+impl DigitalController {
     pub fn new() -> Self {
         Self {
             buttons: ButtonState::new(),
@@ -85,7 +157,7 @@ impl DigitalCtrl {
 pub struct ButtonState(u16);
 
 impl ButtonState {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self(u16::MAX)
     }
 
@@ -114,6 +186,35 @@ pub enum Button {
     Square = 15,
 }
 
+impl Button {
+    pub const COUNT: usize = 16;
+
+    pub const NAMES: [&'static str; Self::COUNT] = [
+        "Select",
+        "L3",
+        "R3",
+        "Start",
+        "Up",
+        "Right",
+        "Down",
+        "Left",
+        "L2",
+        "R2",
+        "L1",
+        "R1",
+        "Triangle",
+        "Circle",
+        "Cross",
+        "Square",
+    ];
+}
+
+impl fmt::Display for Button {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", Button::NAMES[*self as usize])
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum TransferState {
     Idle,
@@ -125,3 +226,4 @@ pub(super) enum TransferState {
     /// Get buttons high bits.
     ButtonsHigh,
 }
+

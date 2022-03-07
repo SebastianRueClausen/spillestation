@@ -1,4 +1,4 @@
-use super::App;
+use super::DebugApp;
 
 use splst_core::cpu::Irq;
 use splst_core::System;
@@ -12,7 +12,7 @@ pub struct IrqView {
     trigger: u32,
 }
 
-impl App for IrqView {
+impl DebugApp for IrqView {
     fn name(&self) -> &'static str {
         "IRQ View"
     }

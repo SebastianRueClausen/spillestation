@@ -7,9 +7,8 @@ pub mod cd;
 
 use thiserror::Error;
 
-use std::io::{self, Read};
+use std::io;
 use std::path::Path;
-use std::fs::File;
 
 pub use cd::CdImage;
 pub use sector::Sector;
@@ -84,11 +83,6 @@ pub enum TrackFormat {
     Mode2Xa,
 }
 
-pub fn open_cd(cue: &Path) -> Result<CdImage, Error> {
-    let folder = cue.parent().ok_or_else(|| {
-        Error::PathError(format!("Can't find parent folder for cue file with path: {}", cue.display()))
-    })?;
-    let mut source = String::new();
-    File::open(cue)?.read_to_string(&mut source)?;
-    cue::parse_cue(&source, &folder)
+pub fn open_cd(path: &Path) -> Result<CdImage, Error> {
+    cue::parse_cue(&path)
 }

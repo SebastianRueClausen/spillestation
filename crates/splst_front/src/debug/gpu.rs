@@ -1,6 +1,6 @@
 //! GUI app that displays information about the GPU.
 
-use super::App;
+use super::DebugApp;
 
 use splst_core::gpu::Gpu;
 use splst_core::System;
@@ -53,7 +53,7 @@ impl GpuStatus {
     }
 }
 
-impl App for GpuStatus {
+impl DebugApp for GpuStatus {
     fn name(&self) -> &'static str {
         "GPU Status"
     }

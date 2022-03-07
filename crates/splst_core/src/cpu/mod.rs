@@ -15,13 +15,14 @@ mod gte;
 pub mod irq;
 pub mod opcode;
 
+use crate::io_port::Controllers;
+use crate::cdrom::Disc;
 use crate::bus;
 use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
 use crate::bus::{AddrUnit, Bus, BusMap, Byte, HalfWord, Word};
 use crate::schedule::Event;
 use crate::{Cycle, Debugger};
-use splst_cdimg::CdImage;
 use splst_util::Bit;
 
 use cop0::{Cop0, Exception};
@@ -123,8 +124,12 @@ pub struct Cpu {
 const PC_START_ADDRESS: u32 = 0xbfc00000;
 
 impl Cpu {
-    pub fn new(bios: Bios, cd: Option<CdImage>) -> Box<Self> {
-        let bus = Bus::new(bios, cd);
+    pub fn new(
+        bios: Bios,
+        disc: Disc,
+        controllers: Controllers,
+    ) -> Box<Self> {
+        let bus = Bus::new(bios, disc, controllers);
         let icache = Box::new([ICacheLine::valid(); 0x100]);
         Box::new(Cpu {
             last_pc: 0x0,

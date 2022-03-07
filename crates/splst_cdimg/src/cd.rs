@@ -1,19 +1,49 @@
-use splst_util::Bcd;
-use splst_util::Msf;
+use splst_util::{Bcd, Msf};
 use crate::index::{IndexLookup, Storage, Binary};
 use crate::sector::{SectorDescriptor, Sector};
 use crate::{Error, TrackFormat};
 
+use std::path::{PathBuf, Path};
+
 pub struct CdImage {
     indices: IndexLookup<Storage>,
     binaries: Vec<Binary>,
-    pub toc: Toc,
+    name: String,
+    path: PathBuf,
+    toc: Toc,
 }
 
 impl CdImage {
-    pub(super) fn new(indices: IndexLookup<Storage>, binaries: Vec<Binary>) -> Self {
+    pub(super) fn new(
+        path: &Path,
+        indices: IndexLookup<Storage>,
+        binaries: Vec<Binary>
+    ) -> Self {
         let toc = indices.build_toc();
-        Self { indices, binaries, toc }
+        let name = path
+            .file_name()
+            .unwrap_or(path.as_os_str())
+            .to_string_lossy()
+            .to_string();
+        Self {
+            indices,
+            binaries,
+            path: path.to_path_buf(),
+            name,
+            toc,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn toc(&self) -> &Toc {
+        &self.toc
     }
 
     pub fn load_sector(&self, msf: Msf) -> Result<Sector, Error> {
@@ -31,7 +61,8 @@ impl CdImage {
             let one = if idx.index == Bcd::ONE {
                 idx 
             } else {
-                self.indices.get_from_track(idx.track, Bcd::ONE)
+                self.indices
+                    .get_from_track(idx.track, Bcd::ONE)
                     .map(|(_, i)| i)
                     .expect("track without index one")
             };
@@ -71,4 +102,10 @@ pub struct Track {
 
 pub struct Toc {
     pub tracks: Vec<Track>,
+}
+
+impl Toc {
+    pub fn tracks(&self) -> &Vec<Track> {
+        &self.tracks
+    }
 }

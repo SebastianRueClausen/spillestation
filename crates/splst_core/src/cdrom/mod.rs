@@ -4,11 +4,10 @@
 //!   BIOS isn't expecting. 
 
 mod fifo;
+pub mod disc;
 
 use splst_util::Bit;
 use splst_util::{Bcd, Msf};
-
-use splst_cdimg::CdImage;
 use splst_cdimg::Sector;
 
 use crate::cpu::Irq;
@@ -17,67 +16,13 @@ use crate::bus::{DmaChan, ChanDir};
 use crate::schedule::{Schedule, Event};
 use crate::Cycle;
 
+pub use disc::Disc;
 use fifo::Fifo;
 
 use std::fmt;
 
-struct DataBuffer {
-    data: Box<[u8; 2352]>,
-    len: u16,
-    index: u16,
-    active: bool,
-}
-
-impl DataBuffer {
-    fn new() -> Self {
-        Self {
-            data: Box::new([0x0; 2352]),
-            len: 0,
-            index: 0,
-            active: false,
-        }
-    }
-
-    fn fill_from_sector(&mut self, sector: &Sector) {
-        let data = sector.data(); 
-
-        for (i, byte) in data.iter().enumerate() {
-            self.data[i] = *byte;
-        }
-
-        self.len = data.len() as u16;
-        self.index = 0;
-    }
-
-    fn data_ready(&self) -> bool {
-        // Maybe it should also be active.
-        self.index < self.len
-    }
-
-    fn advance(&mut self) {
-        let idx = self.index;
-        let adj = (idx & 4) << 1;
-        self.index = (idx & !7) + adj;
-    }
-
-    fn read_byte(&mut self) -> u8 {
-        let byte = self.data[self.index as usize];
-        
-        if self.active {
-            self.index += 1;
-            if self.index == self.len {
-                self.active = false;
-            }
-        } else {
-            warn!("CDROM Read inactive data buffer");
-        }
-
-        byte
-    }
-}
-
 pub struct CdRom {
-    cd: Option<CdImage>,
+    disc: Disc,
     state: DriveState,
     /// The index register. This decides what happens when the CPU writes to and
     /// loads from the CDROM.
@@ -100,14 +45,14 @@ pub struct CdRom {
 }
 
 impl CdRom {
-    pub fn new(cd: Option<CdImage>) -> Self {
+    pub fn new(disc: Disc) -> Self {
 
         // TODO: Check startup value.
         let mode = ModeReg(0x0);
         let position = Msf::ZERO;
 
         Self {
-            cd,
+            disc,
             state: DriveState::Idle,
             index: 0x0,
             irq_mask: 0x0,
@@ -239,7 +184,7 @@ impl CdRom {
     }
 
     pub fn sector_done(&mut self, schedule: &mut Schedule) {
-        match self.state {
+        let data_ready = match self.state {
             DriveState::Seeking(target, _, after) => {
                 self.position = target;
                 match after {
@@ -247,11 +192,12 @@ impl CdRom {
                     AfterSeek::Pause => self.state = DriveState::Paused,
                     AfterSeek::Play => todo!(),
                 };
+                false
             }
             DriveState::Reading => {
-                match &mut self.cd {
+                match *self.disc.cd_mut() {
                     None => unreachable!(),
-                    Some(cd) => {
+                    Some(ref mut cd) => {
                         self.position = self.position
                             .next_sector()
                             .unwrap();
@@ -266,11 +212,15 @@ impl CdRom {
                         // before the first sector was read.
 
                         self.sector = cd.load_sector(self.position).unwrap();
-                        self.finish_cmd(schedule, Interrupt::DataReady);
                     }
-                };
+                }
+                true
             }
-            _ => (),
+            _ => false,
+        };
+
+        if data_ready {
+            self.finish_cmd(schedule, Interrupt::DataReady);
         }
     }
 
@@ -431,7 +381,7 @@ impl CdRom {
                 }
                 // get_id
                 0x1a => {
-                    if self.cd.is_none() {
+                    if !self.disc.is_loaded() {
                         self.response_fifo.push_slice(&[0x11, 0x80]);
                         self.set_interrupt(schedule, Interrupt::Error);
                     } else {
@@ -466,7 +416,7 @@ impl CdRom {
     }
 
     fn drive_stat(&self) -> u8 {
-        if self.cd.is_none() {
+        if !self.disc.is_loaded() {
             // This means that the drive cover is open.
             0x10
         } else {
@@ -512,6 +462,7 @@ enum Interrupt {
 #[derive(Clone, Copy)]
 enum SeekType {
     Data,
+    #[allow(dead_code)]
     Audio,
 }
 
@@ -519,6 +470,7 @@ enum SeekType {
 enum AfterSeek {
     Pause,
     Read,
+    #[allow(dead_code)]
     Play,
 }
 
@@ -575,6 +527,62 @@ impl ModeReg {
         self.0.bit(7)
     }
 }
+
+struct DataBuffer {
+    data: Box<[u8; 2352]>,
+    len: u16,
+    index: u16,
+    active: bool,
+}
+
+impl DataBuffer {
+    fn new() -> Self {
+        Self {
+            data: Box::new([0x0; 2352]),
+            len: 0,
+            index: 0,
+            active: false,
+        }
+    }
+
+    fn fill_from_sector(&mut self, sector: &Sector) {
+        let data = sector.data(); 
+
+        for (i, byte) in data.iter().enumerate() {
+            self.data[i] = *byte;
+        }
+
+        self.len = data.len() as u16;
+        self.index = 0;
+    }
+
+    fn data_ready(&self) -> bool {
+        // Maybe it should also be active.
+        self.index < self.len
+    }
+
+    fn advance(&mut self) {
+        let idx = self.index;
+        let adj = (idx & 4) << 1;
+        self.index = (idx & !7) + adj;
+    }
+
+    fn read_byte(&mut self) -> u8 {
+        let byte = self.data[self.index as usize];
+        
+        if self.active {
+            self.index += 1;
+            if self.index == self.len {
+                self.active = false;
+            }
+        } else {
+            warn!("CDROM Read inactive data buffer");
+        }
+
+        byte
+    }
+}
+
 
 impl DmaChan for CdRom {
     fn dma_load(&mut self, _: &mut Schedule, _: (u16, u32)) -> u32 {

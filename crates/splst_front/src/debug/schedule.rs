@@ -1,4 +1,4 @@
-use super::App;
+use super::DebugApp;
 
 use splst_core::System;
 use crate::render::Renderer;
@@ -11,7 +11,8 @@ pub struct ScheduleView {
     cycle: String,
     events: Vec<(String, String)>,
 }
-impl App for ScheduleView {
+
+impl DebugApp for ScheduleView {
     fn name(&self) -> &'static str {
         "Schedule View"
     }
