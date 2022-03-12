@@ -19,7 +19,7 @@ pub struct DiscConfig {
     #[serde(skip)]
     error: Option<String>,
    
-    game_paths: Vec<PathBuf>,
+    paths: Vec<PathBuf>,
 }
 
 impl DiscConfig {
@@ -39,6 +39,8 @@ impl DiscConfig {
                 }
             }
         }
+    
+        ui.separator();
 
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.add_path).hint_text("Path"));
@@ -59,14 +61,16 @@ impl DiscConfig {
 
             if ui.button("Add").clicked() {
                 self.is_modified = true;
-                self.game_paths.push(PathBuf::from(&self.add_path));
+                self.paths.push(PathBuf::from(&self.add_path));
             }
         });
 
+        ui.separator();
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("game_grid").show(ui, |ui| {
-                let len_before = self.game_paths.len(); 
-                self.game_paths.retain(|path| {
+                let len_before = self.paths.len(); 
+                self.paths.retain(|path| {
                     let name = path
                         .as_path()
                         .file_name()
@@ -92,7 +96,7 @@ impl DiscConfig {
                     retain
                 });
 
-                if len_before != self.game_paths.len() {
+                if len_before != self.paths.len() {
                     self.is_modified = true; 
                 }
             });

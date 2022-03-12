@@ -6,33 +6,14 @@ use winit::event::{VirtualKeyCode, ElementState};
 
 use std::collections::HashMap;
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-enum Connection {
-    Unconnected,
-    Virtual,
-    // DualShock,
-}
-
-impl Default for Connection {
-    fn default() -> Self {
-        Connection::Unconnected
-    }
-}
-
 /// Controller settings.
 #[derive(Default, Serialize, Deserialize)]
 pub struct ControllerConfig {
-    #[serde(skip)]
-    pub key_map: HashMap<VirtualKeyCode, (IoSlot, Button)>,
-
-    #[serde(skip)]
-    controllers: Controllers, 
-
-    slot1: HashMap<Button, VirtualKeyCode>,
-    slot2: HashMap<Button, VirtualKeyCode>,
-
     connection1: Connection,
     connection2: Connection,
+
+    slot1: ButtonBindings,
+    slot2: ButtonBindings,
 
     #[serde(skip)]
     show_slot: IoSlot,
@@ -48,30 +29,25 @@ pub struct ControllerConfig {
 }
 
 impl ControllerConfig {
-    pub fn controllers(&self) -> Controllers {
-        self.controllers.clone()
-    }
-
-    /// Handle key event when closed. Checks if the key is mapped to a button, and in which case
-    /// update ['CtrlSettings::controllers'].
-    ///
-    /// Returns true if the event is captured.
-    pub fn handle_key_closed(&mut self, key: VirtualKeyCode, state: ElementState) -> bool {
-        self.key_map
-            .get(&key)
-            .map(|(slot, button)| {
-                self.controllers.set_button(
-                    *slot, *button, state == ElementState::Pressed,
-                );
-            })
-            .is_some()
+    /// Get the key map corresponding to the controller settings. It will always generate a new key
+    /// map. If generating the key map fails, an empty map will be returned and the menu will show
+    /// and error.
+    pub fn get_key_map(&mut self) -> HashMap<VirtualKeyCode, (IoSlot, Button)> {
+        gen_key_map(&self.slot1, &self.slot2)
+            .map_err(|err| self.error = Some(err))
+            .unwrap_or_default()
     }
 
     /// Handle a key press if the menu is open, either by the menu being open while running or in
     /// the start menu. It's used when recording key bindings.
     ///
     /// Returns true if the input is captured.
-    pub fn handle_key_open(&mut self, key: VirtualKeyCode, state: ElementState) -> bool {
+    pub fn handle_key_event(
+        &mut self,
+        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
+        key: VirtualKeyCode,
+        state: ElementState,
+    ) -> bool {
         if state != ElementState::Pressed {
             return false;
         }
@@ -84,10 +60,13 @@ impl ControllerConfig {
                 IoSlot::Slot2 => &mut self.slot2,
             };
 
-            bindings.insert(button, key);
+            bindings.as_slice_mut()[button as usize] = Some(key);
 
-            // Perforance: This could be avoided assuming it's done when closing the menu.
-            self.generate_key_map();
+            // Create a new key map or report the error. Also clears the error if generating the
+            // key map succeeded.
+            self.error = gen_key_map(&self.slot1, &self.slot2)
+                .map(|map| *key_map = map)
+                .err();
 
             true
         } else {
@@ -95,31 +74,12 @@ impl ControllerConfig {
         }
     }
 
-    pub fn generate_key_map(&mut self) {
-        let s1 = self.slot1
-            .iter()
-            .map(|(b, k)| (*k, (IoSlot::Slot1, *b)));
-        let s2 = self.slot2
-            .iter()
-            .map(|(b, k)| (*k, (IoSlot::Slot2, *b)));
-        let mut map = HashMap::new();
-        for (k, v) in s1.chain(s2) {
-            if let Some(other) = map.insert(k, v) {
-                self.error = Some(format!(
-                    "Duplicate key bindings: {} for {} and {} for {} are both bound to {}",
-                    other.1,
-                    other.0,
-                    v.1,
-                    v.0,
-                    keys::keycode_name(k),
-                ));
-                return;
-            }
-        }
-        self.key_map = map; 
-    }
-
-    fn show_buttons(&mut self, slot: IoSlot, ui: &mut egui::Ui) {
+    fn show_buttons(
+        &mut self,
+        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
+        slot: IoSlot,
+        ui: &mut egui::Ui
+    ) {
         let bindings = match slot {
             IoSlot::Slot1 => &mut self.slot1,
             IoSlot::Slot2 => &mut self.slot2,
@@ -128,18 +88,20 @@ impl ControllerConfig {
         let mut generate_key_map = false;
 
         egui::Grid::new("button_grid").show(ui, |ui| {
-            BUTTONS
-                .iter()
+            bindings
+                .as_slice_mut()
+                .iter_mut()
                 .zip(Button::NAMES.iter())
-                .for_each(|(b, name)| {
+                .zip(BUTTONS.iter())
+                .for_each(|((binding, name), button)| {
                     ui.label(*name);
-                    match bindings.get(b) {
+                    match binding {
                         Some(key) => {
                             ui.label(keys::keycode_name(*key));
                             if ui.button("Unbind").clicked() {
                                 generate_key_map = true;
                                 self.is_modified = true;
-                                bindings.remove(b);
+                                binding.take();
                             }
                         }
                         None => {
@@ -147,7 +109,7 @@ impl ControllerConfig {
                             if ui.button("Bind").clicked() {
                                 generate_key_map = true;
                                 self.is_modified = true;
-                                self.recording = Some((slot, *b));
+                                self.recording = Some((slot, *button));
                             }
                         }
                     }
@@ -156,11 +118,18 @@ impl ControllerConfig {
         });
 
         if generate_key_map {
-            self.generate_key_map();
+            self.error = gen_key_map(&self.slot1, &self.slot2)
+                .map(|map| *key_map = map)
+                .err();
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) {
+    pub fn show(
+        &mut self,
+        controllers: &Controllers,
+        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
+        ui: &mut egui::Ui,
+    ) {
         ui.add_enabled_ui(self.recording.is_none(), |ui| {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
@@ -189,16 +158,96 @@ impl ControllerConfig {
                         Connection::Unconnected => ControllerPort::unconnected(),
                         Connection::Virtual => ControllerPort::digital(),
                     };
-                    self.controllers[self.show_slot].replace(port);
+                    controllers[self.show_slot].replace(port);
                 }
 
                 ui.separator();
 
                 egui::ScrollArea::new([false, true]).show(ui, |ui| {
-                    self.show_buttons(self.show_slot, ui);
+                    self.show_buttons(key_map, self.show_slot, ui);
                 });
             });
         });
+    }
+}
+
+fn gen_key_map(
+    slot1: &ButtonBindings,
+    slot2: &ButtonBindings,
+) -> Result<HashMap<VirtualKeyCode, (IoSlot, Button)>, String> {
+    let s1 = slot1
+        .as_slice()
+        .iter()
+        .zip(BUTTONS.iter())
+        .filter_map(|(binding, button)| {
+            binding.map(|key| (*button, IoSlot::Slot1, key))
+        });
+    let s2 = slot2
+        .as_slice()
+        .iter()
+        .zip(BUTTONS.iter())
+        .filter_map(|(binding, button)| {
+            binding.map(|key| (*button, IoSlot::Slot2, key))
+        });
+    let mut map = HashMap::new();
+    for (button, slot, key) in s1.chain(s2) {
+        if let Some((slot2, button2)) = map.insert(key, (slot, button)) {
+            return Err(format!(
+                "Duplicate key bindings: {button} for {slot} and {button2} for {slot2} are both bound to {}",
+                keys::keycode_name(key),
+            ));
+        }
+    }
+    Ok(map)
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+enum Connection {
+    Unconnected,
+    Virtual,
+    // DualShock,
+}
+
+impl Default for Connection {
+    fn default() -> Self {
+        Connection::Unconnected
+    }
+}
+
+#[repr(C)]
+#[derive(Default, Serialize, Deserialize)]
+struct ButtonBindings {
+    select: Option<VirtualKeyCode>,  
+    l3: Option<VirtualKeyCode>,  
+    r3: Option<VirtualKeyCode>,  
+    start: Option<VirtualKeyCode>,  
+    up: Option<VirtualKeyCode>,  
+    right: Option<VirtualKeyCode>,  
+    down: Option<VirtualKeyCode>,  
+    left: Option<VirtualKeyCode>,  
+    l2: Option<VirtualKeyCode>,  
+    r2: Option<VirtualKeyCode>,  
+    l1: Option<VirtualKeyCode>,  
+    r1: Option<VirtualKeyCode>,  
+    triangle: Option<VirtualKeyCode>,  
+    circle: Option<VirtualKeyCode>,  
+    cross: Option<VirtualKeyCode>,  
+    square: Option<VirtualKeyCode>,  
+}
+
+impl ButtonBindings {
+    fn as_slice_mut(&mut self) -> &mut [Option<VirtualKeyCode>] {
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self as *mut Self as *mut Option<VirtualKeyCode>, 16
+            )
+        }
+    }
+
+    fn as_slice(&self) -> &[Option<VirtualKeyCode>] {
+        unsafe {
+            std::slice::from_raw_parts(self as *const Self as *const Option<VirtualKeyCode>, 16)
+        }
     }
 }
 

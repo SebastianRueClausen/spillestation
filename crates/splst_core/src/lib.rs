@@ -24,49 +24,11 @@ pub use bus::bios::Bios;
 pub use cdrom::Disc;
 
 use std::time::Duration;
+use std::cell::RefCell;
 
 /// Used to represent an absolute CPU cycle number. This will never overflow, unless the emulator runs
 /// for 17,725 years.
 pub type Cycle = u64;
-
-pub struct DrawInfo {
-    pub vram_x_start: u32,
-    pub vram_y_start: u32,
-}
-
-#[derive(PartialEq, Eq)]
-pub enum StopReason {
-    Time,
-    Break,
-}
-
-pub trait VidOut {
-    fn new_frame(&mut self, draw_info: &DrawInfo, vram: &Vram);
-}
-
-pub trait Debugger {
-    /// Called when loading an instruction.
-    fn instruction_load(&mut self, addr: u32);
-    /// Callec when loading data. 
-    fn data_load(&mut self, addr: u32);
-    /// Called when storing data.
-    fn data_store(&mut self, addr: u32);
-    /// Called after every cycle. The ['System'] will stop if it returns true.
-    fn should_stop(&mut self) -> bool;
-}
-
-// Implement debugger for unit type to easily use no debugger.
-impl Debugger for () {
-    fn instruction_load(&mut self, _: u32) { }
-
-    fn data_load(&mut self, _: u32) { }
-
-    fn data_store(&mut self, _: u32) { }
-
-    fn should_stop(&mut self) -> bool {
-        false
-    }
-}
 
 /// The whole system is on ['Cpu']. This struct is to control and interact with the system
 /// from the frontend.
@@ -84,6 +46,16 @@ impl System {
     ) -> Self {
         Self { cpu: Cpu::new(bios, disc, controllers), last_frame: 0 }
     }
+
+    /*
+    pub fn new1<'ctx, V: VidOut>(
+        bios: Bios,
+        video_out: &'ctx V,
+        disc: &'ctx RefCell<Disc>,
+        controllers: &'ctx RefCell<Controllers>,
+    ) -> Self {
+    }
+    */
 
     pub fn bios(&self) -> &Bios {
         &self.cpu.bus.bios()
@@ -160,6 +132,45 @@ impl System {
             }
         }
         StopReason::Time
+    }
+}
+
+pub struct DrawInfo {
+    pub vram_x_start: u32,
+    pub vram_y_start: u32,
+}
+
+#[derive(PartialEq, Eq)]
+pub enum StopReason {
+    Time,
+    Break,
+}
+
+pub trait VidOut {
+    fn new_frame(&mut self, draw_info: &DrawInfo, vram: &Vram);
+}
+
+pub trait Debugger {
+    /// Called when loading an instruction.
+    fn instruction_load(&mut self, addr: u32);
+    /// Callec when loading data. 
+    fn data_load(&mut self, addr: u32);
+    /// Called when storing data.
+    fn data_store(&mut self, addr: u32);
+    /// Called after every cycle. The ['System'] will stop if it returns true.
+    fn should_stop(&mut self) -> bool;
+}
+
+// Implement debugger for unit type to easily use no debugger.
+impl Debugger for () {
+    fn instruction_load(&mut self, _: u32) { }
+
+    fn data_load(&mut self, _: u32) { }
+
+    fn data_store(&mut self, _: u32) { }
+
+    fn should_stop(&mut self) -> bool {
+        false
     }
 }
 

@@ -1,6 +1,10 @@
-use splst_core::Bios;
+use splst_core::{Bios, Controllers, IoSlot, Button};
 use super::config::Config;
 
+use winit::event::VirtualKeyCode;
+use std::collections::HashMap;
+
+/// Start menu shoved when starting the emulator.
 pub struct StartMenu {
     error: Option<String>,
 }
@@ -10,16 +14,28 @@ impl StartMenu {
         Self { error: None }
     }
 
-    fn show_settings(&mut self, config: &mut Config, ui: &mut egui::Ui) -> Option<Bios> {
-        ui.group(|ui| {
-            config.show_inside(None, ui);
-        });
+    fn show_settings(
+        &mut self,
+        config: &mut Config,
+        controllers: &mut Controllers,
+        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
+        ui: &mut egui::Ui,
+    ) -> Option<Bios> {
+        // This should never really scroll at any time, it's only to limit it's height.
+        egui::ScrollArea::vertical()
+            .max_height(ui.available_size().y / 1.1)
+            .show(ui, |ui| {
+                ui.group(|ui| {
+                    config.show_inside(None, controllers, key_map, ui);
+                });
+            });
 
         ui.horizontal(|ui| {
-            if ui.button("Start").clicked() {
+            let bios = if ui.button("Start").clicked() {
                 config.bios
                     .take_bios()
                     .or_else(|| {
+                        config.show_bios_menu();
                         self.error = Some(
                             "A BIOS must be loaded to start the emulator".to_string()
                         );
@@ -27,7 +43,13 @@ impl StartMenu {
                     })
             } else {
                 None
+            };
+
+            if let Some(err) = &self.error {
+                ui.label(err);
             }
+
+            bios
         })
         .inner
     }
@@ -35,6 +57,8 @@ impl StartMenu {
     pub fn show_area(
         &mut self,
         config: &mut Config,
+        controllers: &mut Controllers,
+        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
         ctx: &egui::CtxRef
     ) -> Option<Bios> {
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -48,7 +72,7 @@ impl StartMenu {
                 ));
             });
             ui.allocate_space(space);
-            self.show_settings(config, ui)
+            self.show_settings(config, controllers, key_map, ui)
         })
         .inner
     }

@@ -43,12 +43,10 @@ pub struct Controllers(pub(super) [Rc<RefCell<ControllerPort>>; 2]);
 impl Controllers {
     pub fn set_button(&mut self, slot: IoSlot, button: Button, pressed: bool) {
         match *self[slot].borrow_mut() {
-            ControllerPort::Unconnected => {
-                warn!("Button pressed for unconnected controller");
-            }
             ControllerPort::Digital(ref mut ctrl) => {
                 ctrl.buttons.set_button(button, pressed);
             }
+            _ => (),
         }
     }
 

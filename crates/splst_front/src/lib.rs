@@ -1,9 +1,9 @@
-#![feature(vec_retain_mut)]
+#![feature(vec_retain_mut, let_else)]
 
 //! The frontend of the emulator. Handles the window, input/output, rendering, GUI and controls the
 //! emulator itself.
 //!
-//! TODO:
+//! # TODO
 //! - Find some way to make the emulator sleep in emulation mode if we are keeping up. Right now it
 //!   will just continue to run for very small intervals all the time.
 
@@ -13,12 +13,11 @@ extern crate log;
 mod gui;
 mod start_menu;
 mod render;
-
 mod debug;
 mod config;
 mod keys;
 
-use splst_core::{System, timing};
+use splst_core::{System, timing, Controllers, IoSlot, Button};
 use crate::render::{Renderer, SurfaceSize};
 use gui::GuiCtx;
 use start_menu::StartMenu;
@@ -30,6 +29,7 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{WindowBuilder, Window};
 
 use std::time::{Duration, Instant};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -60,9 +60,13 @@ pub struct Frontend {
     gui_ctx: GuiCtx,
     renderer: Renderer,
     event_loop: EventLoop<()>,
+    controllers: Controllers,
+    /// Lookup for key presses.
+    key_map: HashMap<VirtualKeyCode, (IoSlot, Button)>,
     window: Window,
     /// When the last frame was drawn.
     last_draw: Instant,
+    /// The expected duration for each frame.
     frame_time: Duration,
 }
 
@@ -141,12 +145,22 @@ impl Frontend {
                                         *show_settings = !*show_settings; 
                                     }
                                     (Some(key), state) if *show_settings => {
-                                        if !self.config.handle_key_open(key, state) {
+                                        if !self.config.handle_key_event(&mut self.key_map, key, state) {
                                             self.gui_ctx.handle_window_event(event);
                                         }
                                     }
                                     (Some(key), state) if !*show_settings => {
-                                        if !self.config.handle_key_closed(key, state) {
+                                        let consumed = self.key_map
+                                            .get(&key)
+                                            .map(|(slot, button)| {
+                                                let pressed = state == ElementState::Pressed;
+                                                self.controllers.set_button(
+                                                    *slot, *button, pressed
+                                                );
+                                            })
+                                            .is_some();
+
+                                        if !consumed {
                                             self.gui_ctx.handle_window_event(event);
                                         }
                                     }
@@ -157,7 +171,7 @@ impl Frontend {
                             }
                             Stage::StartMenu(_) => {
                                 if let Some(key) = key_event.virtual_keycode {
-                                    self.config.handle_key_open(key, key_event.state);
+                                    self.config.handle_key_event(&mut self.key_map, key, key_event.state);
                                 }
                             }
                         }
@@ -178,7 +192,12 @@ impl Frontend {
                             let res = self.gui_ctx.render(renderer, encoder, view, &self.window, |gui| {
                                 app_menu.show(gui, mode);
                                 if show_settings {
-                                    self.config.show(Some(system.bios()), gui);
+                                    self.config.show(
+                                        Some(system.bios()),
+                                        &mut self.controllers,
+                                        &mut self.key_map,
+                                        gui,
+                                    );
                                 }
                             });
                             if let Err(err) = res {
@@ -192,7 +211,12 @@ impl Frontend {
 
                         self.renderer.render(|encoder, view, renderer| {
                             let res = self.gui_ctx.render(renderer, encoder, view, &self.window, |gui| {
-                                bios = menu.show_area(&mut self.config, gui);
+                                bios = menu.show_area(
+                                    &mut self.config,
+                                    &mut self.controllers,
+                                    &mut self.key_map,
+                                    gui
+                                );
                             });
                             if let Err(err) = res {
                                 error!("Failed to render GUI: {}", err);
@@ -204,7 +228,7 @@ impl Frontend {
                                 system: System::new(
                                     bios,
                                     self.config.disc.disc(),
-                                    self.config.controller.controllers(),
+                                    self.controllers.clone(),
                                 ),
                                 app_menu: Box::new(DebugMenu::new()),
                                 last_update: Instant::now(),
@@ -252,10 +276,12 @@ impl Frontend {
         let window = WindowBuilder::new()
             .with_title("spillestation")
             .build(&event_loop)
-            .expect("Failed to create window");
+            .expect("failed to create window");
 
         let renderer = Renderer::new(&window);
-        let config = Config::load_from_file().unwrap_or_default();
+
+        let mut config = Config::from_file_or_default();
+        let key_map = config.controller.get_key_map();
 
         // TODO: Change frame rate to handle both PAL and NTSC.
         let frame_time = Duration::from_secs_f32(1.0 / timing::NTSC_FPS as f32);
@@ -264,7 +290,9 @@ impl Frontend {
             stage: Stage::StartMenu(StartMenu::new()),
             gui_ctx: GuiCtx::new(window.scale_factor() as f32, &renderer),
             last_draw: Instant::now(),
+            controllers: Controllers::default(),
             config,
+            key_map,
             renderer,
             event_loop,
             window,

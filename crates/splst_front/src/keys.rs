@@ -1,5 +1,6 @@
 use winit::event::VirtualKeyCode;
 
+/// TODO: Add for all possible.
 pub fn keycode_name(key: VirtualKeyCode) -> &'static str {
     match key {
         VirtualKeyCode::Key0 => "0",

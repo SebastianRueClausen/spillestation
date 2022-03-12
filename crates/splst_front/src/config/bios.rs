@@ -19,7 +19,7 @@ pub struct BiosConfig {
     #[serde(skip)]
     error: Option<String>,
    
-    bios_paths: Vec<PathBuf>,
+    paths: Vec<PathBuf>,
     default: Option<PathBuf>,
 }
 
@@ -56,10 +56,12 @@ impl BiosConfig {
                     }
                 }
                 None => {
-                    ui.label("A BIOS File mist be loaded");
+                    ui.label("A BIOS File must be loaded");
                 }
             }
         }
+
+        ui.separator();
 
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.add_path).hint_text("Path"));
@@ -80,14 +82,16 @@ impl BiosConfig {
 
             if ui.button("Add").clicked() {
                 self.is_modified = true;
-                self.bios_paths.push(PathBuf::from(&self.add_path));
+                self.paths.push(PathBuf::from(&self.add_path));
             }
         });
 
+        ui.separator();
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("bios_grid").show(ui, |ui| {
-                let len_before = self.bios_paths.len();
-                self.bios_paths.retain(|path| {
+                let len_before = self.paths.len();
+                self.paths.retain(|path| {
                     let name = path
                         .as_path()
                         .file_name()
@@ -111,7 +115,7 @@ impl BiosConfig {
                     retain
                 });
 
-                if len_before != self.bios_paths.len() {
+                if len_before != self.paths.len() {
                     self.is_modified = true;
                 }
             });
