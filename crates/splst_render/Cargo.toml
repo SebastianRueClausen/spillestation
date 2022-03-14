@@ -1,0 +1,15 @@
+[package]
+name = "splst_render"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+
+[dependencies]
+winit = { version = "0.26.0", features = ["serde"] }
+wgpu = { version = "0.12", features = [ "spirv" ] }
+ultraviolet = { version = "0.8.1" }
+pollster = "0.2.4"
+bytemuck = { version = "1.7.2", features = [ "derive" ] }
+
+log = "*"
+thiserror = "*"

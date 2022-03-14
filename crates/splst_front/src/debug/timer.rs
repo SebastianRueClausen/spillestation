@@ -2,7 +2,6 @@ use super::DebugApp;
 
 use splst_core::timer::{Timers, TimerId};
 use splst_core::System;
-use crate::render::Renderer;
 
 use std::fmt::Write;
 use std::time::Duration;
@@ -40,11 +39,11 @@ impl DebugApp for TimerView {
         "Timer View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System, _: &mut Renderer) {
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
         self.fields.iter_mut().for_each(|fields|
             fields.iter_mut().for_each(|field| field.clear())
         );
-        if let Err(err) = self.write_fields(system.cpu.bus().timers()) {
+        if let Err(err) = self.write_fields(system.timers()) {
             eprintln!("{}", err);
         }
     }

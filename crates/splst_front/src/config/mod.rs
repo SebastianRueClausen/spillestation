@@ -2,7 +2,7 @@ mod controller;
 mod bios;
 mod disc;
 
-use splst_core::{Bios, Button, IoSlot, Controllers};
+use splst_core::{Bios, Button, IoSlot, Controllers, Disc};
 
 use controller::ControllerConfig;
 use bios::BiosConfig;
@@ -147,10 +147,19 @@ impl Config {
         }
     }
 
+    pub fn handle_dropped_file(&mut self, path: &Path) {
+        match self.menu {
+            Menu::Bios => self.bios.handle_dropped_file(path),
+            Menu::Disc => self.disc.handle_dropped_file(path),
+            _ => (),
+        }
+    }
+
     pub fn show_inside(
         &mut self,
         used_bios: Option<&Bios>,
         controllers: &mut Controllers,
+        disc: &mut Disc,
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
         ui: &mut egui::Ui,
     ) {
@@ -167,8 +176,11 @@ impl Config {
                     ui.label(msg);
                 }
                 if !self.saved_to_file || self.is_modified() {
-                    if ui.button("Save").clicked() {
+                    if ui.button("Save to config").clicked() {
                         self.try_save_to_file();
+                    }
+                    if ui.button("Reload from Config").clicked() {
+                        *self = Self::from_file_or_default();
                     }
                 } else {
                     ui.label("Saved to Config");
@@ -178,7 +190,7 @@ impl Config {
         match self.menu {
             Menu::Controller => self.controller.show(controllers, key_map, ui),
             Menu::Bios => self.bios.show(used_bios, ui),
-            Menu::Disc => self.disc.show(ui),
+            Menu::Disc => self.disc.show(disc, ui),
         }
     }
 
@@ -186,11 +198,12 @@ impl Config {
         &mut self,
         used_bios: Option<&Bios>,
         controllers: &mut Controllers,
+        disc: &mut Disc,
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
         ctx: &egui::CtxRef,
     ) {
         egui::SidePanel::left("settings").show(ctx, |ui| {
-            self.show_inside(used_bios, controllers, key_map, ui)
+            self.show_inside(used_bios, controllers, disc, key_map, ui)
         });
     }
 }

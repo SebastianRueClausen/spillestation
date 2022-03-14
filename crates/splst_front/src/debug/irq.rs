@@ -2,7 +2,6 @@ use super::DebugApp;
 
 use splst_core::cpu::Irq;
 use splst_core::System;
-use crate::render::Renderer;
 
 use std::time::Duration;
 
@@ -17,8 +16,8 @@ impl DebugApp for IrqView {
         "IRQ View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System, _: &mut Renderer) {
-        let state = &mut system.cpu.bus_mut().irq_state;
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
+        let state = system.irq_state_mut();
         self.flags.iter_mut().zip(IRQS).for_each(|(flag, irq)| {
             *flag = (state.is_triggered(irq), state.is_masked(irq));
         });

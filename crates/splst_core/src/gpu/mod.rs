@@ -15,13 +15,14 @@ mod gp1;
 pub mod vram;
 
 use splst_util::{Bit, BitSet};
+use splst_render::{Renderer, DrawInfo};
 use crate::cpu::Irq;
 use crate::bus::{DmaChan, ChanDir, BusMap, AddrUnit};
 use crate::bus::dma::Port;
 use crate::schedule::{Event, Schedule};
 use crate::timing;
 use crate::timer::Timers;
-use crate::{Cycle, DrawInfo};
+use crate::Cycle;
 
 use fifo::{Fifo, PushAction};
 use primitive::Color;
@@ -29,10 +30,13 @@ use gp0::draw_mode;
 
 use std::fmt;
 use std::ops::Range;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub use vram::Vram;
 
 pub struct Gpu {
+    pub(super) renderer: Rc<RefCell<Renderer>>,
     /// The current state of the GPU.
     state: State,
     /// The GPU FIFO. Used to recieve commands and some kinds of data.
@@ -86,7 +90,7 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub fn new() -> Self {
+    pub fn new(renderer: Rc<RefCell<Renderer>>) -> Self {
         let dis_x_start = 0x200;
         let dis_y_start = 0x0;
 
@@ -104,6 +108,7 @@ impl Gpu {
         );
 
         Self {
+            renderer,
             state: State::Idle,
             fifo: Fifo::new(),
             vram: Vram::new(),
@@ -252,8 +257,8 @@ impl Gpu {
 
     pub fn draw_info(&self) -> DrawInfo {
         DrawInfo {
-            vram_x_start: self.vram_x_start as u32,
-            vram_y_start: self.vram_y_start as u32,
+            x_start: self.vram_x_start as u32,
+            y_start: self.vram_y_start as u32,
         }
     }
 
@@ -344,6 +349,16 @@ impl Gpu {
             // If we are either leaving or entering Vblank.
             if self.timing.in_vblank != in_vblank {
                 if in_vblank {
+                    let draw_info = DrawInfo {
+                        x_start: self.vram_x_start as u32,
+                        y_start: self.vram_y_start as u32,
+                    };
+
+                    self.renderer.borrow_mut().show_frame(
+                        &draw_info,
+                        &self.vram.raw_data(),
+                    );
+
                     self.timing.frame_count += 1;
                     schedule.schedule_now(Event::IrqTrigger(Irq::VBlank));
                 }

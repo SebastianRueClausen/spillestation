@@ -1,4 +1,4 @@
-use splst_core::{Bios, Controllers, IoSlot, Button};
+use splst_core::{Bios, Controllers, IoSlot, Button, Disc};
 use super::config::Config;
 
 use winit::event::VirtualKeyCode;
@@ -18,15 +18,16 @@ impl StartMenu {
         &mut self,
         config: &mut Config,
         controllers: &mut Controllers,
+        disc: &mut Disc,
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
         ui: &mut egui::Ui,
     ) -> Option<Bios> {
         // This should never really scroll at any time, it's only to limit it's height.
-        egui::ScrollArea::vertical()
+        egui::ScrollArea::neither()
             .max_height(ui.available_size().y / 1.1)
             .show(ui, |ui| {
                 ui.group(|ui| {
-                    config.show_inside(None, controllers, key_map, ui);
+                    config.show_inside(None, controllers, disc, key_map, ui);
                 });
             });
 
@@ -58,6 +59,7 @@ impl StartMenu {
         &mut self,
         config: &mut Config,
         controllers: &mut Controllers,
+        disc: &mut Disc,
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
         ctx: &egui::CtxRef
     ) -> Option<Bios> {
@@ -72,7 +74,7 @@ impl StartMenu {
                 ));
             });
             ui.allocate_space(space);
-            self.show_settings(config, controllers, key_map, ui)
+            self.show_settings(config, controllers, disc, key_map, ui)
         })
         .inner
     }

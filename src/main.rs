@@ -1,5 +1,3 @@
-use splst_front::Frontend;
-
 use log::LevelFilter;
 use std::io::Write;
 
@@ -13,5 +11,6 @@ fn main() {
         .filter_module("naga", LevelFilter::Error)
         .filter(None, LevelFilter::Debug)
         .init();
-    Frontend::new().run();
+
+    splst_front::run();
 }

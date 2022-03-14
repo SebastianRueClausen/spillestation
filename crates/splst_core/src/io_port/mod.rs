@@ -12,8 +12,10 @@ use crate::Cycle;
 use memcard::MemCard;
 
 use std::fmt;
+use std::rc::Rc;
+use std::cell::RefCell;
 
-pub use controller::{Button, ButtonState, ControllerPort, Controllers};
+pub use controller::{Button, ButtonState, Controllers};
 
 /// Controller and Memory Card I/O ports.
 pub struct IoPort {
@@ -30,11 +32,11 @@ pub struct IoPort {
     tx_val: u8,
 
     memcards: [Option<MemCard>; 2],
-    controllers: Controllers,
+    pub(super) controllers: Rc<RefCell<Controllers>>,
 }
 
 impl IoPort {
-    pub fn new(controllers: Controllers) -> Self {
+    pub fn new(controllers: Rc<RefCell<Controllers>>) -> Self {
         Self {
             state: State::Idle,
             active_device: None,
@@ -160,9 +162,10 @@ impl IoPort {
     }
 
     fn reset_device_states(&mut self) {
-        self.controllers.0
+        self.controllers
+            .borrow_mut()
             .iter_mut()
-            .for_each(|c| c.borrow_mut().reset());
+            .for_each(|c| c.reset());
     }
 
     fn begin_transfer(&mut self, schedule: &mut Schedule) {
@@ -211,7 +214,7 @@ impl IoPort {
     fn make_transfer(&mut self, schedule: &mut Schedule) {
         let index = self.ctrl.io_slot() as usize;
 
-        let ctrl = &mut self.controllers[self.ctrl.io_slot()];
+        let ctrl = &mut self.controllers.borrow_mut()[self.ctrl.io_slot()];
         let memcard = &mut self.memcards[index];
 
         // Set rx_enabled.
@@ -219,31 +222,27 @@ impl IoPort {
 
         let (val, ack) = match self.active_device {
             None => {
-                match (&mut (*ctrl.borrow_mut()), memcard) {
-                    (ControllerPort::Unconnected, None) => (0xff, false),
-                    (ControllerPort::Digital(ctrl), _) => {
+                match (ctrl, memcard) {
+                    (controller::Port::Unconnected, None) => (0xff, false),
+                    (controller::Port::Digital(ctrl), _) => {
                         let (val, ack) = ctrl.transfer(self.tx_val);
-
                         if ack {
                             self.active_device = Some(Device::Controller);
                         }
-
                         (val, ack)
                     }
-                    (ControllerPort::Unconnected, Some(memcard)) => {
+                    (controller::Port::Unconnected, Some(memcard)) => {
                         let (val, ack) = memcard.transfer(self.tx_val);
-            
                         if ack {
                             self.active_device = Some(Device::MemCard);
                         }
-                        
                         (val, ack)
                     }
                 }
             }
-            Some(Device::Controller) => match &mut (*ctrl.borrow_mut()) {
-                ControllerPort::Digital(ctrl) => ctrl.transfer(self.tx_val),
-                ControllerPort::Unconnected => (0xff, false),
+            Some(Device::Controller) => match ctrl {
+                controller::Port::Digital(ctrl) => ctrl.transfer(self.tx_val),
+                controller::Port::Unconnected => (0xff, false),
             }
             Some(Device::MemCard) => match memcard {
                 Some(memcard) => memcard.transfer(self.tx_val),
@@ -255,8 +254,10 @@ impl IoPort {
 
         match ack {
             false => {
-                self.end_transfer(schedule);
+                self.state = State::Idle;
                 self.active_device = None;
+
+                schedule.unschedule(Event::IoPortTransfer);
             }
             true => {
                 let cycles = match self.active_device {

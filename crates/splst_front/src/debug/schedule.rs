@@ -1,7 +1,6 @@
 use super::DebugApp;
 
 use splst_core::System;
-use crate::render::Renderer;
 
 use std::fmt::Write;
 use std::time::Duration;
@@ -17,13 +16,13 @@ impl DebugApp for ScheduleView {
         "Schedule View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System, _: &mut Renderer) {
-        let now = system.cpu.bus().schedule.cycle();
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
+        let now = system.schedule().cycle();
 
         self.cycle.clear();
         write!(&mut self.cycle, "cycle: {}", now).unwrap();
 
-        self.events = system.cpu.bus().schedule
+        self.events = system.schedule()
             .iter()
             .map(|entry| {
                 (entry.0.saturating_sub(now).to_string(), format!("{}", entry.1))

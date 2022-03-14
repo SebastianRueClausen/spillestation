@@ -1,9 +1,12 @@
+//! # TODO
+//! - Maybe check that the paths exists when adding them.
+
 use splst_core::Disc;
 
 use native_dialog::FileDialog;
 use serde::{Serialize, Deserialize};
 
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct DiscConfig {
@@ -14,36 +17,39 @@ pub struct DiscConfig {
     add_path: String,
 
     #[serde(skip)]
-    disc: Disc,
-
-    #[serde(skip)]
     error: Option<String>,
    
     paths: Vec<PathBuf>,
 }
 
 impl DiscConfig {
-    pub fn disc(&self) -> Disc {
-        self.disc.clone()
+    pub fn handle_dropped_file(&mut self, path: &Path) {
+        self.is_modified = true;
+        self.paths.push(path.to_path_buf());
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui) {
-        match *self.disc.cd() {
+    pub fn show(&mut self, disc: &mut Disc, ui: &mut egui::Ui) {
+        match disc.cd() {
             None => {
                 ui.label("No Disc Loaded");
             }
-            Some(ref cd) => {
-                ui.label(cd.name());
-                if ui.button("Eject").clicked() {
-                    self.disc.eject();
+            Some(cd) => {
+                let unload = ui.horizontal(|ui| {
+                    ui.label(cd.name());
+                    ui.button("Unload").clicked()
+                })
+                .inner;
+
+                if unload {
+                    disc.unload();
                 }
             }
         }
-    
+
         ui.separator();
 
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.add_path).hint_text("Path"));
+            ui.add(egui::TextEdit::singleline(&mut self.add_path).hint_text("CUE File"));
 
             if ui.button("Select").clicked() {
                 let loaded = FileDialog::new()
@@ -71,23 +77,23 @@ impl DiscConfig {
             egui::Grid::new("game_grid").show(ui, |ui| {
                 let len_before = self.paths.len(); 
                 self.paths.retain(|path| {
-                    let name = path
+                    let short = path
                         .as_path()
                         .file_name()
                         .unwrap_or(path.as_os_str())
-                        .to_string_lossy()
-                        .to_string();
+                        .to_string_lossy();
 
-                    ui.label(name);
+                    let long = path
+                        .as_path()
+                        .to_string_lossy();
+
+                    ui.label(&*short).on_hover_text(&*long);
 
                     let retain = !ui.button("Remove").clicked();
-
                     if ui.button("Load").clicked() {
                         match splst_cdimg::open_cd(path) {
                             Err(err) => self.error = Some(err.to_string()),
-                            Ok(cd) => {
-                                self.disc.load(cd);
-                            }
+                            Ok(cd) => disc.load(cd),
                         }
                     }
     

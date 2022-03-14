@@ -6,7 +6,6 @@ use crate::Cycle;
 use ultraviolet::vec::Vec3;
 
 impl Gpu {
-
     /// Draw a single pixel to the screen. It handles transparency and texture but not dithering.
     fn draw_pixel<Tran, Tex>(&mut self, x: i32, y: i32, color: Color, masked: bool)
     where

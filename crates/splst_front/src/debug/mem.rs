@@ -3,7 +3,6 @@ use super::DebugApp;
 use splst_core::bus::{Byte, Word};
 use splst_core::cpu::Opcode;
 use splst_core::System;
-use crate::render::Renderer;
 
 use std::fmt::Write;
 use std::str;
@@ -62,7 +61,7 @@ impl DebugApp for MemView {
         "Memory View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System, _: &mut Renderer) {
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
         // The start address must be 4-byte aligned. This is a hacky way to round down to next
         // multiple of 4.
         let start_addr = ((self.start_addr + 4) & !3) - 4;
@@ -77,7 +76,7 @@ impl DebugApp for MemView {
                 for (i, ins) in ins.iter_mut().enumerate() {
                     ins.clear();
                     let addr = start_addr + (i * 4) as u32;
-                    match system.cpu.bus_mut().peek::<Word>(addr) {
+                    match system.bus_mut().peek::<Word>(addr) {
                         None => write!(ins, "??").unwrap(),
                         Some(val) => {
                             write!(ins, "{}", Opcode::new(val)).unwrap()
@@ -90,7 +89,7 @@ impl DebugApp for MemView {
                     let mut as_text = [0; 4];
                     for (j, col) in row.iter_mut().enumerate() {
                         let addr = (i * 4 + j) as u32 + start_addr;
-                        match system.cpu.bus_mut().peek::<Byte>(addr) {
+                        match system.bus_mut().peek::<Byte>(addr) {
                             Some(val) => {
                                 as_text[j] = val as u8;
                                 col[0] = HEX_ASCII[((val >> 4) & 0xf) as usize];
@@ -112,11 +111,9 @@ impl DebugApp for MemView {
     fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let mut was_ins = matches!(self.mode, Mode::Instruction(..));
-
             if ui.selectable_value(&mut was_ins, false, "Value").clicked() {
                 self.mode = Mode::new_value();
             }
-
             if ui.selectable_value(&mut was_ins, true, "Instruction").clicked() {
                 self.mode = Mode::new_instruction();
             }

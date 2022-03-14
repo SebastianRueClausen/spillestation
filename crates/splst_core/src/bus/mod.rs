@@ -1,6 +1,6 @@
 //! Represent the memory BUS of the playstation 1.
 //!
-//! TODO:
+//! # TODO
 //! * Add a debug peek funktion to read from devices without side effects. For now reading data
 //!   through the debugger could potentially have side effects.
 //!
@@ -14,6 +14,7 @@ pub mod scratchpad;
 mod raw;
 
 use splst_util::Bit;
+use splst_render::Renderer;
 use crate::Cycle;
 use crate::schedule::{Event, Schedule};
 use crate::gpu::Gpu;
@@ -27,27 +28,35 @@ use dma::Dma;
 use ram::Ram;
 use scratchpad::ScratchPad;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 pub use dma::{DmaChan, ChanStat, ChanDir};
 
 pub struct Bus {
     pub cache_ctrl: CacheCtrl,
-    pub irq_state: IrqState,
-    pub schedule: Schedule,
     pub scratchpad: ScratchPad,
-    bios: Bios,
+    pub(super) irq_state: IrqState,
+    pub(super) bios: Bios,
+    pub(super) schedule: Schedule,
     ram: Ram,
     dma: Dma,
-    gpu: Gpu,
-    cdrom: CdRom,
-    timers: Timers,
+    pub(super) gpu: Gpu,
+    pub(super) cdrom: CdRom,
+    pub(super) timers: Timers,
     spu: Spu,
     mem_ctrl: MemCtrl,
     ram_size: RamSize,
-    io_port: IoPort,
+    pub(super) io_port: IoPort,
 }
 
 impl Bus {
-    pub fn new(bios: Bios, disc: Disc, controllers: Controllers) -> Self {
+    pub fn new(
+        bios: Bios,
+        renderer: Rc<RefCell<Renderer>>,
+        disc: Rc<RefCell<Disc>>,
+        controllers: Rc<RefCell<Controllers>>,
+    ) -> Self {
         let mut schedule = Schedule::new();
 
         schedule.schedule_in(5_000, Event::RunGpu);
@@ -60,7 +69,7 @@ impl Bus {
             scratchpad: ScratchPad::new(),
             ram: Ram::new(),
             dma: Dma::new(),
-            gpu: Gpu::new(),
+            gpu: Gpu::new(renderer),
             cdrom: CdRom::new(disc),
             timers: Timers::new(),
             spu: Spu::new(),
@@ -213,22 +222,6 @@ impl Bus {
             }
         }
         Some(()) 
-    }
-
-    pub fn gpu(&self) -> &Gpu {
-        &self.gpu
-    }
-
-    pub fn timers(&self) -> &Timers {
-        &self.timers
-    }
-
-    pub fn bios(&self) -> &Bios {
-        &self.bios
-    }
-
-    pub fn io_port_mut(&mut self) -> &mut IoPort {
-        &mut self.io_port
     }
 
     pub fn handle_event(&mut self, event: Event) {

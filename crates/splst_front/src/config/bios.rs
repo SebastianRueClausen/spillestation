@@ -36,6 +36,11 @@ impl BiosConfig {
         })
     }
 
+    pub fn handle_dropped_file(&mut self, path: &Path) {
+        self.is_modified = true;
+        self.paths.push(path.to_path_buf()); 
+    }
+
     pub fn show(&mut self, used: Option<&Bios>, ui: &mut egui::Ui) {
         match used {
             Some(bios) => {
@@ -92,17 +97,19 @@ impl BiosConfig {
             egui::Grid::new("bios_grid").show(ui, |ui| {
                 let len_before = self.paths.len();
                 self.paths.retain(|path| {
-                    let name = path
+                    let short = path
                         .as_path()
                         .file_name()
                         .unwrap_or(path.as_os_str())
-                        .to_string_lossy()
-                        .to_string();
+                        .to_string_lossy();
 
-                    ui.label(name);
+                    let long = path
+                        .as_path()
+                        .to_string_lossy();
+
+                    ui.label(&*short).on_hover_text(&*long);
 
                     let retain = !ui.button("Remove").clicked();
-
                     if used.is_none() && ui.button("Load").clicked() {
                         match Bios::from_file(path) {
                             Err(err) => self.error = Some(err.to_string()),

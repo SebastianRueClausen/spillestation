@@ -6,7 +6,6 @@ use super::DebugApp;
 
 use splst_core::cpu::{Cpu, REGISTER_NAMES};
 use splst_core::{System, StopReason, Debugger};
-use crate::render::Renderer;
 use crate::timing::CPU_HZ;
 
 use std::fmt::{self, Write};
@@ -43,7 +42,7 @@ impl DebugApp for CpuStatus {
         "CPU Status"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System, _: &mut Renderer) {
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
         self.fields.iter_mut()
             .chain(self.registers.iter_mut())
             .for_each(|f| f.clear());
@@ -325,13 +324,13 @@ impl DebugApp for CpuCtrl {
         "CPU Control"
     }
 
-    fn update_tick(&mut self, dt: Duration, sys: &mut System, renderer: &mut Renderer) {
+    fn update_tick(&mut self, dt: Duration, sys: &mut System) {
         let stop = match self.mode {
             RunMode::Step { ref mut stepped, amount } => {
                 if *stepped {
                     *stepped = false;
                     self.bp_msg = None;
-                    sys.step_debug(amount, renderer, &mut self.bps)
+                    sys.step_debug(amount, &mut self.bps)
                 } else {
                     StopReason::Time 
                 }
@@ -341,7 +340,7 @@ impl DebugApp for CpuCtrl {
                 // after a breakpoint.
                 self.bp_msg = None;
                 let time = *remainder + dt;
-                let (rem, stop) = sys.run_debug(speed, time, renderer, &mut self.bps);
+                let (rem, stop) = sys.run_debug(speed, time, &mut self.bps);
                 *remainder = rem;
                 stop
             }

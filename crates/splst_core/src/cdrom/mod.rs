@@ -4,11 +4,10 @@
 //!   BIOS isn't expecting. 
 
 mod fifo;
-pub mod disc;
 
 use splst_util::Bit;
 use splst_util::{Bcd, Msf};
-use splst_cdimg::Sector;
+use splst_cdimg::{CdImage, Sector};
 
 use crate::cpu::Irq;
 use crate::bus::{AddrUnit, BusMap};
@@ -16,13 +15,14 @@ use crate::bus::{DmaChan, ChanDir};
 use crate::schedule::{Schedule, Event};
 use crate::Cycle;
 
-pub use disc::Disc;
 use fifo::Fifo;
 
 use std::fmt;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 pub struct CdRom {
-    disc: Disc,
+    pub(super) disc: Rc<RefCell<Disc>>,
     state: DriveState,
     /// The index register. This decides what happens when the CPU writes to and
     /// loads from the CDROM.
@@ -45,8 +45,7 @@ pub struct CdRom {
 }
 
 impl CdRom {
-    pub fn new(disc: Disc) -> Self {
-
+    pub fn new(disc: Rc<RefCell<Disc>>) -> Self {
         // TODO: Check startup value.
         let mode = ModeReg(0x0);
         let position = Msf::ZERO;
@@ -195,9 +194,9 @@ impl CdRom {
                 false
             }
             DriveState::Reading => {
-                match *self.disc.cd_mut() {
+                match self.disc.borrow_mut().cd() {
                     None => unreachable!(),
-                    Some(ref mut cd) => {
+                    Some(cd) => {
                         self.position = self.position
                             .next_sector()
                             .unwrap();
@@ -381,7 +380,7 @@ impl CdRom {
                 }
                 // get_id
                 0x1a => {
-                    if !self.disc.is_loaded() {
+                    if !self.disc.borrow().is_loaded() {
                         self.response_fifo.push_slice(&[0x11, 0x80]);
                         self.set_interrupt(schedule, Interrupt::Error);
                     } else {
@@ -416,7 +415,7 @@ impl CdRom {
     }
 
     fn drive_stat(&self) -> u8 {
-        if !self.disc.is_loaded() {
+        if !self.disc.borrow().is_loaded() {
             // This means that the drive cover is open.
             0x10
         } else {
@@ -450,6 +449,7 @@ impl fmt::Display for CdRomCmd {
         }
     }
 }
+
 /// Interrupt types used internally by the CDROM.
 #[derive(Clone, Copy)]
 enum Interrupt {
@@ -525,6 +525,27 @@ impl ModeReg {
     #[allow(dead_code)]
     fn double_speed(self) -> bool {
         self.0.bit(7)
+    }
+}
+
+#[derive(Default)]
+pub struct Disc(Option<CdImage>);
+
+impl Disc {
+    pub fn cd(&self) -> Option<&CdImage> {
+        self.0.as_ref()
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.0.is_some()
+    }
+
+    pub fn unload(&mut self) {
+        self.0.take();
+    }
+
+    pub fn load(&mut self, cd: CdImage) {
+        self.0 = Some(cd);
     }
 }
 

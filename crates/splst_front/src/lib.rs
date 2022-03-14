@@ -12,13 +12,12 @@ extern crate log;
 
 mod gui;
 mod start_menu;
-mod render;
 mod debug;
 mod config;
 mod keys;
 
-use splst_core::{System, timing, Controllers, IoSlot, Button};
-use crate::render::{Renderer, SurfaceSize};
+use splst_core::{System, timing, Controllers, Disc};
+use splst_render::{Renderer, SurfaceSize};
 use gui::GuiCtx;
 use start_menu::StartMenu;
 use debug::DebugMenu;
@@ -26,10 +25,11 @@ use config::Config;
 
 use winit::event::{ElementState, Event, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::{WindowBuilder, Window};
+use winit::window::WindowBuilder;
 
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RunMode {
@@ -41,6 +41,7 @@ pub enum RunMode {
 }
 
 enum Stage {
+    /// The start menu shown when starting the emulator. 
     StartMenu(StartMenu),
     Running {
         system: System,
@@ -52,251 +53,229 @@ enum Stage {
     },
 }
 
-/// The frontend of the emulator. It handles the window, input/output, config,
-/// running the emulator and rendering the output of the playstation to.
-pub struct Frontend {
-    stage: Stage,
-    config: Config,
-    gui_ctx: GuiCtx,
-    renderer: Renderer,
-    event_loop: EventLoop<()>,
-    controllers: Controllers,
-    /// Lookup for key presses.
-    key_map: HashMap<VirtualKeyCode, (IoSlot, Button)>,
-    window: Window,
-    /// When the last frame was drawn.
-    last_draw: Instant,
-    /// The expected duration for each frame.
-    frame_time: Duration,
-}
+pub fn run() {
+    let event_loop = EventLoop::new();
+    let window = WindowBuilder::new()
+        .with_title("spillestation")
+        .build(&event_loop)
+        .expect("failed to create window");
 
-impl Frontend {
-    pub fn run(mut self) {
-        self.event_loop.run(move |event, _, ctrl_flow| {
-            *ctrl_flow = ControlFlow::Poll;
-            match event {
-                Event::RedrawEventsCleared => {
-                    let dt = self.last_draw.elapsed();
+    let mut config = Config::from_file_or_default();
+    let mut key_map = config.controller.get_key_map();
 
-                    let mut redraw = || {
-                        self.window.request_redraw();
-                        self.last_draw = Instant::now();
-                    };
+    let renderer = Rc::new(RefCell::new(Renderer::new(&window)));
+    let controllers = Rc::new(RefCell::new(Controllers::default()));
+    let disc = Rc::new(RefCell::new(Disc::default()));
 
-                    match self.stage {
-                        Stage::Running {
-                            ref mut app_menu,
-                            ref system,
-                            mode,
-                            ..
-                        } => match mode {
-                            RunMode::Emulation => {
-                                if system.cpu.bus().gpu().in_vblank() {
-                                    redraw();
-                                }
-                            }
-                            RunMode::Debug => {
-                                if dt >= self.frame_time {
-                                    app_menu.draw_tick(dt);
-                                    redraw();
-                                }
-                            }
-                        },
-                        Stage::StartMenu(..) => {
-                            if dt >= self.frame_time {
+    let mut gui_ctx = GuiCtx::new(window.scale_factor() as f32, &renderer.borrow());
+    let mut stage = Stage::StartMenu(StartMenu::new());
+
+    // The instant the last frame was drawn.
+    let mut last_draw = Instant::now();
+
+    // The amonut of time between each frame.
+    // TODO: Change frame rate to handle both PAL and NTSC.
+    let frame_time = Duration::from_secs_f32(1.0 / timing::NTSC_FPS as f32);
+
+    event_loop.run(move |event, _, ctrl_flow| {
+        *ctrl_flow = ControlFlow::Poll;
+        match event {
+            Event::RedrawEventsCleared => {
+                let dt = last_draw.elapsed();
+
+                let mut redraw = || {
+                    window.request_redraw();
+                    last_draw = Instant::now();
+                };
+
+                match stage {
+                    Stage::Running {
+                        ref mut app_menu,
+                        ref system,
+                        mode,
+                        ..
+                    } => match mode {
+                        RunMode::Emulation => {
+                            if system.gpu().in_vblank() {
                                 redraw();
                             }
                         }
-                    }
-                }
-                Event::WindowEvent {
-                    ref event,
-                    window_id,
-                } if window_id == self.window.id() => {
-                    match event {
-                        WindowEvent::CloseRequested => *ctrl_flow = ControlFlow::Exit,
-                        WindowEvent::Resized(physical_size) => {
-                            let size = SurfaceSize {
-                                width: physical_size.width,
-                                height: physical_size.height,
-                            };
-                            self.renderer.resize(size);
-                            self.gui_ctx.resize(size);
-                        }
-                        WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                            self.renderer.resize(SurfaceSize::new(
-                                new_inner_size.width,
-                                new_inner_size.height,
-                            ));
-                            self.gui_ctx.set_scale_factor(self.window.scale_factor() as f32);
-                        }
-                        // Handle keyboard input.
-                        WindowEvent::KeyboardInput { input: key_event, .. } => match self.stage {
-                            Stage::Running {
-                                ref mut app_menu,
-                                ref mut show_settings,
-                                ..
-                            } => {
-                                match (key_event.virtual_keycode, key_event.state) {
-                                    (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
-                                        app_menu.toggle_open(); 
-                                    }
-                                    (Some(VirtualKeyCode::Tab), ElementState::Pressed) => {
-                                        *show_settings = !*show_settings; 
-                                    }
-                                    (Some(key), state) if *show_settings => {
-                                        if !self.config.handle_key_event(&mut self.key_map, key, state) {
-                                            self.gui_ctx.handle_window_event(event);
-                                        }
-                                    }
-                                    (Some(key), state) if !*show_settings => {
-                                        let consumed = self.key_map
-                                            .get(&key)
-                                            .map(|(slot, button)| {
-                                                let pressed = state == ElementState::Pressed;
-                                                self.controllers.set_button(
-                                                    *slot, *button, pressed
-                                                );
-                                            })
-                                            .is_some();
-
-                                        if !consumed {
-                                            self.gui_ctx.handle_window_event(event);
-                                        }
-                                    }
-                                    _ => {
-                                        self.gui_ctx.handle_window_event(event);
-                                    }
-                                }
-                            }
-                            Stage::StartMenu(_) => {
-                                if let Some(key) = key_event.virtual_keycode {
-                                    self.config.handle_key_event(&mut self.key_map, key, key_event.state);
-                                }
+                        RunMode::Debug => {
+                            if dt >= frame_time {
+                                app_menu.draw_tick(dt);
+                                redraw();
                             }
                         }
-                        _ => {
-                            self.gui_ctx.handle_window_event(event);
-                        }
-                    }
-                }
-                Event::RedrawRequested(_) => match self.stage {
-                    Stage::Running {
-                        ref mut app_menu,
-                        ref mut mode,
-                        ref system,
-                        show_settings,
-                        ..
-                    } => {
-                        self.renderer.render(|encoder, view, renderer| {
-                            let res = self.gui_ctx.render(renderer, encoder, view, &self.window, |gui| {
-                                app_menu.show(gui, mode);
-                                if show_settings {
-                                    self.config.show(
-                                        Some(system.bios()),
-                                        &mut self.controllers,
-                                        &mut self.key_map,
-                                        gui,
-                                    );
-                                }
-                            });
-                            if let Err(err) = res {
-                                app_menu.close_apps();
-                                error!("Failed to render GUI: {}", err);
-                            }
-                        });
-                    }
-                    Stage::StartMenu(ref mut menu) => {
-                        let mut bios = None;
-
-                        self.renderer.render(|encoder, view, renderer| {
-                            let res = self.gui_ctx.render(renderer, encoder, view, &self.window, |gui| {
-                                bios = menu.show_area(
-                                    &mut self.config,
-                                    &mut self.controllers,
-                                    &mut self.key_map,
-                                    gui
-                                );
-                            });
-                            if let Err(err) = res {
-                                error!("Failed to render GUI: {}", err);
-                            }
-                        });
-
-                        if let Some(bios) = bios {
-                            self.stage = Stage::Running {
-                                system: System::new(
-                                    bios,
-                                    self.config.disc.disc(),
-                                    self.controllers.clone(),
-                                ),
-                                app_menu: Box::new(DebugMenu::new()),
-                                last_update: Instant::now(),
-                                mode: RunMode::Emulation,
-                                show_settings: false,
-                            }
-                        }
-                    }
-                },
-                Event::MainEventsCleared => match self.stage {
-                    Stage::Running {
-                        ref mut system,
-                        ref mut app_menu,
-                        ref mut last_update,
-                        mode,
-                        ..
-                    } => {
-                        match mode {
-                            RunMode::Debug => {
-                                app_menu.update_tick(
-                                    last_update.elapsed(),
-                                    system,
-                                    &mut self.renderer
-                                );
-                            }
-                            RunMode::Emulation => {
-                                system.run(
-                                    last_update.elapsed(),
-                                    &mut self.renderer
-                                );
-                            }
-                        }
-                        *last_update = Instant::now();
                     },
-                    Stage::StartMenu(..) => (),
-                },
-                _ => {},
+                    Stage::StartMenu { .. } => {
+                        if dt >= frame_time {
+                            redraw();
+                        }
+                    }
+                }
             }
-        });
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == window.id() => {
+                match event {
+                    WindowEvent::CloseRequested => *ctrl_flow = ControlFlow::Exit,
+                    WindowEvent::Resized(physical_size) => {
+                        let size = SurfaceSize {
+                            width: physical_size.width,
+                            height: physical_size.height,
+                        };
+                        renderer.borrow_mut().resize(size);
+                        gui_ctx.resize(size);
+                    }
+                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                        renderer.borrow_mut().resize(SurfaceSize {
+                            width: new_inner_size.width,
+                            height: new_inner_size.height,
+                        }); 
+                        gui_ctx.set_scale_factor(window.scale_factor() as f32);
+                    }
+                    WindowEvent::DroppedFile(path) => match stage {
+                        Stage::Running { show_settings, .. } => {
+                            if show_settings {
+                                config.handle_dropped_file(&path.as_path()); 
+                            }
+                        }
+                        Stage::StartMenu(_) => {
+                            config.handle_dropped_file(&path.as_path());
+                        }
+                    }
+                    WindowEvent::KeyboardInput { input: key_event, .. } => match stage {
+                        Stage::Running {
+                            ref mut app_menu,
+                            ref mut show_settings,
+                            ..
+                        } => {
+                            match (key_event.virtual_keycode, key_event.state) {
+                                (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
+                                    app_menu.toggle_open(); 
+                                }
+                                (Some(VirtualKeyCode::Tab), ElementState::Pressed) => {
+                                    *show_settings = !*show_settings; 
+                                }
+                                (Some(key), state) if *show_settings => {
+                                    if !config.handle_key_event(&mut key_map, key, state) {
+                                        gui_ctx.handle_window_event(event);
+                                    }
+                                }
+                                (Some(key), state) if !*show_settings => {
+                                    let consumed = key_map
+                                        .get(&key)
+                                        .map(|(slot, button)| {
+                                            controllers.borrow_mut()[*slot].set_button(
+                                                *button, state == ElementState::Pressed,
+                                            );
+                                        })
+                                        .is_some();
 
-    }
+                                    if !consumed {
+                                        gui_ctx.handle_window_event(event);
+                                    }
+                                }
+                                _ => {
+                                    gui_ctx.handle_window_event(event);
+                                }
+                            }
+                        }
+                        Stage::StartMenu { .. } => {
+                            if let Some(key) = key_event.virtual_keycode {
+                                if !config.handle_key_event(&mut key_map, key, key_event.state) {
+                                    gui_ctx.handle_window_event(event);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        gui_ctx.handle_window_event(event);
+                    }
+                }
+            }
+            Event::RedrawRequested(_) => match stage {
+                Stage::Running {
+                    ref mut app_menu,
+                    ref mut mode,
+                    ref mut system,
+                    show_settings,
+                    ..
+                } => {
+                    renderer.borrow_mut().render(|encoder, view, renderer| {
+                        let res = gui_ctx.render(renderer, encoder, view, &window, |gui| {
+                            app_menu.show(gui, mode);
+                            if show_settings {
+                                config.show(
+                                    Some(system.bios()),
+                                    &mut controllers.borrow_mut(),
+                                    &mut disc.borrow_mut(),
+                                    &mut key_map,
+                                    gui,
+                                );
+                            }
+                        });
+                        if let Err(err) = res {
+                            app_menu.close_apps();
+                            error!("Failed to render GUI: {}", err);
+                        }
+                    });
+                }
+                Stage::StartMenu(ref mut menu) => {
+                    let mut bios = None;
+                    renderer.borrow_mut().render(|encoder, view, renderer| {
+                        let res = gui_ctx.render(renderer, encoder, view, &window, |gui| {
+                            bios = menu.show_area(
+                                &mut config,
+                                &mut controllers.borrow_mut(),
+                                &mut disc.borrow_mut(),
+                                &mut key_map,
+                                gui
+                            );
+                        });
+                        if let Err(err) = res {
+                            error!("Failed to render GUI: {}", err);
+                        }
+                    });
 
-    pub fn new() -> Self {
-        let event_loop = EventLoop::new();
-        let window = WindowBuilder::new()
-            .with_title("spillestation")
-            .build(&event_loop)
-            .expect("failed to create window");
-
-        let renderer = Renderer::new(&window);
-
-        let mut config = Config::from_file_or_default();
-        let key_map = config.controller.get_key_map();
-
-        // TODO: Change frame rate to handle both PAL and NTSC.
-        let frame_time = Duration::from_secs_f32(1.0 / timing::NTSC_FPS as f32);
-
-        Self {
-            stage: Stage::StartMenu(StartMenu::new()),
-            gui_ctx: GuiCtx::new(window.scale_factor() as f32, &renderer),
-            last_draw: Instant::now(),
-            controllers: Controllers::default(),
-            config,
-            key_map,
-            renderer,
-            event_loop,
-            window,
-            frame_time,
+                    if let Some(bios) = bios {
+                        stage = Stage::Running {
+                            system: System::new(
+                                bios,
+                                renderer.clone(),
+                                disc.clone(),
+                                controllers.clone(),
+                            ),
+                            app_menu: Box::new(DebugMenu::new()),
+                            last_update: Instant::now(),
+                            mode: RunMode::Emulation,
+                            show_settings: false,
+                        }
+                    }
+                }
+            },
+            Event::MainEventsCleared => match stage {
+                Stage::Running {
+                    ref mut system,
+                    ref mut app_menu,
+                    ref mut last_update,
+                    mode,
+                    ..
+                } => {
+                    match mode {
+                        RunMode::Debug => {
+                            app_menu.update_tick(last_update.elapsed(), system);
+                        }
+                        RunMode::Emulation => {
+                            system.run(last_update.elapsed());
+                        }
+                    }
+                    *last_update = Instant::now();
+                },
+                Stage::StartMenu { .. } => (),
+            },
+            _ => {},
         }
-    }
+    });
 }

@@ -3,7 +3,6 @@
 use super::DebugApp;
 
 use splst_core::System;
-use crate::render::Renderer;
 
 use std::str;
 use std::time::Duration;
@@ -27,11 +26,10 @@ impl DebugApp for VramView {
         "VRAM View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System, _: &mut Renderer) {
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
         for (i, row) in self.matrix.iter_mut().enumerate() {
             for (j, col) in row.iter_mut().enumerate() {
-                let value = system.cpu
-                    .bus()
+                let value = system
                     .gpu()
                     .vram()
                     .load_16(self.x + j as i32, self.y + i as i32);

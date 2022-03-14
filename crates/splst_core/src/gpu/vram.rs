@@ -35,8 +35,8 @@ impl Vram {
         self.data[offset + 1] = (value >> 8) as u8;
     }
 
-    pub fn raw_data(&self) -> &[u8] {
-        &self.data[..]
+    pub fn raw_data(&self) -> &[u8; Self::SIZE] {
+        &self.data
     }
 
     pub fn clear(&mut self) {

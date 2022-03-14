@@ -4,62 +4,56 @@ use super::IoSlot;
 use serde::{Serialize, Deserialize};
 
 use std::fmt;
+use std::slice::IterMut;
 use std::ops::{Index, IndexMut};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// Controller connection.
-pub enum ControllerPort {
+pub enum Port {
     Unconnected,
     Digital(DigitalController),
 }
 
-impl ControllerPort {
+impl Port {
     pub fn reset(&mut self) {
         match self {
-            ControllerPort::Digital(ctrl) => ctrl.reset_state(),
-            ControllerPort::Unconnected => (),
+            Port::Digital(ctrl) => ctrl.reset_state(),
+            Port::Unconnected => (),
         }
     }
 
-    pub fn unconnected() -> ControllerPort {
-        ControllerPort::Unconnected
+    pub fn set_button(&mut self, button: Button, pressed: bool) {
+        match self {
+            Port::Digital(ctrl) => ctrl.buttons.set_button(button, pressed),
+            Port::Unconnected => (),
+        }
     }
 
-    pub fn digital() -> ControllerPort {
-        ControllerPort::Digital(DigitalController::new())
+    pub fn unconnected() -> Port {
+        Port::Unconnected
+    }
+
+    pub fn digital() -> Port {
+        Port::Digital(DigitalController::new())
     }
 }
 
-impl Default for ControllerPort {
+impl Default for Port {
     fn default() -> Self {
-        ControllerPort::Unconnected
+        Port::Unconnected
     }
 }
 
-#[derive(Default, Clone)]
-pub struct Controllers(pub(super) [Rc<RefCell<ControllerPort>>; 2]);
+#[derive(Default)]
+pub struct Controllers(pub(super) [Port; 2]);
 
 impl Controllers {
-    pub fn set_button(&mut self, slot: IoSlot, button: Button, pressed: bool) {
-        match *self[slot].borrow_mut() {
-            ControllerPort::Digital(ref mut ctrl) => {
-                ctrl.buttons.set_button(button, pressed);
-            }
-            _ => (),
-        }
-    }
-
-    pub fn reset(&mut self, slot: IoSlot) {
-        match *self[slot].borrow_mut() {
-            ControllerPort::Digital(ref mut ctrl) => ctrl.reset_state(),
-            ControllerPort::Unconnected => (),
-        }
+    pub fn iter_mut(&mut self) -> IterMut<Port> {
+        self.0.iter_mut()
     }
 }
 
 impl Index<IoSlot> for Controllers {
-    type Output = Rc<RefCell<ControllerPort>>;
+    type Output = Port;
 
     fn index(&self, idx: IoSlot) -> &Self::Output {
         &self.0[idx as usize]

@@ -1,7 +1,7 @@
 //! This module implements GUI used for debugging and more. It uses the egui crate to render it to
 //! the screen.
 
-use crate::render::{Renderer, SurfaceSize};
+use splst_render::{Renderer, SurfaceSize};
 
 use egui::{ClippedMesh, CtxRef};
 use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};

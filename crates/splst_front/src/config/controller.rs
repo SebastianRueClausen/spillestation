@@ -1,4 +1,4 @@
-use splst_core::{IoSlot, Button, Controllers, ControllerPort};
+use splst_core::{IoSlot, Button, Controllers, controller};
 use crate::keys;
 
 use serde::{Serialize, Deserialize};
@@ -54,6 +54,7 @@ impl ControllerConfig {
 
         if let Some((slot, button)) = self.recording {
             self.recording = None;
+            self.is_modified = true;
 
             let bindings = match slot {
                 IoSlot::Slot1 => &mut self.slot1,
@@ -107,8 +108,6 @@ impl ControllerConfig {
                         None => {
                             ui.label("Not Bound");
                             if ui.button("Bind").clicked() {
-                                generate_key_map = true;
-                                self.is_modified = true;
                                 self.recording = Some((slot, *button));
                             }
                         }
@@ -126,7 +125,7 @@ impl ControllerConfig {
 
     pub fn show(
         &mut self,
-        controllers: &Controllers,
+        controllers: &mut Controllers,
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
         ui: &mut egui::Ui,
     ) {
@@ -154,11 +153,10 @@ impl ControllerConfig {
                     });
 
                 if before != *connection {
-                    let port = match *connection {
-                        Connection::Unconnected => ControllerPort::unconnected(),
-                        Connection::Virtual => ControllerPort::digital(),
+                    controllers[self.show_slot] = match *connection {
+                        Connection::Unconnected => controller::Port::unconnected(),
+                        Connection::Virtual => controller::Port::digital(),
                     };
-                    controllers[self.show_slot].replace(port);
                 }
 
                 ui.separator();

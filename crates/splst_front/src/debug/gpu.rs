@@ -4,7 +4,6 @@ use super::DebugApp;
 
 use splst_core::gpu::Gpu;
 use splst_core::System;
-use crate::render::Renderer;
 
 use std::fmt::Write;
 use std::time::Duration;
@@ -58,9 +57,9 @@ impl DebugApp for GpuStatus {
         "GPU Status"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System, _: &mut Renderer) {
+    fn update_tick(&mut self, _: Duration, system: &mut System) {
         self.fields.iter_mut().for_each(|field| field.clear());
-        if let Err(err) = self.write_fields(system.cpu.bus().gpu()) {
+        if let Err(err) = self.write_fields(system.gpu()) {
             eprintln!("{}", err);
         }
     }

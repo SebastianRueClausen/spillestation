@@ -17,137 +17,135 @@ pub mod gpu;
 pub mod timing;
 pub mod cpu;
 
+use splst_render::Renderer;
+
+use schedule::Schedule;
+use cpu::irq::IrqState;
+pub use bus::Bus;
+pub use timer::Timers;
+pub use gpu::Gpu;
 pub use cpu::Cpu;
 pub use gpu::Vram;
-pub use io_port::{IoSlot, Button, ButtonState, ControllerPort, Controllers};
+pub use io_port::{IoSlot, Button, ButtonState, Controllers, controller};
 pub use bus::bios::Bios;
 pub use cdrom::Disc;
 
 use std::time::Duration;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Used to represent an absolute CPU cycle number. This will never overflow, unless the emulator runs
 /// for 17,725 years.
 pub type Cycle = u64;
 
-/// The whole system is on ['Cpu']. This struct is to control and interact with the system
-/// from the frontend.
 pub struct System {
     pub cpu: Box<Cpu>,
-    /// The frame number of the last frame drawn.
-    last_frame: u64,
+    /// Since 'Duration' can't be constant for now, it has to be
+    /// here.
+    cycle_time: Duration,
 }
 
 impl System {
     pub fn new(
         bios: Bios,
-        disc: Disc,
-        controllers: Controllers,
+        renderer: Rc<RefCell<Renderer>>,
+        disc: Rc<RefCell<Disc>>,
+        controllers: Rc<RefCell<Controllers>>,
     ) -> Self {
-        Self { cpu: Cpu::new(bios, disc, controllers), last_frame: 0 }
-    }
-
-    /*
-    pub fn new1<'ctx, V: VidOut>(
-        bios: Bios,
-        video_out: &'ctx V,
-        disc: &'ctx RefCell<Disc>,
-        controllers: &'ctx RefCell<Controllers>,
-    ) -> Self {
-    }
-    */
-
-    pub fn bios(&self) -> &Bios {
-        &self.cpu.bus.bios()
-    }
-
-    fn maybe_draw_frame(&mut self, out: &mut impl VidOut) {
-        let gpu = self.cpu.bus().gpu();
-
-        if self.last_frame < gpu.frame_count() {
-            self.last_frame = gpu.frame_count();
-            out.new_frame(&gpu.draw_info(), gpu.vram());
+        Self {
+            cycle_time: Duration::from_secs(1) / timing::CPU_HZ as u32,
+            cpu: Cpu::new(bios, renderer, disc, controllers),
         }
     }
 
-    /// Run at full speed for a given amount of time.
-    pub fn run(
-        &mut self,
-        time: Duration,
-        out: &mut impl VidOut,
-    ) {
-        // Since 'Duration' can't be constant for now, it has to be
-        // calculated each run even though the number is constant.
-        let cycle_time = Duration::from_secs(1) / timing::CPU_HZ as u32;
-
-        let cycles = time.as_nanos() / cycle_time.as_nanos();
-        let end = self.cpu.bus().schedule.cycle() + cycles as u64;
-
+    /// Run at native speed for a given amount of time.
+    pub fn run(&mut self, time: Duration) {
+        let cycles = time.as_nanos() / self.cycle_time.as_nanos();
+        let end = self.cpu.bus.schedule.cycle() + cycles as u64;
         while self.cpu.bus.schedule.cycle() <= end {
-            for _ in 0..16 { 
-                self.cpu.step(&mut ());
-            }
-            self.maybe_draw_frame(out);
+            self.cpu.step(&mut ());
         }
     }
 
-    /// Run at a given speed in debug mode. The time remainder is returned. This is required since
-    /// for a couple of reasons. If running at very low speeds, then saving the remainder is
-    /// required to be accurate. It's also nice to have if the ['System'] exits early.
+    /// Run at a given speed in debug mode.
+    ///
+    /// The time remainder is returned, this is for a couple of reasons if running at
+    /// very low speeds, then saving the remainder is required to be accurate. It's also
+    /// nice to have if the ['System'] exits early.
+    ///
+    /// Technically it doesn't run the system for 'hz' cycles but 'hz' instructions per second,
+    /// meaning it will run faster than native speed even if 'hz' is the same as the original
+    /// hardware. 
     pub fn run_debug(
         &mut self,
         hz: u64,
         mut time: Duration,
-        out: &mut impl VidOut,
         dbg: &mut impl Debugger,
     ) -> (Duration, StopReason) {
         let cycle_time = Duration::from_secs(1) / hz as u32;
 
         while let Some(new) = time.checked_sub(cycle_time) {
             time = new;
-
             self.cpu.step(dbg);
-            self.maybe_draw_frame(out);
-
             if dbg.should_stop() {
                 return (time, StopReason::Break);
             }
         }
+
         (time, StopReason::Time)
     }
 
-    /// Run for a given number of cycles in debug mode.
+    /// Run for a given number of instructions in debug mode.
+    ///
+    /// It will run instructions as fast as possible with no regard for the real speed of the
+    /// system.
     pub fn step_debug(
         &mut self,
         steps: u64,
-        out: &mut impl VidOut,
         dbg: &mut impl Debugger,
     ) -> StopReason {
         for _ in 0..steps {
             self.cpu.step(dbg);
-            self.maybe_draw_frame(out);
-
             if dbg.should_stop() {
                 return StopReason::Break;
             }
         }
         StopReason::Time
     }
-}
 
-pub struct DrawInfo {
-    pub vram_x_start: u32,
-    pub vram_y_start: u32,
+    pub fn bios(&self) -> &Bios {
+        &self.cpu.bus.bios
+    }
+
+    pub fn bus_mut(&mut self) -> &mut Bus {
+        &mut self.cpu.bus
+    }
+
+    pub fn bus(&self) -> &Bus {
+        &self.cpu.bus
+    }
+
+    pub fn irq_state_mut(&mut self) -> &mut IrqState {
+        &mut self.cpu.bus.irq_state
+    }
+
+    pub fn gpu(&self) -> &Gpu {
+        &self.cpu.bus.gpu
+    }
+
+    pub fn schedule(&self) -> &Schedule {
+        &self.cpu.bus.schedule
+    }
+
+    pub fn timers(&self) -> &Timers {
+        &self.cpu.bus.timers
+    }
 }
 
 #[derive(PartialEq, Eq)]
 pub enum StopReason {
     Time,
     Break,
-}
-
-pub trait VidOut {
-    fn new_frame(&mut self, draw_info: &DrawInfo, vram: &Vram);
 }
 
 pub trait Debugger {

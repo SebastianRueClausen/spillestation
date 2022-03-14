@@ -4,17 +4,16 @@
 //! which would be almost as big or bigger, still has to transfered to the GPU.
 
 use super::{Canvas, CANVAS_FORMAT};
-use splst_core::{Vram, DrawInfo};
 
 /// Info used to compute ['Canvas'] from VRAM.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod)]
-pub struct ShaderInfo {
+pub struct DrawInfo {
     pub x_start: u32,
     pub y_start: u32,
 }
 
-unsafe impl bytemuck::Zeroable for ShaderInfo {
+unsafe impl bytemuck::Zeroable for DrawInfo {
     fn zeroed() -> Self {
         Self {
             x_start: 0,
@@ -25,7 +24,7 @@ unsafe impl bytemuck::Zeroable for ShaderInfo {
 
 /// Used to generate the ['Canvas'] from the playstation VRAM directly using compute shaders.
 /// This is called before every rendered frame.
-pub struct ComputeStage {
+pub(super) struct ComputeStage {
     /// The playstation VRAM is transfered to this buffer each frame. It's 1 mb big, so it's
     /// probably gioing to be a bottleneck on some systems.
     input_buffer: wgpu::Buffer,
@@ -37,7 +36,7 @@ pub struct ComputeStage {
 }
 
 impl ComputeStage {
-    pub fn new(device: &wgpu::Device, canvas: &Canvas) -> Self {
+    pub(super) fn new(device: &wgpu::Device, canvas: &Canvas) -> Self {
         let shader = device.create_shader_module(&wgpu::include_spirv!("shader/comp.spv"));
         let input_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Compute Storage Buffer"),
@@ -48,7 +47,7 @@ impl ComputeStage {
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::MAP_WRITE,
             mapped_at_creation: false,
-            size: (Vram::SIZE + std::mem::size_of::<ShaderInfo>()) as u64,
+            size: (VRAM_SIZE + std::mem::size_of::<DrawInfo>()) as u64,
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Compute Bind Group Layout"),
@@ -109,28 +108,24 @@ impl ComputeStage {
 
     /// Generate ['Canvas'] from the playstations VRAM. First it transfers the entire VRAM
     /// to the shdader, then it dispatches the compute shader for each pixel in ['Canvas'].
-    pub fn compute_canvas(
+    pub(super) fn compute_canvas(
         &self,
-        vram: &Vram,
+        vram_data: &[u8; 1024 * 1024],
         draw_info: &DrawInfo,
         encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
         canvas: &Canvas,
     ) {
-        let shader_info = ShaderInfo {
-            x_start: draw_info.vram_x_start,
-            y_start: draw_info.vram_y_start,
-        };
         // Transfer the entire ['Vram']. This could be done with a staging belt, which should be faster
         // in theory. However in the testing i have done, that didn't seem to be the case, which
         // means that either write_buffer does the same under the hood, or it just isn't a
         // bottleneck. Perhaps it's faster on some systems, in which case it probably should be
         // used, but since it made the code more complicated, i opted not to use i it for now.
-        queue.write_buffer(&self.input_buffer, 0, bytemuck::bytes_of(&shader_info));
+        queue.write_buffer(&self.input_buffer, 0, bytemuck::bytes_of(draw_info));
         queue.write_buffer(
             &self.input_buffer,
-            std::mem::size_of::<ShaderInfo>() as u64,
-            vram.raw_data(),
+            std::mem::size_of::<DrawInfo>() as u64,
+            vram_data,
         );
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Compute Pass"),
@@ -140,3 +135,5 @@ impl ComputeStage {
         pass.dispatch(canvas.extent.width, canvas.extent.height, 1);
     }
 }
+
+const VRAM_SIZE: usize = 1024 * 1024;

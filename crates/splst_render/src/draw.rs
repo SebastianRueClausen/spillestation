@@ -69,7 +69,7 @@ impl DrawStage {
                 },
             ],
         };
-        let (transform, scissor_rect) = generate_transform_matrix(
+        let (transform, scissor_rect) = gen_transform_matrix(
             Vec2::new(canvas.extent.width as f32, canvas.extent.height as f32),
             Vec2::new(surface_size.width as f32, surface_size.height as f32),
         );
@@ -203,7 +203,7 @@ impl DrawStage {
     }
 
     pub fn resize(&mut self, queue: &wgpu::Queue, surface_size: SurfaceSize, canvas: &Canvas) {
-        let (transform, scissor_rect) = generate_transform_matrix(
+        let (transform, scissor_rect) = gen_transform_matrix(
             Vec2::new(canvas.extent.width as f32, canvas.extent.height as f32),
             Vec2::new(surface_size.width as f32, surface_size.height as f32),
         );
@@ -215,7 +215,7 @@ impl DrawStage {
 /// Generates the transform matrix used by the fragment shader, and the scissor rectangle used by
 /// the render pipeline. It depends on size of the surface texture and the render texture, so it
 /// must be recaluculated each time on of these change.
-fn generate_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect) {
+fn gen_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect) {
     // The smallest scale ratio.
     let scale = (screen.x / texture.x)
         .min(screen.y / texture.y)

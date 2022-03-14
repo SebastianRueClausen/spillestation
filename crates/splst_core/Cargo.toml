@@ -12,6 +12,7 @@ opt-level = 3
 splst_util = { path = "../splst_util" }
 splst_cdimg = { path = "../splst_cdimg" }
 splst_asm = { path = "../splst_asm" }
+splst_render = { path = "../splst_render" }
 
 serde = { version = "1.0", features = ["derive"] }
 ultraviolet = { version = "0.8.1" }

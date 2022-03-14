@@ -1,7 +1,7 @@
 //! Emulating Direct Memory Access chip. Used to transfer data between devices. The CPU halts when
 //! this is running, but the CPU can be allowed to run in intervals called chopping.
 //!
-//! TODO:
+//! # TODO
 //! * Add timings for transfers.
 
 use splst_util::{Bit, BitSet};

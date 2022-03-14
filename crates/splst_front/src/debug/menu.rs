@@ -1,5 +1,8 @@
 //! The main controller and menu of all the GUI apps.
 
+use splst_core::System;
+use crate::RunMode;
+
 use super::DebugApp;
 use super::cpu::{CpuCtrl, CpuStatus};
 use super::fps::FrameCounter;
@@ -9,10 +12,6 @@ use super::vram::VramView;
 use super::timer::TimerView;
 use super::irq::IrqView;
 use super::schedule::ScheduleView;
-
-use splst_core::System;
-use crate::render::Renderer;
-use crate::RunMode;
 
 use std::time::Duration;
 
@@ -44,10 +43,10 @@ impl DebugMenu {
     }
 
     /// Update all the apps that require it. Called each update cycle.
-    pub fn update_tick(&mut self, dt: Duration, system: &mut System, renderer: &mut Renderer) {
+    pub fn update_tick(&mut self, dt: Duration, system: &mut System) {
         for (app, open) in &mut self.apps {
             if *open {
-                app.update_tick(dt, system, renderer); 
+                app.update_tick(dt, system); 
             }
         }
     }

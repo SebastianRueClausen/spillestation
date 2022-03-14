@@ -1,6 +1,6 @@
 //! Emulation of the MIPS R3000 used by the original Sony Playstation.
 //!
-//! TODO:
+//! # TODO
 //! * Perhaps checking for active interrupts isn't good enough, since writes to the COP0 cause and
 //!   active registers can change 'irq_active' status. Checking every cycle doesn't seem to do
 //!   anything for now, but herhaps there could be a problem.
@@ -15,6 +15,7 @@ mod gte;
 pub mod irq;
 pub mod opcode;
 
+use splst_render::Renderer;
 use crate::io_port::Controllers;
 use crate::cdrom::Disc;
 use crate::bus;
@@ -27,6 +28,9 @@ use splst_util::Bit;
 
 use cop0::{Cop0, Exception};
 use gte::Gte;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub use irq::{Irq, IrqState};
 pub use opcode::{Opcode, RegIdx};
@@ -116,7 +120,7 @@ pub struct Cpu {
     /// Memory sections KUSEG and KSEG0 are cached for instructions.
     icache: Box<[ICacheLine; 0x100]>,
     icache_misses: u64,
-    pub bus: Bus,
+    pub(super) bus: Bus,
     gte: Gte,
     cop0: Cop0,
 }
@@ -126,10 +130,16 @@ const PC_START_ADDRESS: u32 = 0xbfc00000;
 impl Cpu {
     pub fn new(
         bios: Bios,
-        disc: Disc,
-        controllers: Controllers,
+        renderer: Rc<RefCell<Renderer>>,
+        disc: Rc<RefCell<Disc>>,
+        controllers: Rc<RefCell<Controllers>>,
     ) -> Box<Self> {
-        let bus = Bus::new(bios, disc, controllers);
+        let bus = Bus::new(
+            bios,
+            renderer,
+            disc,
+            controllers,
+        );
         let icache = Box::new([ICacheLine::valid(); 0x100]);
         Box::new(Cpu {
             last_pc: 0x0,
@@ -178,6 +188,7 @@ impl Cpu {
         }
     }
 
+    /// Load an instruction from memory.
     fn load_code<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
         if !T::is_aligned(addr) {
             self.cop0.set_reg(8, addr);
@@ -323,14 +334,6 @@ impl Cpu {
         let active = self.cop0.read_reg(12) & cause & 0xffff00;
 
         self.cop0.irq_enabled() && active != 0
-    }
-
-    pub fn bus(&self) -> &Bus {
-        &self.bus
-    }
-
-    pub fn bus_mut(&mut self) -> &mut Bus {
-        &mut self.bus
     }
 
     pub fn curr_ins(&mut self) -> Opcode {
