@@ -31,8 +31,6 @@ use scratchpad::ScratchPad;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub use dma::{DmaChan, ChanStat, ChanDir};
-
 pub struct Bus {
     pub cache_ctrl: CacheCtrl,
     pub scratchpad: ScratchPad,
@@ -240,8 +238,6 @@ impl Bus {
             }
             Event::GpuCmdDone => {
                 self.gpu.cmd_done(&mut self.schedule);
-                // self.schedule.unschedule(Event::RunGpu);
-                // self.gpu.run(&mut self.schedule, &mut self.timers);
             }
             Event::RunDmaChan(port) => self.run_dma_chan(port),
             Event::TimerIrqEnable(id) => {

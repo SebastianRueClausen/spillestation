@@ -69,6 +69,8 @@ pub struct Renderer {
     canvas: Canvas,
     draw_stage: DrawStage,
     compute_stage: ComputeStage,
+    /// If the renderer has been send a new frame which hasn't been shown yet.
+    pending_frame: bool,
 }
 
 impl Renderer {
@@ -115,13 +117,14 @@ impl Renderer {
             canvas,
             draw_stage,
             compute_stage,
+            pending_frame: false,
         }
     }
 
     /// The main function used to render stuff. It prepares everything from wgpu needed to start
     /// rendering, runs the render function, and finally it submit's the commands and present's the
     /// rendered frame.
-    pub fn render<F>(&self, func: F)
+    pub fn render<F>(&mut self, func: F)
     where
         F: FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView, &Self),
     {
@@ -148,6 +151,7 @@ impl Renderer {
         self.draw_stage.render_canvas(&mut encoder, &view);
         func(&mut encoder, &view, self);
         self.queue.submit(Some(encoder.finish()));
+        self.pending_frame = false;
         frame.present();
     }
 
@@ -173,7 +177,11 @@ impl Renderer {
         }
     }
 
-    pub fn show_frame(&mut self, draw_info: &DrawInfo, vram_data: &[u8; 1024 * 1024]) {
+    pub fn has_pending_frame(&self) -> bool {
+        self.pending_frame
+    }
+
+    pub fn send_frame(&mut self, draw_info: &DrawInfo, vram_data: &[u8; 1024 * 1024]) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -187,5 +195,6 @@ impl Renderer {
             &self.canvas,
         );
         self.queue.submit(Some(encoder.finish()));
+        self.pending_frame = true;
     }
 }

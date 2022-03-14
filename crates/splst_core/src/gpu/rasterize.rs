@@ -17,13 +17,10 @@ impl Gpu {
             true => {
                 let bg = Color::from_u16(self.vram.load_16(x, y));
                 match Tex::IS_TEXTURED {
-                    true => {
-                        if masked {
-                            self.status.blend_mode().blend(color, bg)
-                        } else {
-                            color
-                        }
+                    true if masked => {
+                        self.status.blend_mode().blend(color, bg)
                     }
+                    true => color,
                     false => {
                         self.status.blend_mode().blend(color, bg)
                     }

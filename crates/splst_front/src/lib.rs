@@ -89,19 +89,14 @@ pub fn run() {
                 };
 
                 match stage {
-                    Stage::Running {
-                        ref mut app_menu,
-                        ref system,
-                        mode,
-                        ..
-                    } => match mode {
+                    Stage::Running { ref mut app_menu, mode, .. } => match mode {
                         RunMode::Emulation => {
-                            if system.gpu().in_vblank() {
+                            if renderer.borrow().has_pending_frame() {
                                 redraw();
                             }
                         }
                         RunMode::Debug => {
-                            if dt >= frame_time {
+                            if dt >= frame_time || renderer.borrow().has_pending_frame() {
                                 app_menu.draw_tick(dt);
                                 redraw();
                             }

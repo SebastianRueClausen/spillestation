@@ -17,8 +17,8 @@ pub mod vram;
 use splst_util::{Bit, BitSet};
 use splst_render::{Renderer, DrawInfo};
 use crate::cpu::Irq;
-use crate::bus::{DmaChan, ChanDir, BusMap, AddrUnit};
-use crate::bus::dma::Port;
+use crate::bus::{BusMap, AddrUnit};
+use crate::bus::dma;
 use crate::schedule::{Event, Schedule};
 use crate::timing;
 use crate::timer::Timers;
@@ -153,8 +153,8 @@ impl Gpu {
         // Maybe only check if something has changed which could change 'dma_ready', but that
         // could be skechy. Running a DMA channel is pretty fast anyway, but maybe just running
         // the GPU channel every 1500 cycles could be faster?
-        schedule.unschedule(Event::RunDmaChan(Port::Gpu));
-        schedule.schedule_now(Event::RunDmaChan(Port::Gpu));
+        schedule.unschedule(Event::RunDmaChan(dma::Port::Gpu));
+        schedule.schedule_now(Event::RunDmaChan(dma::Port::Gpu));
     }
 
     pub fn load<T: AddrUnit>(
@@ -354,7 +354,7 @@ impl Gpu {
                         y_start: self.vram_y_start as u32,
                     };
 
-                    self.renderer.borrow_mut().show_frame(
+                    self.renderer.borrow_mut().send_frame(
                         &draw_info,
                         &self.vram.raw_data(),
                     );
@@ -1046,7 +1046,7 @@ impl State {
     }
 }
 
-impl DmaChan for Gpu {
+impl dma::Channel for Gpu {
     fn dma_store(&mut self, schedule: &mut Schedule, val: u32) {
         self.gp0_store(schedule, val);
     }
@@ -1060,10 +1060,10 @@ impl DmaChan for Gpu {
         }
     }
 
-    fn dma_ready(&self, dir: ChanDir) -> bool {
+    fn dma_ready(&self, dir: dma::Direction) -> bool {
         match dir {
-            ChanDir::ToRam => true,
-            ChanDir::ToPort => self.dma_block_ready(),
+            dma::Direction::ToRam => true,
+            dma::Direction::ToPort => self.dma_block_ready(),
         }
     }
 }

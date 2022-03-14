@@ -92,7 +92,7 @@ impl Dma {
     /// at once. If chopping is enabled, then the Transfer runs for a given number of cycles,
     /// and if the transfer isn't done in time, the rest get's transfered after the CPU is allowed
     /// to run for a given number of cycles.
-    fn run_chan<T: DmaChan>(
+    fn run_chan<T: Channel>(
         &mut self,
         port: Port,
         chan: &mut T,
@@ -182,7 +182,7 @@ impl Dma {
             // this does transfers a single node. It will stop in the middle of a transfer if 
             // chopping is enabled and it runs out of cycles.
             self[port].transfer = match stat.ctrl.direction() {
-                ChanDir::ToRam => {
+                Direction::ToRam => {
                     loop {
                         if schedule.cycle() > done {
                             let stat = &mut self[port];
@@ -229,7 +229,7 @@ impl Dma {
                         schedule.tick(1);
                     }
                 }
-                ChanDir::ToPort => {
+                Direction::ToPort => {
                     loop {
                         if schedule.cycle() > done {
                             let stat = &mut self[port];
@@ -363,7 +363,7 @@ impl BlockCtrl {
 
 /// DMA can transfer either from or to RAM.
 #[derive(Debug, Copy, Clone)]
-pub enum ChanDir {
+pub enum Direction {
     ToRam,
     ToPort,
 }
@@ -402,10 +402,10 @@ struct ChanCtrl(u32);
 
 impl ChanCtrl {
     /// Check if Channel is either from or to CPU.
-    fn direction(self) -> ChanDir {
+    fn direction(self) -> Direction {
         match self.0.bit(0) {
-            false => ChanDir::ToRam,
-            true => ChanDir::ToPort,
+            false => Direction::ToRam,
+            true => Direction::ToPort,
         }
     }
 
@@ -624,7 +624,7 @@ impl IrqReg {
 /// This is likely random and causes visual glitches.
 struct OrderingTable;
 
-impl DmaChan for OrderingTable {
+impl Channel for OrderingTable {
     fn dma_load(&mut self, _: &mut Schedule, stats: (u16, u32)) -> u32 {
         let (words_left, addr) = stats;
         if words_left == 1 {
@@ -638,7 +638,7 @@ impl DmaChan for OrderingTable {
         warn!("Ordering table DMA store");
     }
 
-    fn dma_ready(&self, _: ChanDir) -> bool {
+    fn dma_ready(&self, _: Direction) -> bool {
         true
     }
 }
@@ -657,10 +657,10 @@ impl IndexMut<Port> for Dma {
     }
 }
 
-pub trait DmaChan {
+pub trait Channel {
     fn dma_load(&mut self, schedule: &mut Schedule, stats: (u16, u32)) -> u32;
     fn dma_store(&mut self, schedule: &mut Schedule, val: u32);
-    fn dma_ready(&self, dir: ChanDir) -> bool;
+    fn dma_ready(&self, dir: Direction) -> bool;
 }
 
 impl BusMap for Dma {

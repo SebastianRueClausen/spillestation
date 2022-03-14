@@ -10,8 +10,7 @@ use splst_util::{Bcd, Msf};
 use splst_cdimg::{CdImage, Sector};
 
 use crate::cpu::Irq;
-use crate::bus::{AddrUnit, BusMap};
-use crate::bus::{DmaChan, ChanDir};
+use crate::bus::{dma, AddrUnit, BusMap};
 use crate::schedule::{Schedule, Event};
 use crate::Cycle;
 
@@ -605,7 +604,7 @@ impl DataBuffer {
 }
 
 
-impl DmaChan for CdRom {
+impl dma::Channel for CdRom {
     fn dma_load(&mut self, _: &mut Schedule, _: (u16, u32)) -> u32 {
         let v1 = self.data_buffer.read_byte() as u32;
         let v2 = self.data_buffer.read_byte() as u32;
@@ -619,7 +618,7 @@ impl DmaChan for CdRom {
         unreachable!("DMA store to CDROM");
     }
 
-    fn dma_ready(&self, _: ChanDir) -> bool {
+    fn dma_ready(&self, _: dma::Direction) -> bool {
         // This is probably wrong.
         true
     }
