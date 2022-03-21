@@ -79,12 +79,12 @@ impl Bus {
     }
 
     /// TODO: Make this not have side effects.
-    pub fn peek<T: AddrUnit>(&mut self, addr: u32) -> Option<u32> {
+    pub fn peek<T: MemUnit>(&mut self, addr: u32) -> Option<u32> {
         let addr = regioned_addr(addr);
         self.load::<T>(addr).map(|(val, _)| val)
     }
 
-    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Option<(u32, Cycle)> {
+    pub fn load<T: MemUnit>(&mut self, addr: u32) -> Option<(u32, Cycle)> {
         let (val, time) = match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
                 (self.ram.load::<T>(addr), 3)
@@ -121,11 +121,11 @@ impl Bus {
                 (self.cdrom.load::<T>(addr - CdRom::BUS_BEGIN), 6)
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
-                let time = match T::WIDTH {
-                    4 => 39,
+                let time = match T::KIND {
+                    MemUnitKind::Word => 39,
                     _ => 18, 
                 };
-                (self.spu.load(addr - Spu::BUS_BEGIN), time)
+                (self.spu.load::<T>(addr - Spu::BUS_BEGIN), time)
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
                 let val = self.timers.load(
@@ -157,7 +157,7 @@ impl Bus {
         Some((val, time))
     }
 
-    pub fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) -> Option<()> {
+    pub fn store<T: MemUnit>(&mut self, addr: u32, val: u32) -> Option<()> {
         match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
                 self.ram.store::<T>(addr, val)
@@ -175,7 +175,7 @@ impl Bus {
                 self.cache_ctrl.0 = val
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
-                self.spu.store(addr - Spu::BUS_BEGIN, val)
+                self.spu.store::<T>(&mut self.schedule, addr - Spu::BUS_BEGIN, val)
             }
             EXP1_BEGIN..=EXP1_END => {}
             EXP2_BEGIN..=EXP2_END => {}
@@ -352,16 +352,24 @@ impl BusMap for MemCtrl {
     const BUS_END: u32 = Self::BUS_BEGIN + 36 - 1;
 }
 
-pub trait AddrUnit {
+pub enum MemUnitKind {
+    Byte,
+    HalfWord,
+    Word,
+}
+
+pub trait MemUnit {
     const WIDTH: usize;
+    const KIND: MemUnitKind;
 
     fn is_aligned(address: u32) -> bool;
 }
 
 pub struct Byte;
 
-impl AddrUnit for Byte {
+impl MemUnit for Byte {
     const WIDTH: usize = 1;
+    const KIND: MemUnitKind = MemUnitKind::Byte;
 
     fn is_aligned(_: u32) -> bool {
         true
@@ -370,21 +378,23 @@ impl AddrUnit for Byte {
 
 pub struct HalfWord;
 
-impl AddrUnit for HalfWord {
+impl MemUnit for HalfWord {
     const WIDTH: usize = 2;
+    const KIND: MemUnitKind = MemUnitKind::HalfWord;
 
-    fn is_aligned(address: u32) -> bool {
-        (address & 0x1) == 0
+    fn is_aligned(addr: u32) -> bool {
+        (addr & 0x1) == 0
     }
 }
 
 pub struct Word;
 
-impl AddrUnit for Word {
+impl MemUnit for Word {
     const WIDTH: usize = 4;
+    const KIND: MemUnitKind = MemUnitKind::Word;
 
-    fn is_aligned(address: u32) -> bool {
-        (address & 0x3) == 0
+    fn is_aligned(addr: u32) -> bool {
+        (addr & 0x3) == 0
     }
 }
 

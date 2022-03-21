@@ -100,6 +100,7 @@ pub struct Track {
     pub length: Msf,
 }
 
+/// Table of content.
 pub struct Toc {
     pub tracks: Vec<Track>,
 }

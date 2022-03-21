@@ -153,6 +153,7 @@ impl ControllerConfig {
                     });
 
                 if before != *connection {
+                    self.is_modified = true;
                     controllers[self.show_slot] = match *connection {
                         Connection::Unconnected => controller::Port::unconnected(),
                         Connection::Virtual => controller::Port::digital(),

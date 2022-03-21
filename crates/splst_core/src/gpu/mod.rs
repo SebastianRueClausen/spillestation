@@ -17,7 +17,7 @@ pub mod vram;
 use splst_util::{Bit, BitSet};
 use splst_render::{Renderer, DrawInfo};
 use crate::cpu::Irq;
-use crate::bus::{BusMap, AddrUnit};
+use crate::bus::{BusMap, MemUnit};
 use crate::bus::dma;
 use crate::schedule::{Event, Schedule};
 use crate::timing;
@@ -136,7 +136,7 @@ impl Gpu {
         }
     }
 
-    pub fn store<T: AddrUnit>(
+    pub fn store<T: MemUnit>(
         &mut self,
         schedule: &mut Schedule,
         addr: u32,
@@ -157,7 +157,7 @@ impl Gpu {
         schedule.schedule_now(Event::RunDmaChan(dma::Port::Gpu));
     }
 
-    pub fn load<T: AddrUnit>(
+    pub fn load<T: MemUnit>(
         &mut self,
         addr: u32,
         schedule: &mut Schedule,

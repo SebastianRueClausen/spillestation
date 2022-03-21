@@ -10,7 +10,7 @@ use splst_util::{Bcd, Msf};
 use splst_cdimg::{CdImage, Sector};
 
 use crate::cpu::Irq;
-use crate::bus::{dma, AddrUnit, BusMap};
+use crate::bus::{dma, MemUnit, BusMap};
 use crate::schedule::{Schedule, Event};
 use crate::Cycle;
 
@@ -66,7 +66,7 @@ impl CdRom {
         }
     }
 
-    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
+    pub fn store<T: MemUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
         match addr {
             0 => self.index = val.bit_range(0, 1) as u8,
             1 => match self.index {
@@ -118,7 +118,7 @@ impl CdRom {
         }
     }
 
-    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> u32 {
+    pub fn load<T: MemUnit>(&mut self, addr: u32) -> u32 {
         match addr {
             // Status register.
             0 => {

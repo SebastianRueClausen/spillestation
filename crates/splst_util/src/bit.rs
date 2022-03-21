@@ -29,11 +29,13 @@ macro_rules! impl_bit_set {
     }
 }
 
+impl_bit!(usize);
 impl_bit!(u32);
 impl_bit!(i32);
 impl_bit!(u16);
 impl_bit!(u8);
 
+impl_bit_set!(usize);
 impl_bit_set!(u32);
 impl_bit_set!(i32);
 impl_bit_set!(u16);

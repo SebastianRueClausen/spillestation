@@ -79,7 +79,7 @@ impl Config {
                     config
                 }
                 Err(err) => return Self::default_with_message(
-                    format!("failed loade config file: {err}")
+                    format!("failed load config file: {err}")
                 ),
             }
         }
@@ -125,6 +125,9 @@ impl Config {
                 self.controller.is_modified = false;
                 self.disc.is_modified = false;
                 self.bios.is_modified = false;
+
+                // Clear any previous error message.
+                self.message = None;
             }
             Err(err) => self.message = Some(
                 format!("failed to open config file: {err}")

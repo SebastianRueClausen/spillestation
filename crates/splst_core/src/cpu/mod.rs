@@ -21,7 +21,7 @@ use crate::cdrom::Disc;
 use crate::bus;
 use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
-use crate::bus::{AddrUnit, Bus, BusMap, Byte, HalfWord, Word};
+use crate::bus::{MemUnit, Bus, BusMap, Byte, HalfWord, Word};
 use crate::schedule::Event;
 use crate::{Cycle, Debugger};
 use splst_util::Bit;
@@ -170,7 +170,7 @@ impl Cpu {
     }
 
     /// Load data from the bus. Must not be called when loading code.
-    fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<(u32, Cycle), Exception> {
+    fn load<T: MemUnit>(&mut self, addr: u32) -> Result<(u32, Cycle), Exception> {
         self.bus.schedule.skip_to(self.load_delay.ready);
 
         if !T::is_aligned(addr) {
@@ -189,7 +189,7 @@ impl Cpu {
     }
 
     /// Load an instruction from memory.
-    fn load_code<T: AddrUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
+    fn load_code<T: MemUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
         if !T::is_aligned(addr) {
             self.cop0.set_reg(8, addr);
             return Err(Exception::AddressLoadError);
@@ -206,7 +206,7 @@ impl Cpu {
             .ok_or(Exception::BusInstructionError)
     }
 
-    fn store<T: AddrUnit>(&mut self, addr: u32, val: u32) -> Result<(), Exception> {
+    fn store<T: MemUnit>(&mut self, addr: u32, val: u32) -> Result<(), Exception> {
         if !T::is_aligned(addr) {
             self.cop0.set_reg(8, addr);
             return Err(Exception::AddressStoreError);
