@@ -38,6 +38,7 @@ impl Gpu {
 
         self.timing.update(
             self.status.video_mode(),
+            self.status.horizontal_res(),
             self.dis_x_start,
             self.dis_y_start,
             self.dis_x_end,
@@ -114,6 +115,7 @@ impl Gpu {
 
         self.timing.update(
             self.status.video_mode(),
+            self.status.horizontal_res(),
             self.dis_x_start,
             self.dis_y_start,
             self.dis_x_end,

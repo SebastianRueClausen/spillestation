@@ -7,7 +7,7 @@
 use splst_util::{Bit, BitSet};
 
 use crate::cpu::Irq;
-use crate::Cycle;
+use crate::SysTime;
 use crate::bus::{Ram, Word, Bus, BusMap, Schedule, Event};
 
 use std::ops::{Index, IndexMut};
@@ -102,14 +102,14 @@ impl Dma {
         let ctrl = self[port].ctrl;
 
         let done = if ctrl.chopping_enabled() {
-            ctrl.dma_chop_size() as Cycle + schedule.cycle()
+            ctrl.dma_chop_size() + schedule.since_startup()
         } else {
-            Cycle::MAX
+            SysTime::FOREVER
         };
 
         let mut manual_done = false;
 
-        while schedule.cycle() < done
+        while schedule.since_startup() < done
             && self[port].ctrl.enabled()
             && chan.dma_ready(self[port].ctrl.direction())
         {
@@ -184,7 +184,7 @@ impl Dma {
             self[port].transfer = match stat.ctrl.direction() {
                 Direction::ToRam => {
                     loop {
-                        if schedule.cycle() > done {
+                        if schedule.since_startup() > done {
                             let stat = &mut self[port];
                            
                             // If the channel is in manual sync mode, then the base address will
@@ -226,12 +226,12 @@ impl Dma {
                             break None;
                         }
 
-                        schedule.tick(1);
+                        schedule.advance(SysTime::new(1));
                     }
                 }
                 Direction::ToPort => {
                     loop {
-                        if schedule.cycle() > done {
+                        if schedule.since_startup() > done {
                             let stat = &mut self[port];
                            
                             if let SyncMode::Manual = stat.ctrl.sync_mode() {
@@ -268,7 +268,7 @@ impl Dma {
                             break None;
                         }
 
-                        schedule.tick(1);
+                        schedule.advance(SysTime::new(1));
                     }
                 }
             };
@@ -436,13 +436,13 @@ impl ChanCtrl {
     }
 
     /// How many cycles to run in the interval between CPU chop.
-    fn dma_chop_size(self) -> u32 {
-        self.0.bit_range(16, 18) << 1
+    fn dma_chop_size(self) -> SysTime {
+        SysTime::new((self.0.bit_range(16, 18) << 1) as u64)
     }
 
     /// How many cycles the CPU get's to run when chopping.
-    fn cpu_chop_size(self) -> Cycle {
-        (self.0.bit_range(20, 22) << 1) as Cycle
+    fn cpu_chop_size(self) -> SysTime {
+        SysTime::new((self.0.bit_range(20, 22) << 1) as u64)
     }
 
     /// This is only used when in manual sync mode. It must be set for the transfer to start.

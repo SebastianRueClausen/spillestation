@@ -1,7 +1,6 @@
 use splst_util::{Bit, BitSet};
 
-use crate::Cycle;
-use crate::timing;
+use crate::SysTime;
 
 use super::{Gpu, State, MemTransfer};
 use super::primitive::{PolyVertex, LineVertex, Point, Color, TexCoord};
@@ -24,7 +23,7 @@ impl Gpu {
     /// Fill rectangle in VRAM with a solid color. The position isn't affected by draw offset
     /// or clipped to the draw area (As far as i know). The size and start are given in halfword
     /// steps but are rounded to the nearest multiple of 0x10. It's not affected by mask settings.
-    pub fn gp0_fill_rect(&mut self) -> Cycle {
+    pub fn gp0_fill_rect(&mut self) -> SysTime {
         let color = Color::from_cmd(self.fifo.pop());
 
         let val = self.fifo.pop() as i32;
@@ -43,7 +42,7 @@ impl Gpu {
     
         let line_time = (dim.x / 8) + 9;
 
-        (46 + line_time * dim.y) as Cycle
+        SysTime::from_gpu_cycles((46 + line_time * dim.y) as u64)
     }
 
     /// GP0(e1) - Draw Mode Setting.
@@ -180,7 +179,7 @@ impl Gpu {
     }
 
     /// Handle GP0 triangle polygon commands.
-    pub fn gp0_tri_poly<Shade, Tex, Trans>(&mut self) -> Cycle
+    pub fn gp0_tri_poly<Shade, Tex, Trans>(&mut self) -> SysTime
     where
         Shade: draw_mode::Shading,
         Tex: draw_mode::Textureing,
@@ -234,11 +233,11 @@ impl Gpu {
             color, clut, &verts[0], &verts[1], &verts[2]
         );
 
-        timing::gpu_to_cpu_cycles(cycles + 82)
+        cycles + SysTime::from_gpu_cycles(82)
     }
 
     /// Handle GP0 quad(Four point) polygon command.
-    pub fn gp0_quad_poly<Shade, Tex, Trans>(&mut self) -> Cycle
+    pub fn gp0_quad_poly<Shade, Tex, Trans>(&mut self) -> SysTime
     where
         Shade: draw_mode::Shading,
         Tex: draw_mode::Textureing,
@@ -297,11 +296,11 @@ impl Gpu {
             color, clut, &verts[1], &verts[2], &verts[3]
         );
 
-        timing::gpu_to_cpu_cycles(tri1 + tri2 + 82 + 46)
+        tri1 + tri2 + SysTime::from_gpu_cycles(82 + 46)
     }
 
     /// Handle GP0 line commands.
-    pub fn gp0_line<Shade, Trans>(&mut self) -> Cycle
+    pub fn gp0_line<Shade, Trans>(&mut self) -> SysTime
     where
         Shade: draw_mode::Shading,
         Trans: draw_mode::Transparency
@@ -337,13 +336,11 @@ impl Gpu {
             },
         };
 
-        let cycles = self.draw_line::<Shade, Trans>(start, end, color);
-
-        timing::gpu_to_cpu_cycles(cycles)
+        self.draw_line::<Shade, Trans>(start, end, color)
     }
 
     /// GP0 rectangle commands.
-    pub fn gp0_rect<Tex, Trans>(&mut self, size: Option<i32>) -> Cycle
+    pub fn gp0_rect<Tex, Trans>(&mut self, size: Option<i32>) -> SysTime
     where
         Tex: draw_mode::Textureing,
         Trans: draw_mode::Transparency,
@@ -373,9 +370,7 @@ impl Gpu {
             None => Point::from_cmd(self.fifo.pop()),
         };
 
-        let cycles = self.draw_rect::<Tex, Trans>(start, dim, color, uv, clut);
-
-        timing::gpu_to_cpu_cycles(cycles)
+        self.draw_rect::<Tex, Trans>(start, dim, color, uv, clut)
     }
 }
 

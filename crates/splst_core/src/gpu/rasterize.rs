@@ -1,7 +1,7 @@
+use crate::SysTime;
 use super::primitive::{Color, Point, TexCoord, Texel, PolyVertex, LineVertex};
 use super::{Gpu, TexelDepth};
 use super::gp0::draw_mode;
-use crate::Cycle;
 
 use ultraviolet::vec::Vec3;
 
@@ -73,7 +73,7 @@ impl Gpu {
     }
 
     /// Calculate the amount of GPU cycles to draw a triangle.
-    fn triangle_draw_time<Shade, Tex, Trans>(&self, mut pixels: u64) -> Cycle
+    fn triangle_draw_time<Shade, Tex, Trans>(&self, mut pixels: u64) -> SysTime
     where
         Shade: draw_mode::Shading,
         Tex: draw_mode::Textureing,
@@ -106,11 +106,11 @@ impl Gpu {
             pixels /= 2;
         }
 
-        cycles + (pixels as f64 * pixel_cost) as Cycle
+        SysTime::from_gpu_cycles(cycles + (pixels as f64 * pixel_cost) as u64)
     }
 
     /// Timings from mednafen.
-    fn _triangle_draw_time_mdnf<Shade, Tex, Trans>(&self, pixels: u64) -> Cycle
+    fn _triangle_draw_time_mdnf<Shade, Tex, Trans>(&self, pixels: u64) -> SysTime
     where
         Shade: draw_mode::Shading,
         Tex: draw_mode::Textureing,
@@ -142,11 +142,11 @@ impl Gpu {
             draw_time /= 2;
         }
 
-        draw_time
+        SysTime::from_gpu_cycles(draw_time)
     }
 
     /// The amount of GPU cycles to draw a rectangle.
-    fn rect_draw_time<Tex, Trans>(&self, mut pixels: u64) -> Cycle
+    fn rect_draw_time<Tex, Trans>(&self, mut pixels: u64) -> SysTime
     where
         Tex: draw_mode::Textureing,
         Trans: draw_mode::Transparency,
@@ -167,11 +167,11 @@ impl Gpu {
             pixels /= 2;
         }
 
-        cycles + (pixels as f64 * pixel_cost) as Cycle
+        SysTime::from_gpu_cycles(cycles + (pixels as f64 * pixel_cost) as u64)
     }
 
     /// Amount of GPU cycles to draw a line.
-    fn line_draw_time<Shade, Trans>(&self, mut pixels: u64) -> Cycle
+    fn line_draw_time<Shade, Trans>(&self, mut pixels: u64) -> SysTime
     where
         Shade: draw_mode::Shading,
         Trans: draw_mode::Transparency,
@@ -191,7 +191,7 @@ impl Gpu {
             pixels /= 2;
         }
 
-        cycles + (pixels as f64 * pixel_cost) as Cycle
+        SysTime::from_gpu_cycles(cycles + (pixels as f64 * pixel_cost) as u64)
     }
 
 
@@ -209,7 +209,7 @@ impl Gpu {
         v1: &PolyVertex,
         v2: &PolyVertex,
         v3: &PolyVertex,
-    ) -> Cycle
+    ) -> SysTime
     where
         Shade: draw_mode::Shading,
         Tex: draw_mode::Textureing,
@@ -341,7 +341,7 @@ impl Gpu {
         mut start: LineVertex,
         mut end: LineVertex,
         shade: Color
-    ) -> Cycle
+    ) -> SysTime
     where
         Shade: draw_mode::Shading,
         Trans: draw_mode::Transparency,
@@ -468,7 +468,7 @@ impl Gpu {
         shade: Color,
         mut tc_start: TexCoord,
         clut: Point,
-    ) -> Cycle
+    ) -> SysTime
     where
         Tex: draw_mode::Textureing,
         Trans: draw_mode::Transparency,

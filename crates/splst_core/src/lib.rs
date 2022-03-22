@@ -1,4 +1,4 @@
-#![feature(let_else, binary_heap_retain, option_result_contains)]
+#![feature(let_else, binary_heap_retain, option_result_contains, duration_constants)]
 
 #[macro_use]
 extern crate log;
@@ -18,9 +18,9 @@ pub mod timing;
 pub mod cpu;
 
 use splst_render::Renderer;
-
 use schedule::Schedule;
 use cpu::irq::IrqState;
+
 pub use bus::Bus;
 pub use timer::Timers;
 pub use gpu::Gpu;
@@ -33,16 +33,88 @@ pub use cdrom::Disc;
 use std::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::ops::{Add, Sub, Mul};
 
-/// Used to represent an absolute CPU cycle number. This will never overflow, unless the emulator runs
-/// for 17,725 years.
-pub type Cycle = u64;
+/// An duration of time the system is running, independent of actual time. It's represented
+/// as CPU cycles. The system doesn't handle anything syb-cycle, meaning that everything can
+/// broken down to CPU cycles. The cycle number is stored as 'u64', which will never
+/// overflow, unless the emulator runs for 17.725 years.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SysTime(u64);
+
+impl SysTime {
+    pub const ZERO: Self = Self(0);
+
+    /// Represents an infinite amount of time.
+    pub const FOREVER: Self = Self(u64::MAX);
+
+    /// Same as 'from_cycle'.
+    pub fn new(cycles: u64) -> Self {
+        Self::from_cpu_cycles(cycles)
+    }
+
+    /// From the a given amount of CPU cycles.
+    pub fn from_cpu_cycles(cycles: u64) -> Self {
+        Self(cycles) 
+    }
+
+    /// From GPU cycles or dot cycles.
+    pub fn from_gpu_cycles(cycles: u64) -> Self {
+        Self((cycles as f64 / (11.0 / 7.0)) as u64)
+    }
+
+    /// From ['Duration'] the system is running at native speed.
+    pub fn from_duration(duration: Duration) -> Self {
+        Self((duration.as_nanos() / NANOS_PER_CYCLE) as u64) 
+    }
+
+    /// Get as amount of CPU cycles.
+    pub fn as_cpu_cycles(self) -> u64 {
+        self.0
+    }
+
+    /// Get as amount of GPU cycles.
+    pub fn as_gpu_cycles(self) -> u64 {
+        (self.0 as f64 * (11.0 / 7.0)) as u64
+    }
+
+    /// Get as ['Duration'] the system is running as native speed.
+    pub fn as_duration(self) -> Duration {
+        Duration::from_nanos(NANOS_PER_CYCLE as u64) * self.0 as u32
+    }
+
+    pub fn saturating_sub(self, other: Self) -> Self {
+        Self(self.0.saturating_sub(other.0))
+    }
+}
+
+impl Add for SysTime {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        Self(self.0 + other.0)
+    }
+}
+
+impl Sub for SysTime {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
+        Self(self.0 - other.0)
+    }
+}
+
+impl Mul for SysTime {
+    type Output = Self;
+
+    fn mul(self, other: Self) -> Self {
+        Self(self.0 * other.0)
+    }
+}
 
 pub struct System {
     pub cpu: Box<Cpu>,
-    /// Since 'Duration' can't be constant for now, it has to be
-    /// here.
-    cycle_time: Duration,
+    cycle_duration: Duration,
 }
 
 impl System {
@@ -53,16 +125,17 @@ impl System {
         controllers: Rc<RefCell<Controllers>>,
     ) -> Self {
         Self {
-            cycle_time: Duration::from_secs(1) / timing::CPU_HZ as u32,
             cpu: Cpu::new(bios, renderer, disc, controllers),
+            cycle_duration: Duration::from_secs(1) / timing::CPU_HZ as u32
         }
     }
 
     /// Run at native speed for a given amount of time.
     pub fn run(&mut self, time: Duration) {
-        let cycles = time.as_nanos() / self.cycle_time.as_nanos();
-        let end = self.cpu.bus.schedule.cycle() + cycles as u64;
-        while self.cpu.bus.schedule.cycle() <= end {
+        let cycles = SysTime::new((time.as_nanos() / NANOS_PER_CYCLE) as u64);
+        let end = self.cpu.bus.schedule.since_startup() + cycles;
+
+        while self.cpu.bus.schedule.since_startup() <= end {
             self.cpu.step(&mut ());
         }
     }
@@ -172,3 +245,4 @@ impl Debugger for () {
     }
 }
 
+const NANOS_PER_CYCLE: u128 = 30;

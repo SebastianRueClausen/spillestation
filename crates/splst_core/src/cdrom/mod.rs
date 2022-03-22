@@ -12,12 +12,13 @@ use splst_cdimg::{CdImage, Sector};
 use crate::cpu::Irq;
 use crate::bus::{dma, MemUnit, BusMap};
 use crate::schedule::{Schedule, Event};
-use crate::Cycle;
+use crate::SysTime;
 
 use fifo::Fifo;
 
 use std::fmt;
 use std::rc::Rc;
+use std::time::Duration;
 use std::cell::RefCell;
 
 pub struct CdRom {
@@ -153,10 +154,10 @@ impl CdRom {
 
     pub fn run(&mut self, schedule: &mut Schedule) {
         self.exec_cmd(schedule);
-        schedule.schedule_in(2_000, Event::RunCdRom);
+        schedule.schedule_in(SysTime::new(2_000), Event::RunCdRom);
     }
 
-    fn start_seek(&mut self, schedule: &mut Schedule, ty: SeekType, after: AfterSeek) -> Cycle {
+    fn start_seek(&mut self, schedule: &mut Schedule, ty: SeekType, after: AfterSeek) -> SysTime {
         let target = match self.pending_seek.take() {
             Some(msf) => msf,
             None => {
@@ -166,18 +167,18 @@ impl CdRom {
         };
 
         // TODO: Do some kind of seek time heuristic.
-        let cycles = 225_000;
+        let time = SysTime::new(225_000);
 
-        schedule.schedule_in(cycles, Event::CdRomSectorDone);
+        schedule.schedule_in(time, Event::CdRomSectorDone);
         self.state = DriveState::Seeking(target, ty, after);
 
-        cycles
+        time
     }
 
     fn start_read(&mut self, schedule: &mut Schedule) {
-        let cycles = 225_000;
+        let time = SysTime::new(225_000);
 
-        schedule.schedule_in(cycles, Event::CdRomSectorDone);
+        schedule.schedule_in(time, Event::CdRomSectorDone);
         self.state = DriveState::Reading;
     }
 
@@ -201,9 +202,9 @@ impl CdRom {
                             .unwrap();
 
                         // TODO: Heuristics.
-                        let cycles = 225_000;
+                        let time = SysTime::new(225_000);
 
-                        schedule.schedule_in(cycles, Event::CdRomSectorDone);
+                        schedule.schedule_in(time, Event::CdRomSectorDone);
 
                         // Maybe unshedule any other 'CdRomSectorDone' events, since it's possible
                         // it could have started reading, then paused, but started reading again
@@ -336,13 +337,13 @@ impl CdRom {
                 0x09 => {
                     self.finish_cmd(schedule, Interrupt::Ack);
 
-                    let cycles = match self.state {
-                        DriveState::Paused | DriveState::Idle => 9_000,
-                        _ => 1_000_000,
+                    let time = match self.state {
+                        DriveState::Paused | DriveState::Idle => SysTime::new(9_000),
+                        _ => SysTime::new(1_000_000),
                     };
 
                     self.state = DriveState::Paused;
-                    schedule.schedule_in(cycles, Event::CdRomResponse(CdRomCmd(0x9)));
+                    schedule.schedule_in(time, Event::CdRomResponse(CdRomCmd(0x9)));
                 }
                 // init
                 0x0a => {
@@ -354,7 +355,7 @@ impl CdRom {
                     self.position = Msf::ZERO;
                     self.pending_seek = None;
 
-                    schedule.schedule_in(900_000, Event::CdRomResponse(CdRomCmd(0x0a)));
+                    schedule.schedule_in(SysTime::new(900_000), Event::CdRomResponse(CdRomCmd(0x0a)));
                 }
                 // set_mode: Sets the value of the mode register.
                 0x0e => {
@@ -384,7 +385,7 @@ impl CdRom {
                         self.set_interrupt(schedule, Interrupt::Error);
                     } else {
                         self.finish_cmd(schedule, Interrupt::Ack);
-                        schedule.schedule_in(33868, Event::CdRomResponse(CdRomCmd(0x1a)));
+                        schedule.schedule_in(SysTime::new(33868), Event::CdRomResponse(CdRomCmd(0x1a)));
                     }
 
                 }
@@ -392,7 +393,11 @@ impl CdRom {
                 0x1e => {
                     self.state = DriveState::Reading;
                     self.finish_cmd(schedule, Interrupt::Ack);
-                    schedule.schedule_in(30_000_000, Event::CdRomResponse(CdRomCmd(0x1e)));
+
+                    // Reading the table of content takes about 1 second.
+                    let time = SysTime::from_duration(Duration::from_secs(1));
+
+                    schedule.schedule_in(time, Event::CdRomResponse(CdRomCmd(0x1e)));
                 }
                 _ => todo!("CDROM Command: {:08x}", cmd),
             }

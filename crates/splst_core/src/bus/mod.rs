@@ -15,7 +15,7 @@ mod raw;
 
 use splst_util::Bit;
 use splst_render::Renderer;
-use crate::Cycle;
+use crate::SysTime;
 use crate::schedule::{Event, Schedule};
 use crate::gpu::Gpu;
 use crate::cdrom::{CdRom, Disc};
@@ -57,8 +57,8 @@ impl Bus {
     ) -> Self {
         let mut schedule = Schedule::new();
 
-        schedule.schedule_in(5_000, Event::RunGpu);
-        schedule.schedule_in(7_000, Event::RunCdRom);
+        schedule.schedule_in(SysTime::new(5_000), Event::RunGpu);
+        schedule.schedule_in(SysTime::new(7_000), Event::RunCdRom);
 
         Self {
             bios,
@@ -84,46 +84,46 @@ impl Bus {
         self.load::<T>(addr).map(|(val, _)| val)
     }
 
-    pub fn load<T: MemUnit>(&mut self, addr: u32) -> Option<(u32, Cycle)> {
+    pub fn load<T: MemUnit>(&mut self, addr: u32) -> Option<(u32, SysTime)> {
         let (val, time) = match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
-                (self.ram.load::<T>(addr), 3)
+                (self.ram.load::<T>(addr), SysTime::new(3))
             }
             Bios::BUS_BEGIN..=Bios::BUS_END => {
-                let time = 6 * T::WIDTH as Cycle;
+                let time = SysTime::new(6 * T::WIDTH as u64);
                 (self.bios.load::<T>(addr - Bios::BUS_BEGIN), time)
             }
             MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
-                (self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN), 3)
+                (self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN), SysTime::new(3))
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
-                (self.ram_size.0, 3)
+                (self.ram_size.0, SysTime::new(3))
             }
             CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
-                (self.cache_ctrl.0, 2)
+                (self.cache_ctrl.0, SysTime::new(2))
             }
             EXP1_BEGIN..=EXP1_END => {
-                let time = 7 * T::WIDTH as Cycle;
+                let time = SysTime::new(7 * T::WIDTH as u64);
                 (0xff, time)
             }
             EXP2_BEGIN..=EXP2_END => {
-                let time = 10 * T::WIDTH as Cycle;
+                let time = SysTime::new(10 * T::WIDTH as u64);
                 (0xff, time)
             }
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
-                (self.irq_state.load(addr - IrqState::BUS_BEGIN), 3)
+                (self.irq_state.load(addr - IrqState::BUS_BEGIN), SysTime::new(3))
             }
             Dma::BUS_BEGIN..=Dma::BUS_END => {
                 self.run_dma();
-                (self.dma.load(addr - Dma::BUS_BEGIN), 3)
+                (self.dma.load(addr - Dma::BUS_BEGIN), SysTime::new(3))
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
-                (self.cdrom.load::<T>(addr - CdRom::BUS_BEGIN), 6)
+                (self.cdrom.load::<T>(addr - CdRom::BUS_BEGIN), SysTime::new(6))
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
                 let time = match T::KIND {
-                    MemUnitKind::Word => 39,
-                    _ => 18, 
+                    MemUnitKind::Word => SysTime::new(39),
+                    _ => SysTime::new(18), 
                 };
                 (self.spu.load::<T>(addr - Spu::BUS_BEGIN), time)
             }
@@ -132,7 +132,7 @@ impl Bus {
                     &mut self.schedule,
                     addr - Timers::BUS_BEGIN,
                 );
-                (val, 3)
+                (val, SysTime::new(3))
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
                 let val = self.gpu.load::<T>(
@@ -140,14 +140,14 @@ impl Bus {
                     &mut self.schedule,
                     &mut self.timers,
                 );
-                (val, 3)
+                (val, SysTime::new(3))
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
                 let val = self.io_port.load(
                     &mut self.schedule,
                     addr - IoPort::BUS_BEGIN,
                 );
-                (val, 3)
+                (val, SysTime::new(3))
             }
             _ => {
                 warn!("BUS data error when loading at address {addr:08x}");

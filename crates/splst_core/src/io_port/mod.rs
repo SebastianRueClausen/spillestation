@@ -7,7 +7,7 @@ use splst_util::{Bit, BitSet};
 use crate::bus::BusMap;
 use crate::schedule::{Schedule, Event};
 use crate::cpu::Irq;
-use crate::Cycle;
+use crate::SysTime;
 
 use memcard::MemCard;
 
@@ -178,7 +178,7 @@ impl IoPort {
 
         self.state = State::InTrans;
 
-        schedule.schedule_in(self.baud as Cycle * 8, Event::IoPortTransfer);
+        schedule.schedule_in(SysTime::new(self.baud as u64 * 8), Event::IoPortTransfer);
     }
 
     fn end_transfer(&mut self, schedule: &mut Schedule) {
@@ -260,12 +260,12 @@ impl IoPort {
                 schedule.unschedule(Event::IoPortTransfer);
             }
             true => {
-                let cycles = match self.active_device {
-                    Some(Device::MemCard) => 170,
-                    _ => 450,
+                let time = match self.active_device {
+                    Some(Device::MemCard) => SysTime::new(170),
+                    _ => SysTime::new(450),
                 };
 
-                schedule.schedule_in(cycles, Event::IoPortTransfer);
+                schedule.schedule_in(time, Event::IoPortTransfer);
                 self.state = State::WaitForAck
             }
         }

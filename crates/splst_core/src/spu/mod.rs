@@ -2,12 +2,15 @@ use splst_util::Bit;
 use crate::bus::{MemUnit, MemUnitKind, BusMap};
 use crate::schedule::{Schedule, Event};
 use crate::cpu::Irq;
+use crate::SysTime;
 
 use std::ops::{Index, IndexMut};
 
 pub struct Spu {
     regs: Regs,
     voices: [Voice; 24],
+    last_run: SysTime,
+    active_irq: bool,
     ram: [u16; Self::RAM_SIZE],
 }
 
@@ -18,6 +21,8 @@ impl Spu {
         Self {
             regs: Regs::default(),
             voices: Default::default(),
+            last_run: SysTime::ZERO,
+            active_irq: false,
             ram: [0x0; Self::RAM_SIZE],
         }
     }
@@ -53,9 +58,17 @@ impl Spu {
         self.regs[reg] = val;
 
         match reg {
-            // irq_address | transfer_addr | control.
-            210 | 211 | 213 => {
+            // irq_address or transfer_addr.
+            210 | 211 => {
                 self.maybe_trigger_irq(schedule, self.regs.trans_addr);
+            }
+            // control register.
+            213 => {
+                if self.regs.control.irq_enabled() {
+                    self.maybe_trigger_irq(schedule, self.regs.trans_addr);
+                } else {
+                    self.active_irq = false;
+                }
             }
             _ => (),
         }
@@ -69,8 +82,28 @@ impl Spu {
     fn maybe_trigger_irq(&mut self, schedule: &mut Schedule, addr: u16) {
         if self.regs.control.irq_enabled() && addr == self.regs.irq_addr {
             schedule.schedule_now(Event::IrqTrigger(Irq::Spu));
+            self.active_irq = true;
         }
     }
+
+    fn update_status(&mut self) {
+        // Bit 0..5 of the status register is updated to be the same as bit 0..5 of the control
+        // register. Bit 6 of the status represent's if there is an active interrupt which hasn't
+        // been acknowledged yet.
+        self.regs.status.0 = self.regs.status.0
+            .set_bit_range(0, 5, self.regs.control.0)
+            .set_bit(6, self.active_irq);
+
+        // TODO: Mednafen does something weird with the transfer control register.
+    }
+
+    fn run(&mut self, schedule: &mut Schedule) {
+        self.update_status();
+    }
+}
+
+fn run_voice(voice: &mut Voice) {
+
 }
 
 fn ram_idx(val: u16) -> usize {

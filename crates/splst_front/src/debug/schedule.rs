@@ -17,15 +17,19 @@ impl DebugApp for ScheduleView {
     }
 
     fn update_tick(&mut self, _: Duration, system: &mut System) {
-        let now = system.schedule().cycle();
+        let now = system.schedule().since_startup();
 
         self.cycle.clear();
-        write!(&mut self.cycle, "cycle: {}", now).unwrap();
+        write!(&mut self.cycle, "CPU Cycles since Startup: {}", now.as_cpu_cycles()).unwrap();
 
         self.events = system.schedule()
             .iter()
             .map(|entry| {
-                (entry.0.saturating_sub(now).to_string(), format!("{}", entry.1))
+                let cycles_until = entry.0
+                    .saturating_sub(now)
+                    .as_cpu_cycles()
+                    .to_string();
+                (cycles_until, format!("{}", entry.1))
             })
             .collect();
     }

@@ -1,9 +1,9 @@
 //! Emulation of the Playstations 1 GPU.
 //!
-//! TODO:
-//! * Maybe switch to integer fixed point for rasterization instead of floats.
+//! # TODO
+//! - Maybe switch to integer fixed point for rasterization instead of floats.
 //!
-//! * DMA chopping wouldn't work correctly with the GPU, since the GPU updates it's DMA channel
+//! - DMA chopping wouldn't work correctly with the GPU, since the GPU updates it's DMA channel
 //!   after each GP0 write, which isn't handeled by the DMA.
 
 mod fifo;
@@ -11,8 +11,7 @@ mod primitive;
 mod rasterize;
 mod gp0;
 mod gp1;
-
-pub mod vram;
+mod vram;
 
 use splst_util::{Bit, BitSet};
 use splst_render::{Renderer, DrawInfo};
@@ -22,7 +21,7 @@ use crate::bus::dma;
 use crate::schedule::{Event, Schedule};
 use crate::timing;
 use crate::timer::Timers;
-use crate::Cycle;
+use crate::SysTime;
 
 use fifo::{Fifo, PushAction};
 use primitive::Color;
@@ -101,6 +100,7 @@ impl Gpu {
 
         let timing = Timing::new(
             status.video_mode(),
+            status.horizontal_res(),
             dis_x_start,
             dis_y_start,
             dis_x_end,
@@ -151,8 +151,8 @@ impl Gpu {
 
         // 'dma_ready' can have changed here, which means that the GPU DMA should be updated.
         // Maybe only check if something has changed which could change 'dma_ready', but that
-        // could be skechy. Running a DMA channel is pretty fast anyway, but maybe just running
-        // the GPU channel every 1500 cycles could be faster?
+        // could be sketchy. Running a DMA channel is pretty fast anyway, but maybe just running
+        // the GPU channel every 1500 cycles or something could be faster?
         schedule.unschedule(Event::RunDmaChan(dma::Port::Gpu));
         schedule.schedule_now(Event::RunDmaChan(dma::Port::Gpu));
     }
@@ -278,17 +278,17 @@ impl Gpu {
     /// Run and schedule next run.
     pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
         self.run_internal(schedule, timers);
-        schedule.schedule_in(5_000, Event::RunGpu);
+        schedule.schedule_in(SysTime::new(5_000), Event::RunGpu);
     }
 
-    /// Emulate the period since the last time the GPU run. It 
+    /// Emulate the period since the last time the GPU ran.
     fn run_internal(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
         self.try_gp0_exec(schedule);
 
-        let elapsed = schedule.cycle() - self.timing.last_update;
+        let elapsed = schedule.since_startup() - self.timing.last_update;
 
-        self.timing.scln_prog += timing::cpu_to_gpu_cycles(elapsed);
-        self.timing.last_update = schedule.cycle();
+        self.timing.scln_prog += elapsed.as_gpu_cycles();
+        self.timing.last_update = schedule.since_startup();
 
         // If the progress is less than a single scanline. This is just to have a fast path to
         // allow running the GPU often without a big performance loss.
@@ -609,13 +609,6 @@ pub enum VideoMode {
 }
 
 impl VideoMode {
-    fn cycles_per_scln(self) -> Cycle {
-        match self {
-            VideoMode::Ntsc => timing::NTSC_CYCLES_PER_SCLN,
-            VideoMode::Pal => timing::PAL_CYCLES_PER_SCLN,
-        }
-    }
-
     fn scln_count(self) -> u16 {
         let val = match self {
             VideoMode::Ntsc => timing::NTSC_SCLN_COUNT,
@@ -710,6 +703,33 @@ impl fmt::Display for TexelDepth {
             TexelDepth::B8 => "8 bit",
             TexelDepth::B15 => "15 bit",
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum HorizontalRes {
+    P256 = 256,
+    P320 = 320,
+    P368 = 368,
+    P512 = 512,
+    P640 = 640,
+}
+
+impl fmt::Display for HorizontalRes {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} pixels", *self as usize)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VerticalRes {
+    P240 = 240,
+    P480 = 480,
+}
+
+impl fmt::Display for VerticalRes {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} pixels", *self as usize)
     }
 }
 
@@ -824,26 +844,25 @@ impl Status {
     }
 
     /// Horizontal resolution.
-    pub fn horizontal_res(self) -> u32 {
-        const RES: [u32; 8] = [
-            256,
-            480,
-            512,
-            640,
-            368,
-            368,
-            368,
-            368,
-        ];
-
-        let idx = self.0.bit(16) as u32 | (self.0.bit_range(17, 18) << 2);
-
-        RES[idx as usize]
+    pub fn horizontal_res(self) -> HorizontalRes {
+        match self.0.bit(16) {
+            true => HorizontalRes::P368,
+            false => match self.0.bit_range(17, 18) {
+                0 => HorizontalRes::P256,
+                1 => HorizontalRes::P320,
+                2 => HorizontalRes::P512,
+                3 => HorizontalRes::P640,
+                _ => unreachable!(),
+            }
+        }
     }
 
     /// Vertical resolution.
-    pub fn vertical_res(self) -> u32 {
-        240 * (self.0.bit(19) as u32 + 1)
+    pub fn vertical_res(self) -> VerticalRes {
+        match self.0.bit(19) {
+            false => VerticalRes::P240,
+            true => VerticalRes::P480,
+        }
     }
 
     /// See ['VideoMode'].
@@ -910,7 +929,7 @@ impl Status {
             1 => DmaDir::Fifo,
             2 => DmaDir::CpuToGp0,
             3 => DmaDir::VramToCpu,
-            _ => unreachable!("Invalid dma direction"),
+            _ => unreachable!("invalid dma direction"),
         }
     }
 
@@ -918,7 +937,7 @@ impl Status {
     /// each between the same line each frame, so this tells if the GPU actually uses two fields in
     /// VRAM.
     fn interlaced_480(self) -> bool {
-        self.vertical_interlace() && self.vertical_res() == 480
+        self.vertical_interlace() && self.vertical_res() == VerticalRes::P480
     }
 }
 
@@ -926,14 +945,15 @@ impl Status {
 struct Timing {
     /// The current scanline.
     scln: u16,
-    /// The current progress into the scanline in dot cycles.
+    /// The current progress into the scanline in GPU cycles.
     scln_prog: u64,
-    /// The absolute CPU cycle the timings was last updated.
-    last_update: Cycle,
+    /// The amount of time since startup that the GPU was last updated.
+    last_update: SysTime,
     /// The absolute number of the previous frame.
     frame_count: u64,
-    /// How many cycles it takes to draw a scanline which depend on ['VideoMode'].
-    cycles_per_scln: Cycle,
+    /// How many GPU cycles it takes to draw a scanline which depend on ['VideoMode'] and
+    /// ['HorizontalRes'].
+    cycles_per_scln: u64,
     /// How many scanlines there are which depend on ['VideoMode'].
     scln_count: u16,
     /// The range of displayed lines.
@@ -947,6 +967,7 @@ struct Timing {
 impl Timing {
     fn new(
         mode: VideoMode,
+        hres: HorizontalRes,
         dis_x_start: u16,
         dis_x_end: u16,
         dis_y_start: u16,
@@ -957,7 +978,7 @@ impl Timing {
             scln_prog: 0,
             in_hblank: false,
             in_vblank: false,
-            last_update: 0,
+            last_update: SysTime::ZERO,
             frame_count: 0,
             cycles_per_scln: 0,
             scln_count: 0,
@@ -967,6 +988,7 @@ impl Timing {
 
         timing.update(
             mode,
+            hres,
             dis_x_start,
             dis_y_start,
             dis_x_end,
@@ -979,13 +1001,14 @@ impl Timing {
     fn update(
         &mut self,
         mode: VideoMode,
+        hres: HorizontalRes,
         dis_x_start: u16,
         dis_y_start: u16,
         dis_x_end: u16,
         dis_y_end: u16,
     ) {
         // Update constants.
-        self.cycles_per_scln = mode.cycles_per_scln();
+        self.cycles_per_scln = gpu_cycles_per_scln(mode, hres);
         self.scln_count = mode.scln_count();
 
         // Make sure the current scanline is in range.
@@ -993,19 +1016,21 @@ impl Timing {
         self.scln_prog %= self.cycles_per_scln;
   
         // Hblank status could have changed.
-        self.in_hblank = self.cycles_per_scln >= timing::HSYNC_CYCLES;
+        self.in_hblank = self.scln_prog >= timing::HSYNC_CYCLES;
 
         self.vertical_range = {
-            let start = u16::min(dis_y_start as u16, self.scln_count);
-            let end = u16::min(dis_y_end as u16, self.scln_count);
-
+            let (start, end) = (
+                u16::min(dis_y_start as u16, self.scln_count),
+                u16::min(dis_y_end as u16, self.scln_count),
+            );
             start..end
         };
 
         self.horizontal_range = {
-            let start = u16::min(dis_x_start as u16, self.cycles_per_scln as u16);
-            let end = u16::min(dis_x_end as u16, self.cycles_per_scln as u16);
-
+            let (start, end) = (
+                u16::min(dis_x_start as u16, self.cycles_per_scln as u16),
+                u16::min(dis_x_end as u16, self.cycles_per_scln as u16),
+            );
             start..end
         };
     }
@@ -1025,6 +1050,25 @@ impl Timing {
 
         self.scln + offset
     }
+}
+
+/// Get number of dot cycles per scanline dependent in video mode and horizontal resolution. It's
+/// not exact as it's represented as integers.
+fn gpu_cycles_per_scln(vmode: VideoMode, hres: HorizontalRes) -> u64 {
+    let num = match vmode {
+        VideoMode::Pal => 3406,
+        VideoMode::Ntsc => 3413,
+    };
+
+    let den = match hres {
+        HorizontalRes::P256 => 10,
+        HorizontalRes::P320 => 8,
+        HorizontalRes::P368 => 7,
+        HorizontalRes::P512 => 5,
+        HorizontalRes::P640 => 4,
+    };
+
+    num / den
 }
 
 /// The current state of the GPU.

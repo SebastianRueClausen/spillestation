@@ -1,10 +1,9 @@
 use splst_util::{Bit, BitSet};
 
 use crate::cpu::Irq;
-use crate::timing;
 use crate::bus::BusMap;
 use crate::schedule::{Schedule, Event};
-use crate::Cycle;
+use crate::SysTime;
 
 use std::fmt;
 
@@ -48,7 +47,6 @@ impl fmt::Display for TimerId {
 /// counter.
 ///
 /// # The naming follows the convention:
-///
 /// - 'Pause' - The timer is paused during V/H Blank.
 /// - 'Reset' - The timer resets to 0 when entering V/H Blank.
 /// - 'ResetAndRun' - Reset the counter to 0 when entering V/H Blank and pause when not in H/V Blank.
@@ -94,21 +92,21 @@ pub enum ClockSource {
 }
 
 impl ClockSource {
-    fn cycles_to_ticks(self, cycles: Cycle) -> u64 {
+    fn time_to_ticks(self, time: SysTime) -> u64 {
         match self {
-            ClockSource::SystemClock => cycles,
-            ClockSource::SystemClockDiv8 => cycles / 8,
-            ClockSource::DotClock => timing::cpu_to_gpu_cycles(cycles),
+            ClockSource::SystemClock => time.as_cpu_cycles(),
+            ClockSource::SystemClockDiv8 => time.as_cpu_cycles() / 8,
+            ClockSource::DotClock => time.as_gpu_cycles(),
             ClockSource::Hblank => 0,
         }
     }
 
-    fn ticks_to_cycles(self, ticks: u64) -> Cycle {
+    fn ticks_to_time(self, ticks: u64) -> SysTime {
         match self {
-            ClockSource::SystemClock => ticks,
-            ClockSource::SystemClockDiv8 => ticks * 8,
-            ClockSource::DotClock => timing::gpu_to_cpu_cycles(ticks),
-            ClockSource::Hblank => 0,
+            ClockSource::SystemClock => SysTime::new(ticks),
+            ClockSource::SystemClockDiv8 => SysTime::new(ticks * 8),
+            ClockSource::DotClock => SysTime::from_gpu_cycles(ticks),
+            ClockSource::Hblank => SysTime::ZERO,
         }
     }
 }
@@ -316,7 +314,7 @@ impl Timer {
                 self.mode.set_master_irq_flag(!self.mode.master_irq_flag());   
             } else {
                 self.mode.set_master_irq_flag(false);
-                schedule.schedule_in(20, Event::TimerIrqEnable(self.id));
+                schedule.schedule_in(SysTime::new(20), Event::TimerIrqEnable(self.id));
             }
         }
     }
@@ -360,8 +358,8 @@ impl Timer {
         }
     }
 
-    /// Choose the amount of cycles until this timer should run again.
-    fn predict_next_irq(&self) -> Option<Cycle> {
+    /// Choose the amount of time until this timer should run again.
+    fn predict_next_irq(&self) -> Option<SysTime> {
         if !self.mode.irq_on_overflow() && !self.mode.irq_on_target() {
             return None;
         }
@@ -392,7 +390,7 @@ impl Timer {
         };
 
         let ticks_left = target - self.counter;
-        Some(self.clock_source().ticks_to_cycles(ticks_left.into()))
+        Some(self.clock_source().ticks_to_time(ticks_left.into()))
     }
 
     fn run(&mut self, schedule: &mut Schedule, mut ticks: u64) {
@@ -412,16 +410,16 @@ impl Timer {
 /// simultaneously. Each timer can be configured to take different sources, have different targets
 /// and what to do when reaching the target such as triggering an interrupt.
 pub struct Timers {
-    pub timers: [(Timer, Cycle); 3],
+    pub timers: [(Timer, SysTime); 3],
 }
 
 impl Timers {
     pub fn new() -> Self {
         Self {
             timers: [
-                (Timer::new(TimerId::Tmr0), 0),
-                (Timer::new(TimerId::Tmr1), 0),
-                (Timer::new(TimerId::Tmr2), 0),
+                (Timer::new(TimerId::Tmr0), SysTime::ZERO),
+                (Timer::new(TimerId::Tmr1), SysTime::ZERO),
+                (Timer::new(TimerId::Tmr2), SysTime::ZERO),
             ],
         }
     }
@@ -460,12 +458,12 @@ impl Timers {
     /// the timer gets run.
     fn update_timer(&mut self, schedule: &mut Schedule, id: TimerId) {
         let (tmr, last_update) = &mut self.timers[id as usize];
-        let cycles = schedule.cycle() - *last_update;
+        let time = schedule.since_startup() - *last_update;
 
-        *last_update = schedule.cycle();
+        *last_update = schedule.since_startup();
 
         if tmr.clock_source() != ClockSource::Hblank {
-            tmr.run(schedule, tmr.clock_source().cycles_to_ticks(cycles));
+            tmr.run(schedule, tmr.clock_source().time_to_ticks(time));
         }
     }
 

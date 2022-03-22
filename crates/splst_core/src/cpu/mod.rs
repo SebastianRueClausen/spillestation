@@ -1,13 +1,13 @@
 //! Emulation of the MIPS R3000 used by the original Sony Playstation.
 //!
 //! # TODO
-//! * Perhaps checking for active interrupts isn't good enough, since writes to the COP0 cause and
+//! - Perhaps checking for active interrupts isn't good enough, since writes to the COP0 cause and
 //!   active registers can change 'irq_active' status. Checking every cycle doesn't seem to do
 //!   anything for now, but herhaps there could be a problem.
 //!
-//! * More testing of edge cases.
+//! - More testing of edge cases.
 //!
-//! * Test that store and load functions get's inlined properly to avoid branching on Exceptions.
+//! - Test that store and load functions get's inlined properly to avoid branching on Exceptions.
 
 mod cop0;
 mod gte;
@@ -23,7 +23,7 @@ use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
 use crate::bus::{MemUnit, Bus, BusMap, Byte, HalfWord, Word};
 use crate::schedule::Event;
-use crate::{Cycle, Debugger};
+use crate::{SysTime, Debugger};
 use splst_util::Bit;
 
 use cop0::{Cop0, Exception};
@@ -38,7 +38,8 @@ pub use opcode::{Opcode, RegIdx};
 #[derive(Default, Clone, Copy)]
 struct DelaySlot {
     reg: RegIdx,
-    ready: Cycle,
+    /// The amount of time since startup that the delay slot is ready.
+    ready: SysTime,
     val: u32,
 }
 
@@ -79,7 +80,7 @@ pub struct Cpu {
     /// ready since they take more than a single cycle to complete. The CPU can run while the
     /// result is being calculated, but if the result is being read before it's ready, the CPU will
     /// wait before continuing.
-    hi_lo_ready: Cycle,
+    hi_lo_ready: SysTime,
     /// All registers of the MIPS R3000 are essentially general purpose besides $r0 which always
     /// contains the value 0. They are however used for specific purposes depending on convention.
     ///
@@ -149,7 +150,7 @@ impl Cpu {
             branched: false,
             hi: 0x0,
             lo: 0x0,
-            hi_lo_ready: 0x0,
+            hi_lo_ready: SysTime::ZERO,
             registers: [0x0; 32],
             load_delay: DelaySlot::default(),
             gte: Gte::new(),
@@ -164,25 +165,24 @@ impl Cpu {
         self.registers[idx.0 as usize]
     }
 
-    fn set_reg(&mut self, idx: RegIdx, value: u32) {
-        self.registers[idx.0 as usize] = value;
+    fn set_reg(&mut self, idx: RegIdx, val: u32) {
+        self.registers[idx.0 as usize] = val;
         self.registers[0] = 0;
     }
 
     /// Load data from the bus. Must not be called when loading code.
-    fn load<T: MemUnit>(&mut self, addr: u32) -> Result<(u32, Cycle), Exception> {
+    fn load<T: MemUnit>(&mut self, addr: u32) -> Result<(u32, SysTime), Exception> {
         self.bus.schedule.skip_to(self.load_delay.ready);
 
         if !T::is_aligned(addr) {
             self.cop0.set_reg(8, addr);
-
             return Err(Exception::AddressLoadError);
         }
 
         let addr = bus::regioned_addr(addr);
 
         if let Some(offset) = ScratchPad::offset(addr) {
-            Ok((self.bus.scratchpad.load::<T>(offset), 0))
+            Ok((self.bus.scratchpad.load::<T>(offset), SysTime::ZERO))
         } else {
             self.bus.load::<T>(addr).ok_or(Exception::BusDataError)
         }
@@ -200,7 +200,7 @@ impl Cpu {
         self.bus
             .load::<T>(addr)
             .map(|(val, time)| {
-                self.bus.schedule.tick(time);
+                self.bus.schedule.advance(time);
                 val
             })
             .ok_or(Exception::BusInstructionError)
@@ -243,7 +243,7 @@ impl Cpu {
     ///
     /// When loading from memory the CPU has to wait for the previous load to be done before the
     /// new load can begin.
-    fn pipeline_bus_load(&mut self, reg: RegIdx, val: u32, time: Cycle) {
+    fn pipeline_bus_load(&mut self, reg: RegIdx, val: u32, time: SysTime) {
         // Check if the current load in the pipeline is different from the new one. If there aren't
         // any loads then 'self.load_delay.reg' points to the zero register.
         let diff = (self.load_delay.reg != reg) as u8;
@@ -257,7 +257,7 @@ impl Cpu {
         self.bus.schedule.skip_to(self.load_delay.ready);
         self.set_reg(lreg, self.load_delay.val);
 
-        let ready = self.bus.schedule.cycle() + time;
+        let ready = self.bus.schedule.since_startup() + time;
         self.load_delay = DelaySlot { reg, val, ready };
     }
 
@@ -269,7 +269,7 @@ impl Cpu {
         let lreg = RegIdx::from(self.load_delay.reg.0 * diff);
 
         self.set_reg(lreg, self.load_delay.val);
-        self.load_delay = DelaySlot { reg, val, ready: 0 };
+        self.load_delay = DelaySlot { reg, val, ready: SysTime::ZERO };
     }
 
     /// Access a register, meaning that it's either gonna be get written to or read from. If there
@@ -277,9 +277,7 @@ impl Cpu {
     /// done.
     fn access_reg(&mut self, reg: RegIdx) -> RegIdx {
         let same = self.load_delay.reg == reg;
-        self.bus
-            .schedule
-            .skip_to(self.load_delay.ready * same as Cycle);
+        self.bus.schedule.skip_to(self.load_delay.ready * SysTime::new(same as u64));
         reg
     }
 
@@ -292,8 +290,8 @@ impl Cpu {
     }
 
     /// Add result to hi and lo register.
-    fn add_pending_hi_lo(&mut self, cycles: Cycle, hi: u32, lo: u32) {
-        self.hi_lo_ready = self.bus.schedule.cycle() + cycles;
+    fn add_pending_hi_lo(&mut self, time: SysTime, hi: u32, lo: u32) {
+        self.hi_lo_ready = self.bus.schedule.since_startup() + time;
         self.hi = hi;
         self.lo = lo;
     }
@@ -365,7 +363,7 @@ impl Cpu {
         idx: usize,
         addr: u32,
     ) -> Result<(), Exception> {
-        self.bus.schedule.tick(4 - idx as u64);
+        self.bus.schedule.advance(SysTime::new(4 - idx as u64));
         for (i, j) in (idx..4).enumerate() {
             line.data[j] = self.load_code::<Word>(addr + (i as u32 * 4))?;
         }
@@ -416,14 +414,14 @@ impl Cpu {
                     self.bus.schedule.skip_to(self.load_delay.ready);
 
                     // Cache misses take about 4 cycles.
-                    self.bus.schedule.tick(4);
+                    self.bus.schedule.advance(SysTime::new(4));
 
                     match self.load_code::<Word>(addr) {
                         Ok(val) => self.exec(dbg, Opcode::new(val)),
                         Err(exp) => self.throw_exception(exp),
                     }
                 }
-                self.bus.schedule.tick(1);
+                self.bus.schedule.advance(SysTime::new(1));
             }
             Some(Event::IrqTrigger(irq)) => {
                 if self.irq_pending() {
@@ -722,17 +720,17 @@ impl Cpu {
         let lhs = self.read_reg(rs) as i32;
         let rhs = self.read_reg(rt) as i32;
 
-        let cycles = match if lhs < 0 { !lhs } else { lhs }.leading_zeros() {
-            00..=11 => 13,
-            12..=20 => 9,
-            _ => 7,
+        let time = match if lhs < 0 { !lhs } else { lhs }.leading_zeros() {
+            00..=11 => SysTime::new(13),
+            12..=20 => SysTime::new(9),
+            _ => SysTime::new(7),
         };
 
         let val = i64::from(lhs) * i64::from(rhs);
         let val = val as u64;
 
         self.fetch_load_slot();
-        self.add_pending_hi_lo(cycles, (val >> 32) as u32, val as u32);
+        self.add_pending_hi_lo(time, (val >> 32) as u32, val as u32);
     }
 
     /// MULTU - Unsigned multiplication.
@@ -743,16 +741,16 @@ impl Cpu {
         let lhs = self.read_reg(rs);
         let rhs = self.read_reg(rt);
 
-        let cycles = match lhs {
-            0x00000000..=0x000007ff => 13,
-            0x00000800..=0x000fffff => 9,
-            _ => 7,
+        let time = match lhs {
+            0x00000000..=0x000007ff => SysTime::new(13),
+            0x00000800..=0x000fffff => SysTime::new(9),
+            _ => SysTime::new(7),
         };
 
         let val = u64::from(lhs) * u64::from(rhs);
 
         self.fetch_load_slot();
-        self.add_pending_hi_lo(cycles, (val >> 32) as u32, val as u32);
+        self.add_pending_hi_lo(time, (val >> 32) as u32, val as u32);
     }
 
     /// DIV - Signed division.
@@ -770,14 +768,14 @@ impl Cpu {
 
         if rhs == 0 {
             let lo: u32 = if lhs < 0 { 1 } else { 0xffff_ffff };
-            self.add_pending_hi_lo(36, lhs as u32, lo);
+            self.add_pending_hi_lo(SysTime::new(36), lhs as u32, lo);
         } else if rhs == -1 && lhs as u32 == 0x8000_0000 {
-            self.add_pending_hi_lo(36, 0, 0x8000_0000);
+            self.add_pending_hi_lo(SysTime::new(36), 0, 0x8000_0000);
         } else {
             let hi = lhs % rhs;
             let lo = lhs / rhs;
 
-            self.add_pending_hi_lo(36, hi as u32, lo as u32);
+            self.add_pending_hi_lo(SysTime::new(36), hi as u32, lo as u32);
         }
     }
 
@@ -792,9 +790,9 @@ impl Cpu {
         self.fetch_load_slot();
 
         if rhs == 0 {
-            self.add_pending_hi_lo(36, lhs, 0xffff_ffff);
+            self.add_pending_hi_lo(SysTime::new(36), lhs, 0xffff_ffff);
         } else {
-            self.add_pending_hi_lo(36, lhs % rhs, lhs / rhs);
+            self.add_pending_hi_lo(SysTime::new(36), lhs % rhs, lhs / rhs);
         }
     }
 
@@ -1442,7 +1440,7 @@ impl Cpu {
                     _ => unreachable!(),
                 };
 
-                self.bus.schedule.tick(time);
+                self.bus.schedule.advance(time);
                 self.fetch_load_slot();
 
                 if let Err(exp) = self.store::<Word>(aligned, val) {
@@ -1497,7 +1495,7 @@ impl Cpu {
                     _ => unreachable!(),
                 };
 
-                self.bus.schedule.tick(time);
+                self.bus.schedule.advance(time);
                 self.fetch_load_slot();
 
                 if let Err(ex) = self.store::<Word>(aligned, val) {
@@ -1531,7 +1529,7 @@ impl Cpu {
 
         match self.load::<Word>(addr) {
             Ok((val, time)) => {
-                self.bus.schedule.tick(time);
+                self.bus.schedule.advance(time);
                 self.gte.data_store(op.rt().0 as u32, val);
             }
             Err(ex) => {
