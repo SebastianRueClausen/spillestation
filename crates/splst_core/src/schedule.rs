@@ -6,7 +6,7 @@
 //!   devices and then make the CPU check if there is any IRQ to handle.
 
 use crate::cdrom::CdRomCmd;
-use crate::cpu::Irq;
+use crate::cpu::{Irq, Cpu};
 use crate::timer::TimerId;
 use crate::SysTime;
 use crate::bus::dma::Port;

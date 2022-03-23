@@ -104,11 +104,11 @@ impl Sub for SysTime {
     }
 }
 
-impl Mul for SysTime {
+impl Mul<u64> for SysTime {
     type Output = Self;
 
-    fn mul(self, other: Self) -> Self {
-        Self(self.0 * other.0)
+    fn mul(self, other: u64) -> Self {
+        Self(self.0 * other)
     }
 }
 

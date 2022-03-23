@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+//! # TODO
+//! - A transfer should continue to update unless 'end_transfer' is called.
+
 pub mod controller;
 mod memcard;
 
@@ -56,8 +59,6 @@ impl IoPort {
     }
 
     pub fn store(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
-        trace!("IO Port store");
-
         match addr {
             0 => {
                 if self.tx_fifo.is_some() {
@@ -75,7 +76,7 @@ impl IoPort {
                 self.ctrl = CtrlReg(val as u16);
 
                 if self.ctrl.reset() {
-                    trace!("IoPort control reset");
+                    trace!("io port control reset");
 
                     if self.is_transmitting() {
                         self.end_transfer(schedule);
@@ -152,9 +153,11 @@ impl IoPort {
     }
 
     fn can_begin_transfer(&self) -> bool {
-        self.tx_fifo.is_some()
+        let can_begin = self.tx_fifo.is_some()
             && self.ctrl.select()
-            && self.ctrl.tx_enabled()
+            && self.ctrl.tx_enabled();
+    
+        can_begin
     }
     
     fn is_transmitting(&self) -> bool {
@@ -212,6 +215,8 @@ impl IoPort {
     }
 
     fn make_transfer(&mut self, schedule: &mut Schedule) {
+        trace!("Make transfer");
+
         let index = self.ctrl.io_slot() as usize;
 
         let ctrl = &mut self.controllers.borrow_mut()[self.ctrl.io_slot()];
@@ -241,7 +246,10 @@ impl IoPort {
                 }
             }
             Some(Device::Controller) => match ctrl {
-                controller::Port::Digital(ctrl) => ctrl.transfer(self.tx_val),
+                controller::Port::Digital(ctrl) => {
+                    trace!("controller transfer");
+                    ctrl.transfer(self.tx_val)
+                },
                 controller::Port::Unconnected => (0xff, false),
             }
             Some(Device::MemCard) => match memcard {

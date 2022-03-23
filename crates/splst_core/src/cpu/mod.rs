@@ -277,7 +277,7 @@ impl Cpu {
     /// done.
     fn access_reg(&mut self, reg: RegIdx) -> RegIdx {
         let same = self.load_delay.reg == reg;
-        self.bus.schedule.skip_to(self.load_delay.ready * SysTime::new(same as u64));
+        self.bus.schedule.skip_to(self.load_delay.ready * same as u64);
         reg
     }
 

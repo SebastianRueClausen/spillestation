@@ -22,6 +22,7 @@ impl Port {
     }
 
     pub fn set_button(&mut self, button: Button, pressed: bool) {
+        trace!("{button} {}", if pressed { "pressed" } else { "released" });
         match self {
             Port::Digital(ctrl) => ctrl.buttons.set_button(button, pressed),
             Port::Unconnected => (),
@@ -135,6 +136,8 @@ impl DigitalController {
             // Get Buttons bits 8..15.
             TransferState::ButtonsHigh => {
                 self.state = TransferState::Idle;
+
+                trace!("controller transfer done");
 
                 (self.buttons.0.bit_range(8, 15) as u8, false)
             }
