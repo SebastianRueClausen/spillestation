@@ -81,12 +81,21 @@ impl Cop0 {
         self.regs[reg as usize]
     }
 
+    /// Start handling an exception. It updates the status register to disable interrupt and sets
+    /// the processor to kernel mode. It then updates the CAUSE register to store the type of
+    /// exception and the EPC register to store the address of the instruction currently being
+    /// executed (or the one before that if the CPU is in a branch delay slot).
+    ///
+    /// # Returns
+    ///
+    /// The address of the code to handle the exception, which may depend on if the boot exception
+    /// vectors have been transfered to RAM.
     pub fn enter_exception(
         &mut self,
         schedule: &mut Schedule,
         last_pc: u32,
         in_delay: bool,
-        ex: Exception
+        ex: Exception,
     ) -> u32 {
         // Remember bits 0..5 of the status register, which keep track of interrupt and
         // kernel/user mode flags. Bits 0..1 keep track of the current flags, bits 2..3 keeps
@@ -99,16 +108,13 @@ impl Cop0 {
         self.regs[13] = self.regs[13].set_bit_range(2, 6, ex as u32);
         // If the CPU is in a branch delay slot, EPC is set to one instruction behind the last pc.
         // Bit 31 of CAUSE is also set.
-        let (bit31, addr) = if in_delay {
-            (true, last_pc.wrapping_sub(4))
-        } else {
-            (false, last_pc)
-        };
-        self.regs[13] = self.regs[13].set_bit(31, bit31);
+        let addr = if in_delay { last_pc.wrapping_sub(4) } else { last_pc };
+
+        self.regs[13] = self.regs[13].set_bit(31, in_delay);
         self.regs[14] = addr;
 
         // IRQ state might have changed.
-        schedule.schedule_now(Event::IrqCheck);
+        schedule.trigger(Event::IrqCheck);
 
         // Set PC to the exception handler. The exception handler address depend on BEV flag in
         // COP0 status register.
@@ -123,7 +129,7 @@ impl Cop0 {
         let flags = self.regs[12].bit_range(0, 5);
         self.regs[12] = self.regs[12].set_bit_range(0, 3, flags >> 2);
 
-        schedule.schedule_now(Event::IrqCheck);
+        schedule.trigger(Event::IrqCheck);
     }
 }
 

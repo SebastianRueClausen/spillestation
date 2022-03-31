@@ -2,7 +2,7 @@ use splst_util::{Bit, BitSet};
 
 use crate::cpu::Irq;
 use crate::bus::BusMap;
-use crate::schedule::{Schedule, Event};
+use crate::schedule::{Schedule, Event, EventId};
 use crate::SysTime;
 
 use std::fmt;
@@ -47,11 +47,11 @@ impl fmt::Display for TimerId {
 /// counter.
 ///
 /// # The naming follows the convention:
+///
 /// - 'Pause' - The timer is paused during V/H Blank.
 /// - 'Reset' - The timer resets to 0 when entering V/H Blank.
 /// - 'ResetAndRun' - Reset the counter to 0 when entering V/H Blank and pause when not in H/V Blank.
 /// - 'Wait' - Wait until V/H Blank and switch to 'FreeRun'.
-///
 #[derive(PartialEq, Eq)]
 pub enum SyncMode {
     HblankPause,
@@ -249,6 +249,8 @@ pub struct Timer {
     /// This is to track if it has interrupted since last write to 'mode', since in oneshot
     /// mode it only does it once.
     has_triggered: bool,
+    /// The ['EventId'] for any update events.
+    next_update: Option<EventId>,
 }
 
 impl Timer {
@@ -259,17 +261,18 @@ impl Timer {
             counter: 0,
             target: 0,
             has_triggered: false,
+            next_update: None,
         }
     }
 
     fn load(&mut self, offset: u32) -> u32 {
         match offset.bit_range(0, 3) {
             0 => {
-                trace!("Timer {} counter read", self.id);
+                trace!("timer {} counter read", self.id);
                 self.counter.into()
             }
             4 => {
-                trace!("Timer {} mode read", self.id);
+                trace!("timer {} mode read", self.id);
                 self.mode.load()
             }
             8 => self.target.into(),
@@ -305,7 +308,7 @@ impl Timer {
             self.has_triggered = true;
 
             if self.mode.master_irq_flag() {
-                schedule.schedule_now(Event::IrqTrigger(self.id.irq_kind()));
+                schedule.trigger(Event::Irq(self.id.irq_kind()));
             }
 
             // In toggle mode, the irq master flag is toggled each IRQ. Otherwise it's always
@@ -314,7 +317,10 @@ impl Timer {
                 self.mode.set_master_irq_flag(!self.mode.master_irq_flag());   
             } else {
                 self.mode.set_master_irq_flag(false);
-                schedule.schedule_in(SysTime::new(20), Event::TimerIrqEnable(self.id));
+                schedule.schedule(
+                    SysTime::new(20),
+                    Event::Timer(self.id, Timers::enable_irq_master_flag)
+                );
             }
         }
     }
@@ -393,6 +399,15 @@ impl Timer {
         Some(self.clock_source().ticks_to_time(ticks_left.into()))
     }
 
+    fn schedule_next_run(&mut self, schedule: &mut Schedule) {
+        self.next_update = self.predict_next_irq().map(|time| {
+            if let Some(id) = self.next_update {
+                schedule.unschedule(id); 
+            }
+            schedule.schedule(time, Event::Timer(self.id, Timers::run_timer))
+        });
+    }
+
     fn run(&mut self, schedule: &mut Schedule, mut ticks: u64) {
         while let Some(val) = ticks.checked_sub(u16::MAX.into()) {
             self.add_to_counter(schedule, u16::MAX);
@@ -432,10 +447,7 @@ impl Timers {
         let (tmr, _) = &mut self.timers[id as usize];
         let val = tmr.load(offset);
 
-        if let Some(cycles) = tmr.predict_next_irq() {
-            schedule.unschedule(Event::RunTimer(id));
-            schedule.schedule_in(cycles, Event::RunTimer(id));
-        }
+        tmr.schedule_next_run(schedule);
 
         val
     }
@@ -446,12 +458,9 @@ impl Timers {
         self.update_timer(schedule, id);
 
         let (tmr, _) = &mut self.timers[id as usize];
-        tmr.store(offset, val);
 
-        if let Some(cycles) = tmr.predict_next_irq() {
-            schedule.unschedule(Event::RunTimer(id));
-            schedule.schedule_in(cycles, Event::RunTimer(id));
-        }
+        tmr.store(offset, val);
+        tmr.schedule_next_run(schedule);
     }
 
     /// Update the timer. If the clock source is derivable from clock cycles ie. not Hblanks, then
@@ -477,13 +486,10 @@ impl Timers {
 
         let (tmr, _) = &mut self.timers[id as usize];
 
-        if let Some(cycles) = tmr.predict_next_irq() {
-            schedule.unschedule(Event::RunTimer(id));
-            schedule.schedule_in(cycles, Event::RunTimer(id));
-        }
+        tmr.schedule_next_run(schedule);
     }
 
-    pub fn enable_irq_master_flag(&mut self, id: TimerId) {
+    pub fn enable_irq_master_flag(&mut self, _: &mut Schedule, id: TimerId) {
         let (tmr, _) = &mut self.timers[id as usize];
         tmr.mode.set_master_irq_flag(true);
     }

@@ -1,10 +1,10 @@
 //! Represent the memory BUS of the playstation 1.
 //!
 //! # TODO
-//! * Add a debug peek funktion to read from devices without side effects. For now reading data
+//! - Add a debug peek funktion to read from devices without side effects. For now reading data
 //!   through the debugger could potentially have side effects.
 //!
-//! * Make ['AddrUnit'] a trait implemented on u8, u16 and u32 and make devices return and take the
+//! - Make ['MemUnit'] a trait implemented on u8, u16 and u32 and make devices return and take the
 //!   actual primtive being loaded or stored. This also allows the compiler to infer the type.
 
 pub mod bios;
@@ -57,18 +57,18 @@ impl Bus {
     ) -> Self {
         let mut schedule = Schedule::new();
 
-        schedule.schedule_in(SysTime::new(5_000), Event::RunGpu);
-        schedule.schedule_in(SysTime::new(7_000), Event::RunCdRom);
+        let gpu = Gpu::new(&mut schedule, renderer);
+        let cdrom = CdRom::new(&mut schedule, disc);
 
         Self {
             bios,
             schedule,
+            gpu,
+            cdrom,
             irq_state: IrqState::new(),
             scratchpad: ScratchPad::new(),
             ram: Ram::new(),
             dma: Dma::new(),
-            gpu: Gpu::new(renderer),
-            cdrom: CdRom::new(disc),
             timers: Timers::new(),
             spu: Spu::new(),
             io_port: IoPort::new(controllers),
@@ -220,40 +220,6 @@ impl Bus {
             }
         }
         Some(()) 
-    }
-
-    pub fn handle_event(&mut self, event: Event) {
-        match event {
-            Event::RunCdRom => {
-                self.cdrom.run(&mut self.schedule)
-            }
-            Event::CdRomSectorDone => {
-                self.cdrom.sector_done(&mut self.schedule); 
-            }
-            Event::CdRomResponse(cmd) => {
-                self.cdrom.reponse(&mut self.schedule, cmd);
-            }
-            Event::RunGpu => {
-                self.gpu.run(&mut self.schedule, &mut self.timers)
-            }
-            Event::GpuCmdDone => {
-                self.gpu.cmd_done(&mut self.schedule);
-            }
-            Event::RunDmaChan(port) => self.run_dma_chan(port),
-            Event::TimerIrqEnable(id) => {
-                self.timers.enable_irq_master_flag(id)
-            }
-            Event::RunTimer(id) => {
-                self.timers.run_timer(&mut self.schedule, id)
-            }
-            Event::IrqTrigger(..) | Event::IrqCheck => {
-                // They should be caught by the CPU.
-                unreachable!()
-            }
-            Event::IoPortTransfer => {
-                self.io_port.transfer(&mut self.schedule)
-            }
-        }
     }
 }
 

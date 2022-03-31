@@ -16,9 +16,9 @@ mod vram;
 use splst_util::{Bit, BitSet};
 use splst_render::{Renderer, DrawInfo};
 use crate::cpu::Irq;
-use crate::bus::{BusMap, MemUnit};
+use crate::bus::{Bus, BusMap, MemUnit};
 use crate::bus::dma;
-use crate::schedule::{Event, Schedule};
+use crate::schedule::{Event, EventId, Schedule};
 use crate::timing;
 use crate::timer::Timers;
 use crate::SysTime;
@@ -36,6 +36,7 @@ pub use vram::Vram;
 
 pub struct Gpu {
     pub(super) renderer: Rc<RefCell<Renderer>>,
+    run_event: EventId,
     /// The current state of the GPU.
     state: State,
     /// The GPU FIFO. Used to recieve commands and some kinds of data.
@@ -89,7 +90,9 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub fn new(renderer: Rc<RefCell<Renderer>>) -> Self {
+    pub fn new(schedule: &mut Schedule, renderer: Rc<RefCell<Renderer>>) -> Self {
+        let run_event = schedule.schedule_repeat(SysTime::new(5_000), Event::Gpu(Gpu::run));
+
         let dis_x_start = 0x200;
         let dis_y_start = 0x0;
 
@@ -109,6 +112,7 @@ impl Gpu {
 
         Self {
             renderer,
+            run_event,
             state: State::Idle,
             fifo: Fifo::new(),
             vram: Vram::new(),
@@ -143,6 +147,7 @@ impl Gpu {
         val: u32
     ) {
         debug_assert_eq!(T::WIDTH, 4);
+
         match addr {
             0 => self.gp0_store(schedule, val),
             4 => self.gp1_store(val),
@@ -153,8 +158,11 @@ impl Gpu {
         // Maybe only check if something has changed which could change 'dma_ready', but that
         // could be sketchy. Running a DMA channel is pretty fast anyway, but maybe just running
         // the GPU channel every 1500 cycles or something could be faster?
-        schedule.unschedule(Event::RunDmaChan(dma::Port::Gpu));
-        schedule.schedule_now(Event::RunDmaChan(dma::Port::Gpu));
+        
+        // This can be mess up chopping for CPU transfers. If theres already a pending event for a
+        // chopped transfer, the block will be transfered early.
+
+        schedule.trigger(Event::Dma(dma::Port::Gpu, Bus::run_dma_chan));
     }
 
     pub fn load<T: MemUnit>(
@@ -165,9 +173,8 @@ impl Gpu {
     ) -> u32 {
         debug_assert_eq!(T::WIDTH, 4);
 
-        // Run mainly to update the status register. Doesn't schedule a new run, so it will still
-        // just run at the regular interval.
-        self.run_internal(schedule, timers);
+        // Run mainly to update the status register.
+        self.run(schedule, timers);
 
         match addr {
             0 => self.gpu_read(),
@@ -275,14 +282,8 @@ impl Gpu {
         self.try_gp0_exec(schedule);
     }
 
-    /// Run and schedule next run.
-    pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
-        self.run_internal(schedule, timers);
-        schedule.schedule_in(SysTime::new(5_000), Event::RunGpu);
-    }
-
     /// Emulate the period since the last time the GPU ran.
-    fn run_internal(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
+    pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
         self.try_gp0_exec(schedule);
 
         let elapsed = schedule.since_startup() - self.timing.last_update;
@@ -360,7 +361,8 @@ impl Gpu {
                     );
 
                     self.timing.frame_count += 1;
-                    schedule.schedule_now(Event::IrqTrigger(Irq::VBlank));
+
+                    schedule.trigger(Event::Irq(Irq::VBlank));
                 }
 
                 self.timing.in_vblank = in_vblank;
@@ -550,7 +552,10 @@ impl Gpu {
 
         if let Some(cycles) = cycles {
             self.state = State::Drawing;
-            schedule.schedule_in(cycles, Event::GpuCmdDone);
+            schedule.schedule(cycles, Event::Gpu(|gpu, schedule, _| {
+                gpu.state = State::Idle;
+                gpu.try_gp0_exec(schedule);
+            }));
         }
     }
 }

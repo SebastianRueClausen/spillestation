@@ -9,7 +9,7 @@ fn main() {
         .filter_module("wgpu", LevelFilter::Error)
         .filter_module("winit", LevelFilter::Error)
         .filter_module("naga", LevelFilter::Error)
-        .filter(None, LevelFilter::Debug)
+        .filter(None, LevelFilter::Trace)
         .init();
 
     splst_front::run();

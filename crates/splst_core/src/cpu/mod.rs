@@ -22,7 +22,7 @@ use crate::bus;
 use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
 use crate::bus::{MemUnit, Bus, BusMap, Byte, HalfWord, Word};
-use crate::schedule::Event;
+use crate::schedule;
 use crate::{SysTime, Debugger};
 use splst_util::Bit;
 
@@ -317,13 +317,16 @@ impl Cpu {
     /// Start handeling an exception, and jumps to exception handling code in bios.
     fn throw_exception(&mut self, ex: Exception) {
         trace!("Exception thrown: {:?}", ex);
-        self.pc = self.cop0.enter_exception(
+
+        let pc = self.cop0.enter_exception(
             &mut self.bus.schedule,
             self.last_pc,
             self.in_branch_delay,
             ex,
         );
-        self.next_pc = self.pc.wrapping_add(4);
+        
+        self.pc = pc;
+        self.next_pc = pc.wrapping_add(4);
     }
 
     fn irq_pending(&self) -> bool {
@@ -371,7 +374,7 @@ impl Cpu {
     }
 
     /// Check if there is any irq pending and throw exception if there is.
-    fn check_irq(&mut self) {
+    pub fn check_for_pending_irq(&mut self) {
         if self.irq_pending() {
             self.next_pc();
             self.fetch_load_slot();
@@ -381,7 +384,10 @@ impl Cpu {
 
     /// Fetch and execute next instruction.
     pub fn step(&mut self, dbg: &mut impl Debugger) {
-        match self.bus.schedule.pop_event() {
+        match self.bus.schedule.get_pending_event() {
+            Some(event) => {
+                schedule::trigger_event(self, event);
+            }
             // Run the next instruction if there is no event this cycle.
             None => {
                 let addr = self.next_pc();
@@ -422,20 +428,6 @@ impl Cpu {
                     }
                 }
                 self.bus.schedule.advance(SysTime::new(1));
-            }
-            Some(Event::IrqTrigger(irq)) => {
-                if self.irq_pending() {
-                    warn!("IRQ pending when triggering IRQ of type: {}", irq);
-                }
-
-                self.bus.irq_state.trigger(irq);
-                self.check_irq();
-            }
-            Some(Event::IrqCheck) => {
-                self.check_irq();
-            }
-            Some(event) => {
-                self.bus.handle_event(event);
             }
         }
     }

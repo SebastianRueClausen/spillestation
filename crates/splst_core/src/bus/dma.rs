@@ -2,7 +2,7 @@
 //! this is running, but the CPU can be allowed to run in intervals called chopping.
 //!
 //! # TODO
-//! * Add timings for transfers.
+//! - Add proper timings for transfers.
 
 use splst_util::{Bit, BitSet};
 
@@ -11,6 +11,7 @@ use crate::SysTime;
 use crate::bus::{Ram, Word, Bus, BusMap, Schedule, Event};
 
 use std::ops::{Index, IndexMut};
+use std::fmt;
 
 /// The DMA is a chip used by the Playstation to transfer data between RAM and some BUS mapped devices.
 /// It can be a lot faster than CPU loads, even though the CPU is stopped during transfers.
@@ -194,9 +195,9 @@ impl Dma {
                                 stat.base = tran.cursor;
                             }
 
-                            schedule.schedule_in(
+                            schedule.schedule(
                                 stat.ctrl.cpu_chop_size(),
-                                Event::RunDmaChan(port)
+                                Event::Dma(port, Bus::run_dma_chan)
                             );
 
                             break Some(tran); 
@@ -238,9 +239,9 @@ impl Dma {
                                 stat.base = tran.cursor;
                             }
 
-                            schedule.schedule_in(
+                            schedule.schedule(
                                 stat.ctrl.cpu_chop_size(),
-                                Event::RunDmaChan(port)
+                                Event::Dma(port, Bus::run_dma_chan)
                             );
 
                             break Some(tran); 
@@ -339,6 +340,20 @@ pub enum Port {
     Pio = 5,
     /// Depth ordering table. It's only used to initialize/reset it.
     Otc = 6,
+}
+
+impl fmt::Display for Port {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            Port::MdecIn => "MDEC in",
+            Port::MdecOut => "MDEC out",
+            Port::Gpu => "GPU",
+            Port::CdRom => "CD-ROM",
+            Port::Spu => "SPU",
+            Port::Pio => "PIO",
+            Port::Otc => "Otc",
+        })
+    }
 }
 
 /// Register holding the size information for manual and request transfers.
@@ -586,7 +601,7 @@ impl IrqReg {
         if result {
             if !self.master_irq_flag() {
                 self.0 = self.0.set_bit(31, true);
-                schedule.schedule_now(Event::IrqTrigger(Irq::Dma));
+                schedule.trigger(Event::Irq(Irq::Dma));
             }
         } else {
             self.0 = self.0.set_bit(31, false);

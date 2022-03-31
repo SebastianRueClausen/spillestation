@@ -81,7 +81,7 @@ impl Spu {
 
     fn maybe_trigger_irq(&mut self, schedule: &mut Schedule, addr: u16) {
         if self.regs.control.irq_enabled() && addr == self.regs.irq_addr {
-            schedule.schedule_now(Event::IrqTrigger(Irq::Spu));
+            schedule.trigger(Event::Irq(Irq::Spu));
             self.active_irq = true;
         }
     }

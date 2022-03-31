@@ -1,28 +1,29 @@
 //! TODO:
-//! * The CDROM runs at fixed intervals which doesn't seem neccessary but running after every store
+//! - The CDROM runs at fixed intervals which doesn't seem neccessary but running after every store
 //!   doesn't seem to work, likely because the CDROM executes the command immediately, which the
-//!   BIOS isn't expecting. 
+//!   BIOS isn't expecting.
 
 mod fifo;
 
+use splst_cdimg::{CdImage, Sector};
 use splst_util::Bit;
 use splst_util::{Bcd, Msf};
-use splst_cdimg::{CdImage, Sector};
 
+use crate::bus::{dma, BusMap, MemUnit};
 use crate::cpu::Irq;
-use crate::bus::{dma, MemUnit, BusMap};
-use crate::schedule::{Schedule, Event};
+use crate::schedule::{Event, EventId, Schedule};
 use crate::SysTime;
 
 use fifo::Fifo;
 
+use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 use std::time::Duration;
-use std::cell::RefCell;
 
 pub struct CdRom {
     pub(super) disc: Rc<RefCell<Disc>>,
+    run_event: EventId,
     state: DriveState,
     /// The index register. This decides what happens when the CPU writes to and
     /// loads from the CDROM.
@@ -45,13 +46,16 @@ pub struct CdRom {
 }
 
 impl CdRom {
-    pub fn new(disc: Rc<RefCell<Disc>>) -> Self {
+    pub fn new(schedule: &mut Schedule, disc: Rc<RefCell<Disc>>) -> Self {
+        let run_event = schedule.schedule_repeat(SysTime::new(7_000), Event::CdRom(CdRom::run));
+
         // TODO: Check startup value.
         let mode = ModeReg(0x0);
         let position = Msf::ZERO;
 
         Self {
             disc,
+            run_event,
             state: DriveState::Idle,
             index: 0x0,
             irq_mask: 0x0,
@@ -78,7 +82,7 @@ impl CdRom {
                     self.cmd = Some(val as u8);
                 }
                 _ => todo!(),
-            }
+            },
             2 => match self.index {
                 0 => self.arg_fifo.push(val as u8),
                 1 => {
@@ -86,12 +90,12 @@ impl CdRom {
                     self.irq_mask = val.bit_range(0, 4) as u8;
 
                     if !was_active && self.irq_active() {
-                        schedule.schedule_now(Event::IrqTrigger(Irq::CdRom));
+                        schedule.trigger(Event::Irq(Irq::CdRom));
                     }
                 }
                 2 => todo!(),
                 _ => unreachable!(),
-            }
+            },
             3 => match self.index {
                 0 => {
                     let was_active = self.data_buffer.active;
@@ -114,7 +118,7 @@ impl CdRom {
                 }
                 2 => todo!(),
                 _ => unreachable!(),
-            }
+            },
             _ => unreachable!(),
         }
     }
@@ -131,18 +135,14 @@ impl CdRom {
                     | (self.cmd.is_some() as u8) << 7;
                 register.into()
             }
-            1 => {
-                self.response_fifo.try_pop().unwrap_or(0x0).into()
-            }
-            2 => {
-                self.data_buffer.read_byte().into()
-            }
+            1 => self.response_fifo.try_pop().unwrap_or(0x0).into(),
+            2 => self.data_buffer.read_byte().into(),
             3 => match self.index {
                 0 => self.irq_mask as u32 | !0x1f,
                 1 => self.irq_flags as u32 | !0x1f,
                 2 => todo!(),
                 _ => unreachable!(),
-            }
+            },
             _ => unreachable!(),
         }
     }
@@ -154,7 +154,6 @@ impl CdRom {
 
     pub fn run(&mut self, schedule: &mut Schedule) {
         self.exec_cmd(schedule);
-        schedule.schedule_in(SysTime::new(2_000), Event::RunCdRom);
     }
 
     fn start_seek(&mut self, schedule: &mut Schedule, ty: SeekType, after: AfterSeek) -> SysTime {
@@ -169,7 +168,7 @@ impl CdRom {
         // TODO: Do some kind of seek time heuristic.
         let time = SysTime::new(225_000);
 
-        schedule.schedule_in(time, Event::CdRomSectorDone);
+        schedule.schedule(time, Event::CdRom(Self::sector_done));
         self.state = DriveState::Seeking(target, ty, after);
 
         time
@@ -178,7 +177,7 @@ impl CdRom {
     fn start_read(&mut self, schedule: &mut Schedule) {
         let time = SysTime::new(225_000);
 
-        schedule.schedule_in(time, Event::CdRomSectorDone);
+        schedule.schedule(time, Event::CdRom(Self::sector_done));
         self.state = DriveState::Reading;
     }
 
@@ -197,14 +196,12 @@ impl CdRom {
                 match self.disc.borrow_mut().cd() {
                     None => unreachable!(),
                     Some(cd) => {
-                        self.position = self.position
-                            .next_sector()
-                            .unwrap();
+                        self.position = self.position.next_sector().unwrap();
 
                         // TODO: Heuristics.
                         let time = SysTime::new(225_000);
 
-                        schedule.schedule_in(time, Event::CdRomSectorDone);
+                        schedule.schedule(time, Event::CdRom(Self::sector_done));
 
                         // Maybe unshedule any other 'CdRomSectorDone' events, since it's possible
                         // it could have started reading, then paused, but started reading again
@@ -220,55 +217,6 @@ impl CdRom {
 
         if data_ready {
             self.finish_cmd(schedule, Interrupt::DataReady);
-        }
-    }
-
-    pub fn reponse(&mut self, schedule: &mut Schedule, cmd: CdRomCmd) {
-        match cmd.0 {
-            // init
-            0x0a => {
-                self.finish_cmd(schedule, Interrupt::Complete);
-            }
-            // pause
-            0x09 => {
-                self.state = DriveState::Paused;
-                self.finish_cmd(schedule, Interrupt::Complete);
-            }
-            // read_toc
-            0x1e => {
-                self.state = DriveState::Paused;
-                self.finish_cmd(schedule, Interrupt::Complete);
-            }
-            // seek_l
-            0x15 => {
-                self.finish_cmd(schedule, Interrupt::Complete);
-            }
-            // get_id
-            0x1a => {
-                
-                // TODO: Handle error where there is no disc here. It can't be reached at the
-                // moment, but in the future if removing the disc during execution is supported,
-                // this should return an error instead.
-
-                // TODO: Change the response to represent the disc region.
-
-                let response = [
-                    self.drive_stat(),
-                    0x0,
-                    0x20,
-                    0x00,
-                    b'S',
-                    b'C',
-                    b'E',
-                    b'A',
-                ];
-
-                self.state = DriveState::Idle;
-
-                self.response_fifo.push_slice(&response);
-                self.set_interrupt(schedule, Interrupt::Complete);
-            }
-            _ => todo!(),
         }
     }
 
@@ -290,12 +238,12 @@ impl CdRom {
                     // TODO: Handle invalid bcd's and invalid argument count.
                     self.state = DriveState::ReadingToc;
 
-                    let m = Bcd::from_bcd(self.arg_fifo.pop()).unwrap(); 
-                    let s = Bcd::from_bcd(self.arg_fifo.pop()).unwrap(); 
+                    let m = Bcd::from_bcd(self.arg_fifo.pop()).unwrap();
+                    let s = Bcd::from_bcd(self.arg_fifo.pop()).unwrap();
                     let f = Bcd::from_bcd(self.arg_fifo.pop()).unwrap();
 
                     self.pending_seek = Some(Msf::from_bcd(m, s, f));
-                    self.finish_cmd(schedule, Interrupt::Ack); 
+                    self.finish_cmd(schedule, Interrupt::Ack);
                 }
                 // read_n
                 0x06 => {
@@ -317,7 +265,7 @@ impl CdRom {
                             return;
                         }
                     }
-                    
+
                     // At this point we should start seeking. If we are already seeking then we
                     // should read after seeking.
                     match self.pending_seek {
@@ -343,7 +291,7 @@ impl CdRom {
                     };
 
                     self.state = DriveState::Paused;
-                    schedule.schedule_in(time, Event::CdRomResponse(CdRomCmd(0x9)));
+                    schedule.schedule(time, Event::CdRom(Self::async_pause));
                 }
                 // init
                 0x0a => {
@@ -355,19 +303,19 @@ impl CdRom {
                     self.position = Msf::ZERO;
                     self.pending_seek = None;
 
-                    schedule.schedule_in(SysTime::new(900_000), Event::CdRomResponse(CdRomCmd(0x0a)));
+                    schedule.schedule(SysTime::new(900_000), Event::CdRom(Self::async_init));
                 }
                 // set_mode: Sets the value of the mode register.
                 0x0e => {
                     self.mode = ModeReg(self.arg_fifo.pop());
-                    self.finish_cmd(schedule, Interrupt::Ack); 
+                    self.finish_cmd(schedule, Interrupt::Ack);
                 }
-                // seekl: Seek location set by (02) setloc in data mode. 
+                // seekl: Seek location set by (02) setloc in data mode.
                 0x15 => {
                     let cycles = self.start_seek(schedule, SeekType::Data, AfterSeek::Pause);
 
                     self.finish_cmd(schedule, Interrupt::Ack);
-                    schedule.schedule_in(cycles, Event::CdRomResponse(CdRomCmd(0x15)));
+                    schedule.schedule(cycles, Event::CdRom(Self::async_seekl));
                 }
                 // test: It's behavior depent on the first argument.
                 0x19 => match self.arg_fifo.pop() {
@@ -377,7 +325,7 @@ impl CdRom {
                         self.set_interrupt(schedule, Interrupt::Ack);
                     }
                     _ => todo!(),
-                }
+                },
                 // get_id
                 0x1a => {
                     if !self.disc.borrow().is_loaded() {
@@ -385,9 +333,8 @@ impl CdRom {
                         self.set_interrupt(schedule, Interrupt::Error);
                     } else {
                         self.finish_cmd(schedule, Interrupt::Ack);
-                        schedule.schedule_in(SysTime::new(33868), Event::CdRomResponse(CdRomCmd(0x1a)));
+                        schedule.schedule(SysTime::new(33868), Event::CdRom(Self::async_get_id));
                     }
-
                 }
                 // read_toc
                 0x1e => {
@@ -397,7 +344,7 @@ impl CdRom {
                     // Reading the table of content takes about 1 second.
                     let time = SysTime::from_duration(Duration::from_secs(1));
 
-                    schedule.schedule_in(time, Event::CdRomResponse(CdRomCmd(0x1e)));
+                    schedule.schedule(time, Event::CdRom(Self::async_read_toc));
                 }
                 _ => todo!("CDROM Command: {:08x}", cmd),
             }
@@ -410,7 +357,7 @@ impl CdRom {
         self.irq_flags = int as u8;
 
         if self.irq_active() {
-            schedule.schedule_now(Event::IrqTrigger(Irq::CdRom));
+            schedule.trigger(Event::Irq(Irq::CdRom));
         }
     }
 
@@ -430,6 +377,42 @@ impl CdRom {
                 DriveState::Reading => (1 << 1) | (1 << 5),
             }
         }
+    }
+}
+
+/// Implementation of asynchronous responses for commands.
+impl CdRom {
+    fn async_init(&mut self, schedule: &mut Schedule) {
+        self.finish_cmd(schedule, Interrupt::Complete);
+    }
+
+    fn async_pause(&mut self, schedule: &mut Schedule) {
+        self.state = DriveState::Paused;
+        self.finish_cmd(schedule, Interrupt::Complete);
+    }
+
+    fn async_read_toc(&mut self, schedule: &mut Schedule) {
+        self.state = DriveState::Paused;
+        self.finish_cmd(schedule, Interrupt::Complete);
+    }
+
+    fn async_seekl(&mut self, schedule: &mut Schedule) {
+        self.finish_cmd(schedule, Interrupt::Complete);
+    }
+
+    fn async_get_id(&mut self, schedule: &mut Schedule) {
+        // TODO: Handle error where there is no disc here. It can't be reached at the
+        // moment, but in the future if removing the disc during execution is supported,
+        // this should return an error instead.
+
+        // TODO: Change the response to represent the disc region.
+
+        let response = [self.drive_stat(), 0x0, 0x20, 0x00, b'S', b'C', b'E', b'A'];
+
+        self.state = DriveState::Idle;
+
+        self.response_fifo.push_slice(&response);
+        self.set_interrupt(schedule, Interrupt::Complete);
     }
 }
 
@@ -466,6 +449,7 @@ enum Interrupt {
 #[derive(Clone, Copy)]
 enum SeekType {
     Data,
+    // TODO:
     #[allow(dead_code)]
     Audio,
 }
@@ -474,16 +458,23 @@ enum SeekType {
 enum AfterSeek {
     Pause,
     Read,
+    // TODO:
     #[allow(dead_code)]
     Play,
 }
 
+/// Represents the state of the CDROM drive.
 #[derive(Clone, Copy)]
 enum DriveState {
+    /// The drive is idle meaning that the CD isn't spinning.
     Idle,
+    /// The drive is seeking a sector on the CD.
     Seeking(Msf, SeekType, AfterSeek),
+    /// The motor is running but no data is being read.
     Paused,
+    /// The drive is reading the data of a sector.
     Reading,
+    /// The drive is reading the table of content.
     ReadingToc,
 }
 
@@ -571,7 +562,7 @@ impl DataBuffer {
     }
 
     fn fill_from_sector(&mut self, sector: &Sector) {
-        let data = sector.data(); 
+        let data = sector.data();
 
         for (i, byte) in data.iter().enumerate() {
             self.data[i] = *byte;
@@ -594,7 +585,7 @@ impl DataBuffer {
 
     fn read_byte(&mut self) -> u8 {
         let byte = self.data[self.index as usize];
-        
+
         if self.active {
             self.index += 1;
             if self.index == self.len {
@@ -607,7 +598,6 @@ impl DataBuffer {
         byte
     }
 }
-
 
 impl dma::Channel for CdRom {
     fn dma_load(&mut self, _: &mut Schedule, _: (u16, u32)) -> u32 {

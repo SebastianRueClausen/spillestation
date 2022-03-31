@@ -1,14 +1,17 @@
-use super::DebugApp;
-
 use splst_core::System;
+use super::DebugApp;
 
 use std::fmt::Write;
 use std::time::Duration;
 
 #[derive(Default)]
 pub struct ScheduleView {
-    cycle: String,
-    events: Vec<(String, String)>,
+    /// The amount of cycles since startup.
+    cycles: String,
+    /// The duration since startup.
+    run_time: String,
+    /// Show the kind of event, the repeat mode and the when it will 
+    events: Vec<(String, String, String)>,
 }
 
 impl DebugApp for ScheduleView {
@@ -19,33 +22,49 @@ impl DebugApp for ScheduleView {
     fn update_tick(&mut self, _: Duration, system: &mut System) {
         let now = system.schedule().since_startup();
 
-        self.cycle.clear();
-        write!(&mut self.cycle, "CPU Cycles since Startup: {}", now.as_cpu_cycles()).unwrap();
+        self.cycles.clear();
+        self.run_time.clear();
+
+        let (mins, secs, millis) = {
+            let dur = now.as_duration();
+            (dur.as_secs() / 60, dur.as_secs() % 60, dur.subsec_millis())
+        };
+
+        write!(&mut self.run_time, "{}.{}.{}", mins, secs, millis).unwrap();
+        write!(&mut self.cycles, "{}", now.as_cpu_cycles()).unwrap();
 
         self.events = system.schedule()
-            .iter()
+            .iter_event_entries()
             .map(|entry| {
-                let cycles_until = entry.0
+                let cycles_until = entry.ready
                     .saturating_sub(now)
                     .as_cpu_cycles()
                     .to_string();
-                (cycles_until, format!("{}", entry.1))
+                (cycles_until, format!("{}", entry.mode), format!("{}", entry.event))
             })
             .collect();
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
-        ui.label(&self.cycle);
+        egui::Grid::new("time_grid").show(ui, |ui| {
+            ui.label("CPU Cycles");
+            ui.label(&self.cycles);
+            ui.end_row();
+            ui.label("Run Time");
+            ui.label(&self.run_time);
+        });
         ui.separator();
         egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 egui::Grid::new("schdule_grid").show(ui, |ui| {
-                    ui.strong("execute");
-                    ui.strong("event");
+                    ui.label("Ready");
+                    ui.label("Repeat Mode");
+                    ui.label("Event");
                     ui.end_row();
-                    for (cycle, event) in &self.events {
-                        ui.label(cycle);
+                    for (ready, mode, event) in &self.events {
+                        ui.label(ready);
+                        ui.label(mode);
                         ui.label(event);
                         ui.end_row();
                     }

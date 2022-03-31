@@ -1,14 +1,11 @@
 #![allow(dead_code)]
 
-//! # TODO
-//! - A transfer should continue to update unless 'end_transfer' is called.
-
 pub mod controller;
 mod memcard;
 
 use splst_util::{Bit, BitSet};
 use crate::bus::BusMap;
-use crate::schedule::{Schedule, Event};
+use crate::schedule::{Schedule, Event, EventId};
 use crate::cpu::Irq;
 use crate::SysTime;
 
@@ -67,7 +64,7 @@ impl IoPort {
 
                 self.tx_fifo = Some(val as u8);
 
-                if self.can_begin_transfer() && !self.is_transmitting() {
+                if self.can_begin_transfer() && !self.state.in_transfer() {
                     self.begin_transfer(schedule);
                 }
             }
@@ -78,8 +75,9 @@ impl IoPort {
                 if self.ctrl.reset() {
                     trace!("io port control reset");
 
-                    if self.is_transmitting() {
-                        self.end_transfer(schedule);
+                    if let State::InTrans { event, .. } = self.state {
+                        schedule.unschedule(event);
+                        self.state = State::Idle;
                     }
 
                     self.reset_device_states();
@@ -102,11 +100,12 @@ impl IoPort {
                 }
 
                 if !self.ctrl.select() || !self.ctrl.tx_enabled() {
-                    if self.is_transmitting() {
-                        self.end_transfer(schedule);
+                    if let State::InTrans { event, .. } = self.state {
+                        schedule.unschedule(event);
+                        self.state = State::Idle;
                     }
                 } else {
-                    if !self.is_transmitting() && self.can_begin_transfer() {
+                    if !self.state.in_transfer() && self.can_begin_transfer() {
                         self.begin_transfer(schedule);
                     }
                 }
@@ -119,8 +118,10 @@ impl IoPort {
     pub fn load(&mut self, schedule: &mut Schedule, addr: u32) -> u32 {
         match addr {
             0 => {
-                if self.is_transmitting() {
-                    schedule.unschedule(Event::IoPortTransfer);
+                if let State::InTrans { event, .. } = self.state {
+                    schedule.unschedule(event);
+
+                    self.state = State::Idle;
                     self.transfer(schedule);
                 }
 
@@ -136,7 +137,7 @@ impl IoPort {
                     .set_bit(0, self.tx_fifo.is_none())
                     .set_bit(1, self.rx_fifo.is_none())
                     .set_bit(2, {
-                        self.tx_fifo.is_none() && self.state != State::InTrans
+                        self.tx_fifo.is_none() && !self.state.in_transfer()
                     });
 
                 let val: u32 = self.stat.0.into();
@@ -160,15 +161,15 @@ impl IoPort {
         can_begin
     }
     
-    fn is_transmitting(&self) -> bool {
-        self.state != State::Idle
-    }
-
     fn reset_device_states(&mut self) {
         self.controllers
             .borrow_mut()
             .iter_mut()
             .for_each(|c| c.reset());
+    }
+
+    fn transfer_interval(&self) -> SysTime {
+        SysTime::from_cpu_cycles(self.baud as u64 * 8)
     }
 
     fn begin_transfer(&mut self, schedule: &mut Schedule) {
@@ -179,33 +180,90 @@ impl IoPort {
             .take()
             .expect("TX FIFO should be full");
 
-        self.state = State::InTrans;
+        let event = schedule.schedule(self.transfer_interval(), Event::IoPort(Self::transfer));
 
-        schedule.schedule_in(SysTime::new(self.baud as u64 * 8), Event::IoPortTransfer);
-    }
-
-    fn end_transfer(&mut self, schedule: &mut Schedule) {
-        self.state = State::Idle;
-
-        // Could maybe ignore it and just to nothing if the state is idle, but it may be possible
-        // to change the state in the mean time, which would mess up timings.
-        schedule.unschedule(Event::IoPortTransfer);
+        self.state = State::InTrans {
+            event, waiting_for_ack: false,
+        };
     }
 
     pub fn transfer(&mut self, schedule: &mut Schedule) {
         match self.state {
-            State::InTrans => self.make_transfer(schedule),
-            State::WaitForAck | State::Idle => {
-                // Set acknowledge input flag.
-                self.stat.0 = self.stat.0.set_bit(7, true);
+            State::InTrans { ref mut event, ref mut waiting_for_ack } if !*waiting_for_ack => {
+                trace!("Make transfer");
 
-                if self.ctrl.ack_irq_enabled() {
-                    // Set interrupt flag.
-                    self.stat.0 = self.stat.0.set_bit(9, true);
-                    schedule.schedule_now(Event::IrqTrigger(Irq::CtrlAndMemCard));
+                let index = self.ctrl.io_slot() as usize;
+
+                let ctrl = &mut self.controllers.borrow_mut()[self.ctrl.io_slot()];
+                let memcard = &mut self.memcards[index];
+
+                // Set rx_enabled.
+                self.ctrl.0.set_bit(2, true);
+
+                let (val, ack) = match self.active_device {
+                    None => {
+                        match (ctrl, memcard) {
+                            (controller::Port::Unconnected, None) => (0xff, false),
+                            (controller::Port::Digital(ctrl), _) => {
+                                let (val, ack) = ctrl.transfer(self.tx_val);
+                                if ack {
+                                    self.active_device = Some(Device::Controller);
+                                }
+                                (val, ack)
+                            }
+                            (controller::Port::Unconnected, Some(memcard)) => {
+                                let (val, ack) = memcard.transfer(self.tx_val);
+                                if ack {
+                                    self.active_device = Some(Device::MemCard);
+                                }
+                                (val, ack)
+                            }
+                        }
+                    }
+                    Some(Device::Controller) => match ctrl {
+                        controller::Port::Digital(ctrl) => {
+                            trace!("controller transfer");
+                            ctrl.transfer(self.tx_val)
+                        },
+                        controller::Port::Unconnected => (0xff, false),
+                    }
+                    Some(Device::MemCard) => match memcard {
+                        Some(memcard) => memcard.transfer(self.tx_val),
+                        None => (0xff, false),
+                    }
+                };
+
+                self.rx_fifo = Some(val);
+
+                if ack {
+                    let time = match self.active_device {
+                        Some(Device::MemCard) => SysTime::new(170),
+                        _ => SysTime::new(450),
+                    };
+                    
+                    schedule.unschedule(*event);
+
+                    *event = schedule.schedule(time, Event::IoPort(Self::transfer));
+                    *waiting_for_ack = true;
+                } else {
+                    schedule.unschedule(*event);
+
+                    self.state = State::Idle;
+                    self.active_device = None;
                 }
+            }
+            State::Idle => {
+                 self.ack_input(schedule);
 
-                self.end_transfer(schedule);
+                if self.can_begin_transfer() {
+                    self.begin_transfer(schedule);
+                }
+            }
+            State::InTrans { event, .. } => {
+                self.ack_input(schedule);
+
+                self.state = State::Idle;
+                schedule.unschedule(event);
 
                 if self.can_begin_transfer() {
                     self.begin_transfer(schedule);
@@ -214,68 +272,15 @@ impl IoPort {
         }
     }
 
-    fn make_transfer(&mut self, schedule: &mut Schedule) {
-        trace!("Make transfer");
+    fn ack_input(&mut self, schedule: &mut Schedule) {
+        // Set acknowledge input flag.
+        self.stat.0 = self.stat.0.set_bit(7, true);
 
-        let index = self.ctrl.io_slot() as usize;
+        if self.ctrl.ack_irq_enabled() {
+            // Set interrupt flag.
+            self.stat.0 = self.stat.0.set_bit(9, true);
 
-        let ctrl = &mut self.controllers.borrow_mut()[self.ctrl.io_slot()];
-        let memcard = &mut self.memcards[index];
-
-        // Set rx_enabled.
-        self.ctrl.0.set_bit(2, true);
-
-        let (val, ack) = match self.active_device {
-            None => {
-                match (ctrl, memcard) {
-                    (controller::Port::Unconnected, None) => (0xff, false),
-                    (controller::Port::Digital(ctrl), _) => {
-                        let (val, ack) = ctrl.transfer(self.tx_val);
-                        if ack {
-                            self.active_device = Some(Device::Controller);
-                        }
-                        (val, ack)
-                    }
-                    (controller::Port::Unconnected, Some(memcard)) => {
-                        let (val, ack) = memcard.transfer(self.tx_val);
-                        if ack {
-                            self.active_device = Some(Device::MemCard);
-                        }
-                        (val, ack)
-                    }
-                }
-            }
-            Some(Device::Controller) => match ctrl {
-                controller::Port::Digital(ctrl) => {
-                    trace!("controller transfer");
-                    ctrl.transfer(self.tx_val)
-                },
-                controller::Port::Unconnected => (0xff, false),
-            }
-            Some(Device::MemCard) => match memcard {
-                Some(memcard) => memcard.transfer(self.tx_val),
-                None => (0xff, false),
-            }
-        };
-
-        self.rx_fifo = Some(val);
-
-        match ack {
-            false => {
-                self.state = State::Idle;
-                self.active_device = None;
-
-                schedule.unschedule(Event::IoPortTransfer);
-            }
-            true => {
-                let time = match self.active_device {
-                    Some(Device::MemCard) => SysTime::new(170),
-                    _ => SysTime::new(450),
-                };
-
-                schedule.schedule_in(time, Event::IoPortTransfer);
-                self.state = State::WaitForAck
-            }
+            schedule.trigger(Event::Irq(Irq::CtrlAndMemCard));
         }
     }
 }
@@ -410,11 +415,18 @@ impl ModeReg {
 }
 
 
-#[derive(PartialEq, Eq)]
 enum State {
     Idle,
-    InTrans,
-    WaitForAck,
+    InTrans {
+        event: EventId,
+        waiting_for_ack: bool,
+    }
+}
+
+impl State {
+    fn in_transfer(&self) -> bool {
+        matches!(self, State::InTrans { .. })
+    }
 }
 
 #[derive(PartialEq, Eq)]
