@@ -281,6 +281,18 @@ impl CdRom {
                         }
                     }
                 }
+                // stop
+                0x08 => {
+                    self.finish_cmd(schedule, Interrupt::Ack);
+
+                    let time = if self.motor_on() {
+                        SysTime::new(1_000_000)
+                    } else {
+                        SysTime::new(7_000)
+                    };
+
+                    schedule.schedule(time, Event::CdRom(Self::async_stop));
+                }
                 // pause
                 0x09 => {
                     self.finish_cmd(schedule, Interrupt::Ack);
@@ -365,6 +377,10 @@ impl CdRom {
         (self.irq_flags & self.irq_mask) != 0
     }
 
+    fn motor_on(&self) -> bool {
+        !matches!(self.state, DriveState::Idle)
+    }
+
     fn drive_stat(&self) -> u8 {
         if !self.disc.borrow().is_loaded() {
             // This means that the drive cover is open.
@@ -388,6 +404,11 @@ impl CdRom {
 
     fn async_pause(&mut self, schedule: &mut Schedule) {
         self.state = DriveState::Paused;
+        self.finish_cmd(schedule, Interrupt::Complete);
+    }
+
+    fn async_stop(&mut self, schedule: &mut Schedule) {
+        self.state = DriveState::Idle;
         self.finish_cmd(schedule, Interrupt::Complete);
     }
 
