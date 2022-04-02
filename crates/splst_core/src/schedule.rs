@@ -25,7 +25,6 @@ pub struct Schedule {
     /// The timestamp when the next event is ready. This is simply an optimization. Just peeking
     /// at the first item in 'events' is constant time, bit requires 4 branches.
     next_event: SysTime,
-    checked: usize,
 }
 
 impl Schedule {
@@ -35,7 +34,6 @@ impl Schedule {
             now: SysTime::ZERO,
             next_event: SysTime::FOREVER,
             events: BinaryHeap::with_capacity(16),
-            checked: 0,
         }
     }
 
@@ -92,7 +90,11 @@ impl Schedule {
         let entry = EventEntry {
             event, id, ready: SysTime::ZERO, mode: RepeatMode::Repeat(time),
         };
-        self.push_event(entry);
+
+        // We already know that the next event is ready immediatly
+        self.events.push(entry);
+        self.next_event = SysTime::ZERO;
+
         id
     }
 
@@ -102,7 +104,11 @@ impl Schedule {
         let entry = EventEntry {
             event, id, ready: SysTime::ZERO, mode: RepeatMode::Once,
         };
-        self.push_event(entry);
+
+        // We already know that the next event is ready immediatly
+        self.events.push(entry);
+        self.next_event = SysTime::ZERO;
+
         id
     }
 
@@ -126,6 +132,28 @@ impl Schedule {
             Some(event) 
         } else {
             None
+        }
+    }
+
+    /// Trigger a scheduled ['Event'] early.
+    pub fn trigger_early(&mut self, id: EventId) {
+        if let Some(entry) = self.events.iter().find(|e| e.id == id) {
+            let mut entry = entry.clone();
+            
+            // Unschedule the the existing event and trigger it immediately.
+            self.unschedule(id);
+            self.trigger(entry.event);
+            
+            // Check if it should be repeated.
+            if let RepeatMode::Repeat(time) = entry.mode {
+                entry.ready = self.since_startup() + time;
+                self.events.push(entry.clone());
+            }
+
+            // Triggering the event already updates 'next_event' so we don't have to update it
+            // here.
+        } else {
+            warn!("triggering non-existing event early");
         }
     }
 
@@ -159,6 +187,7 @@ impl Schedule {
 #[derive(Clone, Copy, PartialEq)]
 pub struct EventId(u64);
 
+#[derive(Clone, Copy)]
 pub enum RepeatMode {
     /// 'Once' means that the event is removed from the event queue once it's triggered.
     Once,
@@ -212,6 +241,7 @@ impl fmt::Display for Event {
     }
 }
 
+#[derive(Clone)]
 pub struct EventEntry {
     /// The type and data of the event.
     pub event: Event,

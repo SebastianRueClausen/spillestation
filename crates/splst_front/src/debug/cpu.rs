@@ -237,8 +237,8 @@ impl Default for BreakPointAdd {
 }
 
 /// ['App'] for controlling the ['System'] when it's in debug mode. It has two differnent modes.
-///  * Run - Automatically runs the CPU at a given speed.
-///  * Step - Manually step through each cycle.
+///  - Run: Automatically runs the CPU at a given speed.
+///  - Step: Manually step through each cycle.
 #[derive(Default)]
 pub struct CpuCtrl {
     mode: RunMode,
@@ -287,11 +287,14 @@ impl CpuCtrl {
                             BreakPointTy::Load => &mut self.bps.loads,
                             BreakPointTy::Store => &mut self.bps.stores,
                         };
-                        vec.push(BreakPoint {
+
+                        let bp = BreakPoint {
                             name: self.bp_add.addr.clone(),
                             retain: self.bp_add.retain,
                             addr,
-                        });
+                        };
+
+                        vec.push(bp);
                         self.bp_add.addr.clear();
                     } else {
                         self.bp_msg = Some(
@@ -349,7 +352,8 @@ impl DebugApp for CpuCtrl {
         if stop == StopReason::Break {
             self.mode = RunMode::default_step();
 
-            let message: String = self.bps.breaks.drain(..)
+            let message: String = self.bps.breaks
+                .drain(..)
                 .map(|b| {
                     let kind = match b.kind {
                         BreakPointTy::Ins => "loading instruction",

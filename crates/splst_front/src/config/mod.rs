@@ -158,6 +158,7 @@ impl Config {
         }
     }
 
+    /// Show inside config settings inside UI.
     pub fn show_inside(
         &mut self,
         used_bios: Option<&Bios>,

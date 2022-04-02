@@ -67,6 +67,8 @@ pub fn run() {
     let controllers = Rc::new(RefCell::new(Controllers::default()));
     let disc = Rc::new(RefCell::new(Disc::default()));
 
+    config.controller.update_controllers(&mut controllers.borrow_mut());
+
     let mut gui_ctx = GuiCtx::new(window.scale_factor() as f32, &renderer.borrow());
     let mut stage = Stage::StartMenu(StartMenu::new());
 
@@ -259,11 +261,16 @@ pub fn run() {
                     ..
                 } => {
                     match mode {
-                        RunMode::Debug => {
-                            app_menu.update_tick(last_update.elapsed(), system);
-                        }
+                        RunMode::Debug => app_menu.update_tick(last_update.elapsed(), system),
                         RunMode::Emulation => {
-                            system.run(last_update.elapsed());
+                            let run_time = Duration::from_millis(4);
+                            let before = Instant::now();
+
+                            system.run(run_time);
+
+                            if let Some(ahead) = run_time.checked_sub(before.elapsed()) {
+                                *ctrl_flow = ControlFlow::WaitUntil(Instant::now() + ahead); 
+                            }
                         }
                     }
                     *last_update = Instant::now();

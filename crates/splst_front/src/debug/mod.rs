@@ -8,6 +8,7 @@ pub mod mem;
 pub mod timer;
 pub mod vram;
 pub mod schedule;
+mod io_port;
 
 use splst_core::System;
 
@@ -25,10 +26,10 @@ pub trait DebugApp {
     fn show(&mut self, ui: &mut egui::Ui);
 
     /// Called every frame.
-    fn frame_tick(&mut self, _: Duration) { }
+    fn frame_tick(&mut self, _: Duration) {}
 
     /// Called every update.
-    fn update_tick(&mut self,_dt: Duration, _: &mut System) { }
+    fn update_tick(&mut self, _dt: Duration, _: &mut System) {}
 
     fn name(&self) -> &'static str;
 } 

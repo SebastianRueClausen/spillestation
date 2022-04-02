@@ -26,7 +26,7 @@ pub use timer::Timers;
 pub use gpu::Gpu;
 pub use cpu::Cpu;
 pub use gpu::Vram;
-pub use io_port::{IoSlot, Button, ButtonState, Controllers, controller};
+pub use io_port::{IoPort, IoSlot, Button, ButtonState, Controllers, controller};
 pub use bus::bios::Bios;
 pub use cdrom::Disc;
 
@@ -212,6 +212,10 @@ impl System {
 
     pub fn timers(&self) -> &Timers {
         &self.cpu.bus.timers
+    }
+
+    pub fn io_port(&self) -> &IoPort {
+        &self.cpu.bus.io_port
     }
 }
 

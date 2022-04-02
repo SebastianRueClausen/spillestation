@@ -12,6 +12,7 @@ use super::vram::VramView;
 use super::timer::TimerView;
 use super::irq::IrqView;
 use super::schedule::ScheduleView;
+use super::io_port::IoPortView;
 
 use std::time::Duration;
 
@@ -34,6 +35,7 @@ impl DebugMenu {
                 (Box::new(TimerView::default()), false),
                 (Box::new(IrqView::default()), false),
                 (Box::new(ScheduleView::default()), false),
+                (Box::new(IoPortView::default()), false),
             ],
         }
     }

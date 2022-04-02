@@ -123,6 +123,18 @@ impl ControllerConfig {
         }
     }
 
+    /// Update ['Controllers'] from config. It should only be called when the configs could have
+    /// changed since it will reset the internal state of the controllers.
+    pub fn update_controllers(&self, controllers: &mut Controllers) {
+        let connections = [self.connection1, self.connection2];
+        for (ctrl, conn) in controllers.iter_mut().zip(connections.iter()) {
+            *ctrl = match conn {
+                Connection::Unconnected => controller::Port::unconnected(),
+                Connection::Virtual => controller::Port::digital(),
+            };
+        }
+    }
+
     pub fn show(
         &mut self,
         controllers: &mut Controllers,

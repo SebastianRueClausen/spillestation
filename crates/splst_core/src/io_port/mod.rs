@@ -20,19 +20,40 @@ pub use controller::{Button, ButtonState, Controllers};
 /// Controller and Memory Card I/O ports.
 pub struct IoPort {
     state: State,
+    /// The device currently active. May be either a controller or memory card.
     active_device: Option<Device>,
-
+    /// Control register.
     ctrl: CtrlReg,
+    /// Status register.
     stat: StatReg,
+    /// Mode register.
     mode: ModeReg,
+    /// # Baudrate
+    ///
+    /// Baudrate determines the amount of transfers of data between the I/O port and the connected
+    /// device per second. The transfer size is usually 8 bits, although it can also be either 5, 6
+    /// or 7, which is determined by the mode register.
+    ///
+    /// 'baud' is the reload value for the baud timer stored in bit 11..31 of 'stat'. The baud timer
+    /// is always running and decreases at ~33MHz (CPU clock rate) and it ellapses twice for each
+    /// bit.
+    ///
+    /// The timer reloads when writing to the 'baud' register or when the timer reaches zero. The timer
+    /// is set to 'baud' multiplied by the baudrate factor, mode register bits 0..1 (almost always 1),
+    /// and then divided by 2.
     baud: u16,
-
+    /// Recieve buffer. This is the data that the I/O port recieves from the peripherals. It's
+    /// technically a FIFO queue of bits, but we only emulate sending a whole byte at once. It's
+    /// cleared whenever the register is read.
     rx_fifo: Option<u8>,
+    /// Transmit buffer. This is the data that get's send to the peripherals. The buffer is filled
+    /// by writing to the register and cleared when send to the either a controller or memory card.
     tx_fifo: Option<u8>,
+    /// Intermidate buffer to store the content of 'tx_fifo' starting a transfer and actually
+    /// sending the data to the devices.
     tx_val: u8,
-
     memcards: [Option<MemCard>; 2],
-    pub(super) controllers: Rc<RefCell<Controllers>>,
+    controllers: Rc<RefCell<Controllers>>,
 }
 
 impl IoPort {
@@ -82,7 +103,7 @@ impl IoPort {
 
                     self.reset_device_states();
 
-                    self.baud = 0;
+                    self.stat = StatReg(0);
                     self.mode = ModeReg(0);
                     self.ctrl = CtrlReg(0);
 
@@ -119,10 +140,7 @@ impl IoPort {
         match addr {
             0 => {
                 if let State::InTrans { event, .. } = self.state {
-                    schedule.unschedule(event);
-
-                    self.state = State::Idle;
-                    self.transfer(schedule);
+                    schedule.trigger_early(event);
                 }
 
                 let val: u32 = self.rx_fifo
@@ -133,14 +151,13 @@ impl IoPort {
                 val | (val << 8) | (val << 16) | (val << 24)
             }
             4 => {
-                self.stat.0 = self.stat.0
-                    .set_bit(0, self.tx_fifo.is_none())
-                    .set_bit(1, self.rx_fifo.is_none())
-                    .set_bit(2, {
-                        self.tx_fifo.is_none() && !self.state.in_transfer()
-                    });
+                if let State::InTrans { event, .. } = self.state {
+                    schedule.trigger_early(event);
+                }
 
-                let val: u32 = self.stat.0.into();
+                let val: u32 = self.stat_reg().0.into();
+
+                // TODO: Emulate BAUD timer.
 
                 // Set acknownledge input false.
                 self.stat.0 = self.stat.0.set_bit(4, false);
@@ -153,11 +170,45 @@ impl IoPort {
         }
     }
 
+    pub fn stat_reg(&self) -> StatReg {
+        let status = self.stat.0
+            .set_bit(0, self.tx_fifo.is_none())
+            .set_bit(1, self.rx_fifo.is_none())
+            .set_bit(2, {
+                self.tx_fifo.is_none() && !self.state.in_transfer()
+            });
+
+        StatReg(status)
+    }
+
+    pub fn ctrl_reg(&self) -> CtrlReg {
+        self.ctrl
+    }
+
+    pub fn mode_reg(&self) -> ModeReg {
+        self.mode
+    }
+
+    pub fn baud(&self) -> u16 {
+        self.baud
+    }
+
+    pub fn in_transfer(&self) -> bool {
+        self.state.in_transfer()
+    }
+
+    pub fn waiting_for_ack(&self) -> bool {
+        self.state.waiting_for_ack()
+    }
+
+    pub fn active_device(&self) -> Option<Device> {
+        self.active_device
+    }
+
     fn can_begin_transfer(&self) -> bool {
         let can_begin = self.tx_fifo.is_some()
             && self.ctrl.select()
             && self.ctrl.tx_enabled();
-    
         can_begin
     }
     
@@ -168,8 +219,12 @@ impl IoPort {
             .for_each(|c| c.reset());
     }
 
+    /// Calculate the transfer time for a single byte.
     fn transfer_interval(&self) -> SysTime {
-        SysTime::from_cpu_cycles(self.baud as u64 * 8)
+        let interval = self.baud as u64
+            * self.mode.baud_reload_factor()
+            * self.mode.char_width();
+        SysTime::from_cpu_cycles(interval)
     }
 
     fn begin_transfer(&mut self, schedule: &mut Schedule) {
@@ -180,7 +235,10 @@ impl IoPort {
             .take()
             .expect("TX FIFO should be full");
 
-        let event = schedule.schedule(self.transfer_interval(), Event::IoPort(Self::transfer));
+        let event = schedule.schedule_repeat(
+            self.transfer_interval(),
+            Event::IoPort(Self::transfer)
+        );
 
         self.state = State::InTrans {
             event, waiting_for_ack: false,
@@ -190,8 +248,6 @@ impl IoPort {
     pub fn transfer(&mut self, schedule: &mut Schedule) {
         match self.state {
             State::InTrans { ref mut event, ref mut waiting_for_ack } if !*waiting_for_ack => {
-                trace!("Make transfer");
-
                 let index = self.ctrl.io_slot() as usize;
 
                 let ctrl = &mut self.controllers.borrow_mut()[self.ctrl.io_slot()];
@@ -202,11 +258,13 @@ impl IoPort {
 
                 let (val, ack) = match self.active_device {
                     None => {
+                        // Select a new active device if there is no current active devices.
                         match (ctrl, memcard) {
                             (controller::Port::Unconnected, None) => (0xff, false),
                             (controller::Port::Digital(ctrl), _) => {
                                 let (val, ack) = ctrl.transfer(self.tx_val);
                                 if ack {
+                                    debug!("active controller");
                                     self.active_device = Some(Device::Controller);
                                 }
                                 (val, ack)
@@ -253,7 +311,7 @@ impl IoPort {
                 }
             }
             State::Idle => {
-                 self.ack_input(schedule);
+                self.ack_input(schedule);
 
                 if self.can_begin_transfer() {
                     self.begin_transfer(schedule);
@@ -304,61 +362,57 @@ impl Default for IoSlot {
 }
 
 #[derive(Clone, Copy)]
-struct StatReg(u32);
+pub struct StatReg(u32);
 
 impl StatReg {
-    fn tx_ready(self) -> bool {
+    pub fn tx_ready(self) -> bool {
         self.0.bit(0)
     }
 
-    fn rx_fifo_empty(self) -> bool {
+    pub fn rx_fifo_not_empty(self) -> bool {
         self.0.bit(1)
     }
 
-    fn tx_done(self) -> bool {
+    pub fn tx_done(self) -> bool {
         self.0.bit(2)
     }
 
-    fn ack_input_lvl(self) -> bool {
+    pub fn ack_input_lvl(self) -> bool {
         self.0.bit(7)
     }
 
-    fn irq(self) -> bool {
+    pub fn irq(self) -> bool {
         self.0.bit(9)
-    }
-
-    fn baud_tmr(self) -> u32 {
-        self.0.bit_range(11, 31)
     }
 }
 
 #[derive(Clone, Copy)]
-struct CtrlReg(u16);
+pub struct CtrlReg(u16);
 
 impl CtrlReg {
-    fn tx_enabled(self) -> bool {
+    pub fn tx_enabled(self) -> bool {
         self.0.bit(0)
     }
 
-    fn select(self) -> bool {
+    pub fn select(self) -> bool {
         self.0.bit(1)
     }
 
-    fn rx_enabled(self) -> bool {
+    pub fn rx_enabled(self) -> bool {
         self.0.bit(2)
     }
 
-    fn ack(self) -> bool {
+    pub fn ack(self) -> bool {
         self.0.bit(4)
     }
 
-    fn reset(self) -> bool {
+    pub fn reset(self) -> bool {
         self.0.bit(6)
     }
 
     /// RX Interrupt mode. This tells when it should IRQ, in relation to how many bytes the RX FIFO
     /// contains. It's either 1, 2, 4 or 8.
-    fn rx_irq_mode(self) -> u32 {
+    pub fn rx_irq_mode(self) -> u32 {
         match self.0.bit_range(8, 9) {
             0 => 1,
             1 => 2,
@@ -368,19 +422,20 @@ impl CtrlReg {
         }
     }
 
-    fn tx_irq_enabled(self) -> bool {
+    pub fn tx_irq_enabled(self) -> bool {
         self.0.bit(10)
     }
 
-    fn rx_irq_enabled(self) -> bool {
+    pub fn rx_irq_enabled(self) -> bool {
         self.0.bit(11)
     }
 
-    fn ack_irq_enabled(self) -> bool {
+    pub fn ack_irq_enabled(self) -> bool {
         self.0.bit(12)
     }
 
-    fn io_slot(self) -> IoSlot {
+    /// The desired I/O slot to transfer with.
+    pub fn io_slot(self) -> IoSlot {
         match self.0.bit(13) {
             false => IoSlot::Slot1,
             true => IoSlot::Slot2,
@@ -389,10 +444,11 @@ impl CtrlReg {
 }
 
 #[derive(Clone, Copy)]
-struct ModeReg(u16);
+pub struct ModeReg(u16);
 
 impl ModeReg {
-    fn reload_factor(self) -> u32 {
+    /// The factor that the baud reload value get's multiplied by.
+    pub fn baud_reload_factor(self) -> u64 {
         match self.0.bit_range(0, 1) {
             0 | 1 => 1,
             2 => 16,
@@ -401,20 +457,13 @@ impl ModeReg {
         }
     }
 
-    fn char_len(self) -> u32 {
-        5 + self.0.bit_range(2, 3) as u32
-    }
-
-    fn parity_enabled(self) -> bool {
-        self.0.bit(4)
-    }
-
-    fn parity_odd(self) -> bool {
-        self.0.bit(5)
+    /// The number of bits in each transfer.
+    pub fn char_width(self) -> u64 {
+        self.0.bit_range(2, 3) as u64 + 5
     }
 }
 
-
+#[derive(Clone)]
 enum State {
     Idle,
     InTrans {
@@ -427,12 +476,25 @@ impl State {
     fn in_transfer(&self) -> bool {
         matches!(self, State::InTrans { .. })
     }
+
+    fn waiting_for_ack(&self) -> bool {
+        matches!(self, State::InTrans { waiting_for_ack: true, .. })
+    }
 }
 
-#[derive(PartialEq, Eq)]
-enum Device {
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum Device {
     Controller,
     MemCard,
+}
+
+impl fmt::Display for Device {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", match self {
+            Device::Controller => "controller",
+            Device::MemCard => "memory card",
+        })
+    }
 }
 
 impl BusMap for IoPort {
