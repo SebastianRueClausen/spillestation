@@ -4,6 +4,7 @@
 pub mod compute;
 mod draw;
 
+use splst_core::VideoOutput;
 use compute::ComputeStage;
 use draw::DrawStage;
 
@@ -180,13 +181,21 @@ impl Renderer {
     pub fn has_pending_frame(&self) -> bool {
         self.pending_frame
     }
+}
 
-    pub fn send_frame(&mut self, draw_info: &DrawInfo, vram_data: &[u8; 1024 * 1024]) {
+impl VideoOutput for Renderer { 
+    fn send_frame(&mut self, vram_start: (u32, u32), vram_data: &[u8; 1024 * 1024]) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Canvas Compute Encoder")
             });
+
+        let (x_start, y_start) = vram_start;
+        let draw_info = DrawInfo {
+            x_start, y_start,
+        };
+
         self.compute_stage.compute_canvas(
             vram_data,
             &draw_info,
@@ -194,6 +203,7 @@ impl Renderer {
             &self.queue,
             &self.canvas,
         );
+
         self.queue.submit(Some(encoder.finish()));
         self.pending_frame = true;
     }

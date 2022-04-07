@@ -460,12 +460,12 @@ fn swl_swr() {
             break   0
     "#);
 
-    assert_eq!(cpu.bus_mut().peek::<Word>(0), Some(0x765432fe));
-    assert_eq!(cpu.bus_mut().peek::<Word>(4), Some(0x7654fedc));
-    assert_eq!(cpu.bus_mut().peek::<Word>(8), Some(0x76fedcba));
-    assert_eq!(cpu.bus_mut().peek::<Word>(12), Some(0xfedcba98));
-    assert_eq!(cpu.bus_mut().peek::<Word>(16), Some(0xfedcba98));
-    assert_eq!(cpu.bus_mut().peek::<Word>(20), Some(0xdcba9810));
-    assert_eq!(cpu.bus_mut().peek::<Word>(24), Some(0xba983210));
-    assert_eq!(cpu.bus_mut().peek::<Word>(28), Some(0x98543210));
+    assert_eq!(cpu.bus.peek::<Word>(0), Some(0x765432fe));
+    assert_eq!(cpu.bus.peek::<Word>(4), Some(0x7654fedc));
+    assert_eq!(cpu.bus.peek::<Word>(8), Some(0x76fedcba));
+    assert_eq!(cpu.bus.peek::<Word>(12), Some(0xfedcba98));
+    assert_eq!(cpu.bus.peek::<Word>(16), Some(0xfedcba98));
+    assert_eq!(cpu.bus.peek::<Word>(20), Some(0xdcba9810));
+    assert_eq!(cpu.bus.peek::<Word>(24), Some(0xba983210));
+    assert_eq!(cpu.bus.peek::<Word>(28), Some(0x98543210));
 }

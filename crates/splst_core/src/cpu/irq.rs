@@ -1,5 +1,5 @@
 use splst_util::Bit;
-use crate::bus::BusMap;
+use crate::bus::{self, AddrUnit, BusMap};
 use crate::schedule::{Event, Schedule};
 
 use std::fmt;
@@ -94,22 +94,31 @@ impl IrqState {
     ///
     /// Writing to the status register will bitwise and 'val' with the current value of the
     /// register. Writing to the mask register will set the register.
-    pub fn store(&mut self, schedule: &mut Schedule, offset: u32, val: u32) {
+    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
+        if !bus::is_aligned_to::<u32>(offset) {
+            warn!("store to irq state not word aligned");
+        }
+
+        // TODO: Check that this is right.
+        let val = val.as_u32_aligned(offset);
+
         schedule.trigger(Event::IrqCheck);
-        match offset {
+
+        match bus::align_as::<u32>(offset) {
             0 => self.status &= val,
             4 => self.mask = val,
-            _ => unreachable!("Invalid store at offset {offset}"),
+            _ => unreachable!("invalid store at offset {offset}"),
         }
     }
 
     /// Load from interrupt registers.
-    pub fn load(&self, offset: u32) -> u32 {
-        match offset {
+    pub fn load<T: AddrUnit>(&self, offset: u32) -> T {
+        let val = match bus::align_as::<u32>(offset) {
             0 => self.status,
             4 => self.mask,
-            _ => unreachable!("Invalid load at offset {offset}"),
-        }
+            _ => unreachable!("invalid load at offset {offset}"),
+        };
+        T::from_u32_aligned(val, offset)
     }
 }
 

@@ -17,7 +17,6 @@ pub mod gpu;
 pub mod timing;
 pub mod cpu;
 
-use splst_render::Renderer;
 use schedule::Schedule;
 use cpu::irq::IrqState;
 
@@ -114,19 +113,17 @@ impl Mul<u64> for SysTime {
 
 pub struct System {
     pub cpu: Box<Cpu>,
-    cycle_duration: Duration,
 }
 
 impl System {
     pub fn new(
         bios: Bios,
-        renderer: Rc<RefCell<Renderer>>,
+        renderer: Rc<RefCell<dyn VideoOutput>>,
         disc: Rc<RefCell<Disc>>,
         controllers: Rc<RefCell<Controllers>>,
     ) -> Self {
         Self {
             cpu: Cpu::new(bios, renderer, disc, controllers),
-            cycle_duration: Duration::from_secs(1) / timing::CPU_HZ as u32
         }
     }
 
@@ -238,15 +235,23 @@ pub trait Debugger {
 
 // Implement debugger for unit type to easily use no debugger.
 impl Debugger for () {
-    fn instruction_load(&mut self, _: u32) { }
+    fn instruction_load(&mut self, _: u32) {}
 
-    fn data_load(&mut self, _: u32) { }
+    fn data_load(&mut self, _: u32) {}
 
-    fn data_store(&mut self, _: u32) { }
+    fn data_store(&mut self, _: u32) {}
 
     fn should_stop(&mut self) -> bool {
         false
     }
 }
 
-const NANOS_PER_CYCLE: u128 = 30;
+pub trait VideoOutput {
+    fn send_frame(&mut self, vram_start: (u32, u32), vram_data: &[u8; 1024 * 1024]);
+}
+
+impl VideoOutput for () {
+    fn send_frame(&mut self, _: (u32, u32), _: &[u8; 1024 * 1024]) {}
+}
+
+const NANOS_PER_CYCLE: u128 = 33;

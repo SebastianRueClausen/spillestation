@@ -1,4 +1,5 @@
-//! TODO:
+//! # TODO
+//!
 //! - The CDROM runs at fixed intervals which doesn't seem neccessary but running after every store
 //!   doesn't seem to work, likely because the CDROM executes the command immediately, which the
 //!   BIOS isn't expecting.
@@ -8,10 +9,9 @@ mod fifo;
 use splst_cdimg::{CdImage, Sector};
 use splst_util::Bit;
 use splst_util::{Bcd, Msf};
-
-use crate::bus::{dma, BusMap, MemUnit};
+use crate::bus::{dma, BusMap, AddrUnit};
 use crate::cpu::Irq;
-use crate::schedule::{Event, EventId, Schedule};
+use crate::schedule::{Event, Schedule};
 use crate::SysTime;
 
 use fifo::Fifo;
@@ -23,7 +23,6 @@ use std::time::Duration;
 
 pub struct CdRom {
     pub(super) disc: Rc<RefCell<Disc>>,
-    run_event: EventId,
     state: DriveState,
     /// The index register. This decides what happens when the CPU writes to and
     /// loads from the CDROM.
@@ -47,7 +46,7 @@ pub struct CdRom {
 
 impl CdRom {
     pub fn new(schedule: &mut Schedule, disc: Rc<RefCell<Disc>>) -> Self {
-        let run_event = schedule.schedule_repeat(SysTime::new(7_000), Event::CdRom(CdRom::run));
+        schedule.schedule_repeat(SysTime::new(7_000), Event::CdRom(CdRom::run));
 
         // TODO: Check startup value.
         let mode = ModeReg(0x0);
@@ -55,7 +54,6 @@ impl CdRom {
 
         Self {
             disc,
-            run_event,
             state: DriveState::Idle,
             index: 0x0,
             irq_mask: 0x0,
@@ -71,13 +69,19 @@ impl CdRom {
         }
     }
 
-    pub fn store<T: MemUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
+    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: T) {
+        if !T::WIDTH.is_byte() {
+            warn!("{} store to CD-ROM", T::WIDTH);
+        }
+
+        let val = val.as_u8();
+
         match addr {
             0 => self.index = val.bit_range(0, 1) as u8,
             1 => match self.index {
                 0 => {
                     if self.cmd.is_some() {
-                        warn!("CDROM beginning command while command is pending");
+                        warn!("CD-ROM beginning command while command is pending");
                     }
                     self.cmd = Some(val as u8);
                 }
@@ -123,18 +127,9 @@ impl CdRom {
         }
     }
 
-    pub fn load<T: MemUnit>(&mut self, addr: u32) -> u32 {
-        match addr {
-            // Status register.
-            0 => {
-                let register = self.index
-                    | (self.arg_fifo.is_empty() as u8) << 3
-                    | (!self.arg_fifo.is_full() as u8) << 4
-                    | (!self.response_fifo.is_empty() as u8) << 5
-                    | (!self.data_buffer.data_ready() as u8) << 6
-                    | (self.cmd.is_some() as u8) << 7;
-                register.into()
-            }
+    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> T {
+        let val = match addr {
+            0 => self.status_reg(),
             1 => self.response_fifo.try_pop().unwrap_or(0x0).into(),
             2 => self.data_buffer.read_byte().into(),
             3 => match self.index {
@@ -144,7 +139,37 @@ impl CdRom {
                 _ => unreachable!(),
             },
             _ => unreachable!(),
-        }
+        };
+
+        T::from_u32(val)
+    }
+
+    /// 'load' without side effects.
+    pub fn peek<T: AddrUnit>(&self, addr: u32) -> T {
+        let val = match addr {
+            0 => self.status_reg(),
+            1 => self.response_fifo.peek().unwrap_or(0x0).into(),
+            2 => self.data_buffer.peek_byte().into(),
+            3 => match self.index {
+                0 => self.irq_mask as u32 | !0x1f,
+                1 => self.irq_flags as u32 | !0x1f,
+                2 => todo!(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+
+        T::from_u32(val)
+    }
+
+    fn status_reg(&self) -> u32 {
+        let register = self.index
+            | (self.arg_fifo.is_empty() as u8) << 3
+            | (!self.arg_fifo.is_full() as u8) << 4
+            | (!self.response_fifo.is_empty() as u8) << 5
+            | (!self.data_buffer.data_ready() as u8) << 6
+            | (self.cmd.is_some() as u8) << 7;
+        register.into()
     }
 
     fn finish_cmd(&mut self, schedule: &mut Schedule, irq: Interrupt) {
@@ -203,7 +228,7 @@ impl CdRom {
 
                         schedule.schedule(time, Event::CdRom(Self::sector_done));
 
-                        // Maybe unshedule any other 'CdRomSectorDone' events, since it's possible
+                        // Maybe unshedule any other 'sector_done' events, since it's possible
                         // it could have started reading, then paused, but started reading again
                         // before the first sector was read.
 
@@ -604,8 +629,12 @@ impl DataBuffer {
         self.index = (idx & !7) + adj;
     }
 
+    fn peek_byte(&self) -> u8 {
+        self.data[self.index as usize]
+    }
+
     fn read_byte(&mut self) -> u8 {
-        let byte = self.data[self.index as usize];
+        let byte = self.peek_byte();
 
         if self.active {
             self.index += 1;

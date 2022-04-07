@@ -1,5 +1,5 @@
 use splst_util::Bit;
-use super::{MemUnit, BusMap};
+use super::{AddrUnit, BusMap};
 use super::raw::RawMem;
 
 pub struct Ram(RawMem<{Self::SIZE}>);
@@ -12,15 +12,15 @@ impl Ram {
     }
 
     #[inline]
-    pub fn load<T: MemUnit>(&mut self, offset: u32) -> u32 {
+    pub fn load<T: AddrUnit>(&self, offset: u32) -> T {
         let offset = offset.bit_range(0, 20);
-        self.0.load::<T>(offset)
+        self.0.load(offset)
     }
 
     #[inline]
-    pub fn store<T: MemUnit>(&mut self, offset: u32, val: u32) {
+    pub fn store<T: AddrUnit>(&mut self, offset: u32, val: T) {
         let offset = offset.bit_range(0, 20);
-        self.0.store::<T>(offset, val)
+        self.0.store(offset, val)
     }
 }
 

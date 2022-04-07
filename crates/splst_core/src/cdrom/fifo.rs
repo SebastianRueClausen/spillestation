@@ -20,7 +20,10 @@ impl Fifo {
     }
 
     pub fn len(&self) -> usize {
-        self.head.wrapping_sub(self.tail).bit_range(0, 3) as usize
+        self.head
+            .wrapping_sub(self.tail)
+            .bit_range(0, 3)
+            .into()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -35,29 +38,41 @@ impl Fifo {
         self.head = self.tail;
     }
 
-    pub fn push(&mut self, value: u8) {
-        self.data[self.head.bit_range(0, 3) as usize] = value;
-        self.head = self.head.wrapping_add(1).bit_range(0, 3);
+    pub fn push(&mut self, val: u8) {
+        debug_assert!(!self.is_full());
+        let idx: usize = self.head
+            .bit_range(0, 3)
+            .into();
+        self.head = self.head
+            .wrapping_add(1)
+            .bit_range(0, 3);
+        self.data[idx] = val;
     }
 
     pub fn push_slice(&mut self, values: &[u8]) {
-        debug_assert!(!self.is_full());
-        for value in values {
-            self.push(*value);
+        for val in values {
+            self.push(*val);
         }
     }
 
     pub fn pop(&mut self) -> u8 {
-        let value = self.data[self.tail.bit_range(0, 3) as usize];
-        self.tail = self.tail.wrapping_add(1).bit_range(0, 3);
-        value
+        debug_assert!(!self.is_empty());
+        let idx: usize = self.tail
+            .bit_range(0, 3)
+            .into();
+        self.tail = self.tail
+            .wrapping_add(1)
+            .bit_range(0, 3);
+        self.data[idx]
     }
 
     pub fn try_pop(&mut self) -> Option<u8> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.pop())
-        }
+        self.is_empty().then(|| self.pop())
+    }
+
+    pub fn peek(&self) -> Option<u8> {
+        self.is_empty().then(|| {
+            self.data[self.tail.bit_range(0, 3) as usize]
+        })
     }
 }

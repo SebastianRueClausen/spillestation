@@ -1,4 +1,4 @@
-use super::{MemUnit, BusMap};
+use super::{AddrUnit, BusMap};
 use thiserror::Error;
 
 use std::fs::File;
@@ -74,10 +74,11 @@ impl Bios {
         }
     }
 
-    pub fn load<T: MemUnit>(&mut self, addr: u32) -> u32 {
-        (0..T::WIDTH).fold(0, |value, byte| {
-            value | (self.data[addr as usize + byte] as u32) << (8 * byte)
-        })
+    pub fn load<T: AddrUnit>(&self, addr: u32) -> T {
+        let val: u32 = (0..T::WIDTH as usize).fold(0, |val, byte| {
+            val | (self.data[addr as usize + byte] as u32) << (8 * byte)
+        });
+        T::from_u32(val)
     }
 }
 

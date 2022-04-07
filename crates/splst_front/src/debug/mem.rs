@@ -1,6 +1,5 @@
 use super::DebugApp;
 
-use splst_core::bus::{Byte, Word};
 use splst_core::cpu::Opcode;
 use splst_core::System;
 
@@ -62,21 +61,17 @@ impl DebugApp for MemView {
     }
 
     fn update_tick(&mut self, _: Duration, system: &mut System) {
-        // The start address must be 4-byte aligned. This is a hacky way to round down to next
-        // multiple of 4.
-        let start_addr = ((self.start_addr + 4) & !3) - 4;
-
+        let start_addr = self.start_addr & !3;
         for (i, addr) in self.addresses.iter_mut().enumerate() {
             addr.clear();
             write!(addr, "{:06x}:\t", start_addr + 4 * i as u32).unwrap();
         }
-
         match self.mode {
             Mode::Instruction(ref mut ins) => {
                 for (i, ins) in ins.iter_mut().enumerate() {
                     ins.clear();
                     let addr = start_addr + (i * 4) as u32;
-                    match system.bus_mut().peek::<Word>(addr) {
+                    match system.bus_mut().peek::<u32>(addr) {
                         None => write!(ins, "??").unwrap(),
                         Some(val) => {
                             write!(ins, "{}", Opcode::new(val)).unwrap()
@@ -89,9 +84,9 @@ impl DebugApp for MemView {
                     let mut as_text = [0; 4];
                     for (j, col) in row.iter_mut().enumerate() {
                         let addr = (i * 4 + j) as u32 + start_addr;
-                        match system.bus_mut().peek::<Byte>(addr) {
+                        match system.bus_mut().peek::<u8>(addr) {
                             Some(val) => {
-                                as_text[j] = val as u8;
+                                as_text[j] = val;
                                 col[0] = HEX_ASCII[((val >> 4) & 0xf) as usize];
                                 col[1] = HEX_ASCII[(val & 0xf) as usize];
                             }

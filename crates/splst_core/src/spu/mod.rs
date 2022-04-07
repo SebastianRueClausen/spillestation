@@ -1,5 +1,7 @@
+#![allow(dead_code)]
+
 use splst_util::{Bit, BitSet};
-use crate::bus::{MemUnit, MemUnitKind, BusMap};
+use crate::bus::{AddrUnit, AddrUnitWidth, BusMap};
 use crate::schedule::{Schedule, Event};
 use crate::cpu::Irq;
 use crate::SysTime;
@@ -27,11 +29,12 @@ impl Spu {
         }
     }
 
-    pub fn store<T: MemUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
-        match T::KIND {
-            MemUnitKind::Byte => unreachable!("byte store to SPU"),
-            MemUnitKind::HalfWord => self.reg_store(schedule, addr, val as u16),
-            MemUnitKind::Word => {
+    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: T) {
+        let val = val.as_u32();
+        match T::WIDTH {
+            AddrUnitWidth::Byte => unreachable!("byte store to SPU"),
+            AddrUnitWidth::HalfWord => self.reg_store(schedule, addr, val as u16),
+            AddrUnitWidth::Word => {
                 let (lo, hi) = (val as u16, val.bit_range(16, 31) as u16);
                 self.reg_store(schedule, addr, lo);
                 self.reg_store(schedule, addr | 2, hi);
@@ -39,16 +42,18 @@ impl Spu {
         }
     }
 
-    pub fn load<T: MemUnit>(&mut self, addr: u32) -> u32 {
-        match T::KIND {
-            MemUnitKind::Byte => unreachable!("byte load from SPU"),
-            MemUnitKind::HalfWord => self.reg_load(addr) as u32,
-            MemUnitKind::Word => {
+    pub fn load<T: AddrUnit>(&self, addr: u32) -> T {
+        let val = match T::WIDTH {
+            AddrUnitWidth::Byte => unreachable!("byte load from SPU"),
+            AddrUnitWidth::HalfWord => self.reg_load(addr) as u32,
+            AddrUnitWidth::Word => {
                 let lo = self.reg_load(addr) as u32;
                 let hi = self.reg_load(addr | 2) as u32;
                 lo | (hi << 16)
             }
-        }
+        };
+
+        T::from_u32(val)
     }
 
     /// Store to register.
@@ -75,7 +80,7 @@ impl Spu {
     }
 
     /// Load from register.
-    fn reg_load(&mut self, addr: u32) -> u16 {
+    fn reg_load(&self, addr: u32) -> u16 {
         self.regs[addr as usize / 2]
     }
 
@@ -97,12 +102,12 @@ impl Spu {
         // TODO: Mednafen does something weird with the transfer control register.
     }
 
-    fn run(&mut self, schedule: &mut Schedule) {
+    fn run(&mut self, _schedule: &mut Schedule) {
         self.update_status();
     }
 }
 
-fn run_voice(voice: &mut Voice) {
+fn run_voice(_voice: &mut Voice) {
     
 }
 

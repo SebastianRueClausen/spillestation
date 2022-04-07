@@ -1,6 +1,7 @@
 //! Emulation of the Playstations 1 GPU.
 //!
 //! # TODO
+//!
 //! - Maybe switch to integer fixed point for rasterization instead of floats.
 //!
 //! - DMA chopping wouldn't work correctly with the GPU, since the GPU updates it's DMA channel
@@ -14,14 +15,12 @@ mod gp1;
 mod vram;
 
 use splst_util::{Bit, BitSet};
-use splst_render::{Renderer, DrawInfo};
 use crate::cpu::Irq;
-use crate::bus::{Bus, BusMap, MemUnit};
-use crate::bus::dma;
-use crate::schedule::{Event, EventId, Schedule};
+use crate::bus::{self, dma, Bus, BusMap, AddrUnit};
+use crate::schedule::{Event, Schedule};
 use crate::timing;
 use crate::timer::Timers;
-use crate::SysTime;
+use crate::{VideoOutput, SysTime};
 
 use fifo::{Fifo, PushAction};
 use primitive::Color;
@@ -35,8 +34,7 @@ use std::rc::Rc;
 pub use vram::Vram;
 
 pub struct Gpu {
-    pub(super) renderer: Rc<RefCell<Renderer>>,
-    run_event: EventId,
+    pub(super) renderer: Rc<RefCell<dyn VideoOutput>>,
     /// The current state of the GPU.
     state: State,
     /// The GPU FIFO. Used to recieve commands and some kinds of data.
@@ -47,7 +45,7 @@ pub struct Gpu {
     /// handles the timing differences between PAL and NTSC video modes.
     timing: Timing,
     /// The status register.
-    pub status: Status,
+    status: Status,
     /// The GPUREAD register. This contains various info about the GPU, and is generated after each
     /// GP1(10) command call. It is read through the BUS at GPUREAD, if no transfer is ongoing.
     gpu_read: u32,
@@ -90,8 +88,8 @@ pub struct Gpu {
 }
 
 impl Gpu {
-    pub fn new(schedule: &mut Schedule, renderer: Rc<RefCell<Renderer>>) -> Self {
-        let run_event = schedule.schedule_repeat(SysTime::new(5_000), Event::Gpu(Gpu::run));
+    pub fn new(schedule: &mut Schedule, renderer: Rc<RefCell<dyn VideoOutput>>) -> Self {
+        schedule.schedule_repeat(SysTime::new(5_000), Event::Gpu(Gpu::run));
 
         let dis_x_start = 0x200;
         let dis_y_start = 0x0;
@@ -112,7 +110,6 @@ impl Gpu {
 
         Self {
             renderer,
-            run_event,
             state: State::Idle,
             fifo: Fifo::new(),
             vram: Vram::new(),
@@ -140,18 +137,23 @@ impl Gpu {
         }
     }
 
-    pub fn store<T: MemUnit>(
+    pub fn store<T: AddrUnit>(
         &mut self,
         schedule: &mut Schedule,
-        addr: u32,
-        val: u32
+        offset: u32,
+        val: T,
     ) {
-        debug_assert_eq!(T::WIDTH, 4);
+        if !T::WIDTH.is_word() {
+            warn!("store of {} to GPU", T::WIDTH);
+        }
 
-        match addr {
+        // This may not be correct.
+        let val = val.as_u32();
+
+        match bus::align_as::<u32>(offset) {
             0 => self.gp0_store(schedule, val),
             4 => self.gp1_store(val),
-            _ => unreachable!("Invalid GPU store at offset {:08x}.", addr),
+            offset => unreachable!("invalid GPU store at offset {offset:08x}"),
         }
 
         // 'dma_ready' can have changed here, which means that the GPU DMA should be updated.
@@ -165,22 +167,36 @@ impl Gpu {
         schedule.trigger(Event::Dma(dma::Port::Gpu, Bus::run_dma_chan));
     }
 
-    pub fn load<T: MemUnit>(
+    pub fn load<T: AddrUnit>(
         &mut self,
-        addr: u32,
+        offset: u32,
         schedule: &mut Schedule,
         timers: &mut Timers
-    ) -> u32 {
-        debug_assert_eq!(T::WIDTH, 4);
+    ) -> T {
+        if !T::WIDTH.is_word() {
+            warn!("load of {} from GPU", T::WIDTH);
+        }
 
         // Run mainly to update the status register.
         self.run(schedule, timers);
 
-        match addr {
+        let val = match bus::align_as::<u32>(offset) {
             0 => self.gpu_read(),
-            4 => self.status_read(),
-            _ => unreachable!("Invalid GPU load at offset {:08x}.", addr),
-        }
+            4 => self.status().0,
+            offset => unreachable!("invalid GPU load at offset {offset:08x}"),
+        };
+
+        T::from_u32_aligned(val, offset)
+    }
+
+    /// 'load' without side effects.
+    pub fn peek<T: AddrUnit>(&self, offset: u32) -> T {
+        let val = match bus::align_as::<u32>(offset) {
+            0 => self.gpu_read,
+            4 => self.status().0,
+            offset => unreachable!("invalid GPU load at offset {offset:08x}"),
+        };
+        T::from_u32_aligned(val, offset)
     }
 
     /// The GPU read register. Either loads data from the VRAM or results from the GPU 
@@ -220,8 +236,9 @@ impl Gpu {
         }
     }
 
-    fn status_read(&mut self) -> u32 {
-        self.status.0 = self.status.0
+    pub fn status(&self) -> Status {
+        trace!("GPU status load");
+        let status = self.status.0
             .set_bit(27, self.state.is_vram_load())
             .set_bit(28, self.dma_block_ready())
             .set_bit(26, self.state.is_idle() && self.fifo.is_empty())
@@ -231,10 +248,7 @@ impl Gpu {
                 DmaDir::CpuToGp0 => self.status.dma_block_ready(),
                 DmaDir::VramToCpu => self.status.vram_to_cpu_ready(),
             });
-
-        trace!("GPU status load");
-
-        self.status.0
+        Status(status)
     }
 
     /// Store value in the GP0 register.
@@ -260,13 +274,6 @@ impl Gpu {
 
     pub fn vram(&self) -> &Vram {
         &self.vram
-    }
-
-    pub fn draw_info(&self) -> DrawInfo {
-        DrawInfo {
-            x_start: self.vram_x_start as u32,
-            y_start: self.vram_y_start as u32,
-        }
     }
 
     pub fn in_vblank(&self) -> bool {
@@ -350,13 +357,8 @@ impl Gpu {
             // If we are either leaving or entering Vblank.
             if self.timing.in_vblank != in_vblank {
                 if in_vblank {
-                    let draw_info = DrawInfo {
-                        x_start: self.vram_x_start as u32,
-                        y_start: self.vram_y_start as u32,
-                    };
-
                     self.renderer.borrow_mut().send_frame(
-                        &draw_info,
+                        (self.vram_x_start as u32, self.vram_y_start as u32),
                         &self.vram.raw_data(),
                     );
 

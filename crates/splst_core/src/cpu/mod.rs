@@ -1,6 +1,7 @@
 //! Emulation of the MIPS R3000 used by the original Sony Playstation.
 //!
 //! # TODO
+//!
 //! - Perhaps checking for active interrupts isn't good enough, since writes to the COP0 cause and
 //!   active registers can change 'irq_active' status. Checking every cycle doesn't seem to do
 //!   anything for now, but herhaps there could be a problem.
@@ -15,15 +16,13 @@ mod gte;
 pub mod irq;
 pub mod opcode;
 
-use splst_render::Renderer;
 use crate::io_port::Controllers;
 use crate::cdrom::Disc;
-use crate::bus;
 use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
-use crate::bus::{MemUnit, Bus, BusMap, Byte, HalfWord, Word};
+use crate::bus::{self, AddrUnit, Bus, BusMap};
 use crate::schedule;
-use crate::{SysTime, Debugger};
+use crate::{SysTime, Debugger, VideoOutput};
 use splst_util::Bit;
 
 use cop0::{Cop0, Exception};
@@ -76,26 +75,31 @@ pub struct Cpu {
     /// lo.
     pub hi: u32,
     pub lo: u32,
-    /// This stores the absolute cycle when the result of an multiply or divide instruction is
-    /// ready since they take more than a single cycle to complete. The CPU can run while the
-    /// result is being calculated, but if the result is being read before it's ready, the CPU will
-    /// wait before continuing.
+    /// This stores the system time since startup that the result of an multiply or divide
+    /// instruction is ready since they take more than a single cycle to complete. The
+    /// CPU can run while the result is being calculated, but if the result is being read
+    /// before it's ready, the CPU will wait before continuing.
     hi_lo_ready: SysTime,
+    /// # Registers
+    ///
     /// All registers of the MIPS R3000 are essentially general purpose besides $r0 which always
     /// contains the value 0. They are however used for specific purposes depending on convention.
     ///
-    /// - 0 - Always 0.
-    /// - 1 - Assembler temporary.
-    /// - 2..3 - Subroutine return values.
-    /// - 4..7 - Subroutine arguments.
-    /// - 8..15 - Temporaries.
-    /// - 16..23 - Static variables.
-    /// - 24..25 - Temporaries.
-    /// - 26..27 - Reserved for kernel.
-    /// - 28 - Global pointer.
-    /// - 29 - Stack pointer.
-    /// - 30 - Frame pointer, or static variable.
-    /// - 31 - Return address.
+    /// | Number  | Name    | Usage                 |
+    /// |---------|---------|-----------------------|
+    /// | r0      | $zero   | Always 0              |
+    /// | r1      | $at     | Reserved by assembler |
+    /// | r2-r3   | $v0-$v1 | Results               |
+    /// | r4-r7   | $a0-$a3 | Arguments             |
+    /// | r8-r15  | $t0-$t7 | Temporaries           |
+    /// | r16-r23 | $s0-$s7 | Storing               |
+    /// | r24-r25 | $t8-$t9 | Temporaries           |
+    /// | r26-r27 | $k0-$k1 | Reserved by kernel    |
+    /// | r28     | $gp     | Global pointer        |
+    /// | r29     | $sp     | Stack pointer         |
+    /// | r30     | $fp     | Frame pointer         |
+    /// | r31     | $ra     | Return address        |
+    ///
     pub registers: [u32; 32],
     /// # Load Delay Slot
     ///
@@ -131,7 +135,7 @@ const PC_START_ADDRESS: u32 = 0xbfc00000;
 impl Cpu {
     pub fn new(
         bios: Bios,
-        renderer: Rc<RefCell<Renderer>>,
+        renderer: Rc<RefCell<dyn VideoOutput>>,
         disc: Rc<RefCell<Disc>>,
         controllers: Rc<RefCell<Controllers>>,
     ) -> Box<Self> {
@@ -171,10 +175,10 @@ impl Cpu {
     }
 
     /// Load data from the bus. Must not be called when loading code.
-    fn load<T: MemUnit>(&mut self, addr: u32) -> Result<(u32, SysTime), Exception> {
+    fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<(T, SysTime), Exception> {
         self.bus.schedule.skip_to(self.load_delay.ready);
 
-        if !T::is_aligned(addr) {
+        if !bus::is_aligned_to::<T>(addr) {
             self.cop0.set_reg(8, addr);
             return Err(Exception::AddressLoadError);
         }
@@ -189,8 +193,8 @@ impl Cpu {
     }
 
     /// Load an instruction from memory.
-    fn load_code<T: MemUnit>(&mut self, addr: u32) -> Result<u32, Exception> {
-        if !T::is_aligned(addr) {
+    fn load_code<T: AddrUnit>(&mut self, addr: u32) -> Result<T, Exception> {
+        if !bus::is_aligned_to::<T>(addr) {
             self.cop0.set_reg(8, addr);
             return Err(Exception::AddressLoadError);
         }
@@ -206,8 +210,8 @@ impl Cpu {
             .ok_or(Exception::BusInstructionError)
     }
 
-    fn store<T: MemUnit>(&mut self, addr: u32, val: u32) -> Result<(), Exception> {
-        if !T::is_aligned(addr) {
+    fn store<T: AddrUnit>(&mut self, addr: u32, val: T) -> Result<(), Exception> {
+        if !bus::is_aligned_to::<T>(addr) {
             self.cop0.set_reg(8, addr);
             return Err(Exception::AddressStoreError);
         }
@@ -216,7 +220,7 @@ impl Cpu {
 
         if !self.cop0.cache_isolated() {
             self.bus
-                .store::<T>(addr, val)
+                .store(addr, val)
                 .ok_or(Exception::BusDataError)
         } else if self.bus.cache_ctrl.icache_enabled() {
             let line_idx = addr.bit_range(4, 11) as usize;
@@ -226,7 +230,7 @@ impl Cpu {
                 line.invalidate();
             } else {
                 let index = addr.bit_range(2, 3) as usize;
-                line.data[index] = val;
+                line.data[index] = val.as_u32();
             }
 
             self.icache[line_idx] = line;
@@ -338,11 +342,7 @@ impl Cpu {
     }
 
     pub fn curr_ins(&mut self) -> Opcode {
-        let addr = bus::regioned_addr(self.pc);
-        let op = self.bus.load::<Word>(addr)
-            .map(|(val, _)| val)
-            .unwrap_or(0xffff_ffff);
-        Opcode::new(op)
+        Opcode::new(self.bus.peek(self.pc).unwrap_or(0xffff_ffff))
     }
 
     pub fn icache_misses(&mut self) -> u64 {
@@ -368,7 +368,7 @@ impl Cpu {
     ) -> Result<(), Exception> {
         self.bus.schedule.advance(SysTime::new(4 - idx as u64));
         for (i, j) in (idx..4).enumerate() {
-            line.data[j] = self.load_code::<Word>(addr + (i as u32 * 4))?;
+            line.data[j] = self.load_code(addr + (i as u32 * 4))?;
         }
         Ok(())
     }
@@ -422,7 +422,7 @@ impl Cpu {
                     // Cache misses take about 4 cycles.
                     self.bus.schedule.advance(SysTime::new(4));
 
-                    match self.load_code::<Word>(addr) {
+                    match self.load_code::<u32>(addr) {
                         Ok(val) => self.exec(dbg, Opcode::new(val)),
                         Err(exp) => self.throw_exception(exp),
                     }
@@ -436,16 +436,16 @@ impl Cpu {
     fn exec(&mut self, dbg: &mut impl Debugger, opcode: Opcode) {
         match opcode.op() {
             0x0 => match opcode.special() {
-                0x0 => self.op_sll(opcode),
-                0x2 => self.op_srl(opcode),
-                0x3 => self.op_sra(opcode),
-                0x4 => self.op_sllv(opcode),
-                0x6 => self.op_srlv(opcode),
-                0x7 => self.op_srav(opcode),
-                0x8 => self.op_jr(opcode),
-                0x9 => self.op_jalr(opcode),
-                0xc => self.op_syscall(),
-                0xd => self.op_break(),
+                0x00 => self.op_sll(opcode),
+                0x02 => self.op_srl(opcode),
+                0x03 => self.op_sra(opcode),
+                0x04 => self.op_sllv(opcode),
+                0x06 => self.op_srlv(opcode),
+                0x07 => self.op_srav(opcode),
+                0x08 => self.op_jr(opcode),
+                0x09 => self.op_jalr(opcode),
+                0x0c => self.op_syscall(),
+                0x0d => self.op_break(),
                 0x10 => self.op_mfhi(opcode),
                 0x11 => self.op_mthi(opcode),
                 0x12 => self.op_mflo(opcode),
@@ -466,21 +466,21 @@ impl Cpu {
                 0x2b => self.op_sltu(opcode),
                 _ => self.op_illegal(),
             },
-            0x1 => self.op_bcondz(opcode),
-            0x2 => self.op_j(opcode),
-            0x3 => self.op_jal(opcode),
-            0x4 => self.op_beq(opcode),
-            0x5 => self.op_bne(opcode),
-            0x6 => self.op_blez(opcode),
-            0x7 => self.op_bgtz(opcode),
-            0x8 => self.op_addi(opcode),
-            0x9 => self.op_addiu(opcode),
-            0xa => self.op_slti(opcode),
-            0xb => self.op_sltui(opcode),
-            0xc => self.op_andi(opcode),
-            0xd => self.op_ori(opcode),
-            0xe => self.op_xori(opcode),
-            0xf => self.op_lui(opcode),
+            0x01 => self.op_bcondz(opcode),
+            0x02 => self.op_j(opcode),
+            0x03 => self.op_jal(opcode),
+            0x04 => self.op_beq(opcode),
+            0x05 => self.op_bne(opcode),
+            0x06 => self.op_blez(opcode),
+            0x07 => self.op_bgtz(opcode),
+            0x08 => self.op_addi(opcode),
+            0x09 => self.op_addiu(opcode),
+            0x0a => self.op_slti(opcode),
+            0x0b => self.op_sltui(opcode),
+            0x0c => self.op_andi(opcode),
+            0x0d => self.op_ori(opcode),
+            0x0e => self.op_xori(opcode),
+            0x0f => self.op_lui(opcode),
             0x10 => self.op_cop0(opcode),
             0x11 => self.op_cop1(),
             0x12 => self.op_cop2(opcode),
@@ -616,7 +616,7 @@ impl Cpu {
                 let mut addr = self.read_reg(RegIdx::A0);
                 let mut print = String::new();
                 loop {
-                    let c = match self.load::<Byte>(addr) {
+                    let c = match self.load::<u8>(addr) {
                         Ok((val, _)) => (val as u8) as char,
                         Err(_) => break,
                     };
@@ -701,7 +701,7 @@ impl Cpu {
         self.fetch_load_slot();
     }
 
-    /// MULT - Signed multiplication.
+    /// # MULT - Signed multiplication
     ///
     /// Multiplication takes different amount of cycles to complete dependent on the size of the
     /// inputs numbers.
@@ -745,7 +745,7 @@ impl Cpu {
         self.add_pending_hi_lo(time, (val >> 32) as u32, val as u32);
     }
 
-    /// DIV - Signed division.
+    /// # DIV - Signed division
     ///
     /// It always takes 36 cycles to complete. It doesn't throw an expception if dividing by 0, but
     /// instead returns garbage values.
@@ -929,17 +929,17 @@ impl Cpu {
         self.set_reg(rd, val as u32);
     }
 
-    /// BCONDZ - Conditional branching.
+    /// # BCONDZ - Conditional branching
     ///
     /// Multiple conditional branch instructions combined into on opcode. If bit 16 of the opcode
     /// is set, then it set's the return value register. If bits 17..20 of the opcode equals 0x80,
     /// then it branches if the value is greater than or equal to zero, otherwise it branches if
     /// the values is less than zero.
     ///
-    /// * BLTZ - Branch if less than zero.
-    /// * BLTZAL - Branch if less than zero and set return register.
-    /// * BGEZ - Branch if greater than or equal to zero.
-    /// * BGEZAL - Branch if greater than or equal to zero and set return register.
+    /// - BLTZ: Branch if less than zero.
+    /// - BLTZAL: Branch if less than zero and set return register.
+    /// - BGEZ: Branch if greater than or equal to zero.
+    /// - BGEZAL: Branch if greater than or equal to zero and set return register.
     fn op_bcondz(&mut self, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
@@ -1042,7 +1042,7 @@ impl Cpu {
         }
     }
 
-    /// ADDUI - Add immediate unsigned.
+    /// # ADDUI - Add immediate unsigned
     ///
     /// Actually adding a signed int to target register, not unsigned.
     /// Unsigned in this case just means wrapping on overflow.
@@ -1218,7 +1218,7 @@ impl Cpu {
 
         dbg.data_load(addr);
 
-        match self.load::<Byte>(addr) {
+        match self.load::<u8>(addr) {
             Ok((val, time)) => {
                 let val = val as i8;
                 self.pipeline_bus_load(rt, val as u32, time)
@@ -1236,7 +1236,7 @@ impl Cpu {
 
         dbg.data_load(addr);
 
-        match self.load::<HalfWord>(addr) {
+        match self.load::<u16>(addr) {
             Err(exp) => self.throw_exception(exp),
             Ok((val, time)) => {
                 let val = val as i16;
@@ -1245,7 +1245,7 @@ impl Cpu {
         }
     }
 
-    /// LWL - Load word left.
+    /// # LWL - Load word left
     ///
     /// This is used to load words which aren't 4 byte aligned. It first fetches a base value from a
     /// given register, which doesn't wait for load delays for some reason?. It then fetches the word in
@@ -1269,7 +1269,7 @@ impl Cpu {
         };
 
         // Get word containing unaligned address.
-        match self.load::<Word>(aligned) {
+        match self.load::<u32>(aligned) {
             Ok((word, time)) => {
                 // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
                 let val = match addr & 0x3 {
@@ -1299,7 +1299,7 @@ impl Cpu {
 
         dbg.data_load(addr);
 
-        match self.load::<Word>(addr) {
+        match self.load::<u32>(addr) {
             Ok((val, time)) => self.pipeline_bus_load(rt, val, time),
             Err(exp) => self.throw_exception(exp),
         }
@@ -1314,8 +1314,8 @@ impl Cpu {
 
         dbg.data_load(addr);
 
-        match self.load::<Byte>(addr) {
-            Ok((val, time)) => self.pipeline_bus_load(rt, val, time),
+        match self.load::<u8>(addr) {
+            Ok((val, time)) => self.pipeline_bus_load(rt, val.into(), time),
             Err(exp) => self.throw_exception(exp),
         }
     }
@@ -1329,13 +1329,13 @@ impl Cpu {
 
         dbg.data_load(addr);
 
-        match self.load::<HalfWord>(addr) {
-            Ok((val, time)) => self.pipeline_bus_load(rt, val, time),
+        match self.load::<u16>(addr) {
+            Ok((val, time)) => self.pipeline_bus_load(rt, val.into(), time),
             Err(exp) => self.throw_exception(exp),
         }
     }
 
-    /// LWR - Load word right.
+    /// # LWR - Load word right
     ///
     /// See 'op_lwl'.
     fn op_lwr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
@@ -1354,7 +1354,7 @@ impl Cpu {
             self.read_reg(rt)
         };
 
-        match self.load::<Word>(aligned) {
+        match self.load::<u32>(aligned) {
             Ok((word, time)) => {
                 let val = match addr & 0x3 {
                     0 => word,
@@ -1382,7 +1382,7 @@ impl Cpu {
         let val = self.read_reg(rt);
         self.fetch_load_slot();
 
-        if let Err(exp) = self.store::<Byte>(addr, val) {
+        if let Err(exp) = self.store::<u8>(addr, val as u8) {
             self.throw_exception(exp);
         }
     }
@@ -1399,15 +1399,15 @@ impl Cpu {
         let val = self.read_reg(rt);
         self.fetch_load_slot();
 
-        if let Err(exp) = self.store::<HalfWord>(addr, val) {
+        if let Err(exp) = self.store::<u16>(addr, val as u16) {
             self.throw_exception(exp);
         }
     }
 
-    /// SWL - Store world left.
+    /// # SWL - Store world left.
     ///
-    /// This is used to store words to addresses which aren't 32-aligned. It's the  same idea
-    /// as 'op_lwl' and 'op_lwr'.
+    /// This is used to store words to addresses which aren't 32 bit aligned. It's the 
+    /// same idea as 'op_lwl' and 'op_lwr'.
     fn op_swl(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
@@ -1422,7 +1422,7 @@ impl Cpu {
         dbg.data_store(aligned);
         dbg.data_load(aligned);
 
-        match self.load::<Word>(aligned) {
+        match self.load::<u32>(aligned) {
             Ok((word, time)) => {
                 let val = match addr & 3 {
                     0 => (word & 0xffff_ff00) | (val >> 24),
@@ -1435,7 +1435,7 @@ impl Cpu {
                 self.bus.schedule.advance(time);
                 self.fetch_load_slot();
 
-                if let Err(exp) = self.store::<Word>(aligned, val) {
+                if let Err(exp) = self.store::<u32>(aligned, val) {
                     self.throw_exception(exp);
                 }
             }
@@ -1443,7 +1443,8 @@ impl Cpu {
         }
     }
 
-    /// SW - Store word.
+    /// # SW - Store word
+    ///
     /// Store word from target register at address from source register + signed immediate value.
     fn op_sw(&mut self, dbg: &mut impl Debugger, op: Opcode) {
         let rs = self.access_reg(op.rs());
@@ -1456,12 +1457,12 @@ impl Cpu {
         let val = self.read_reg(rt);
         self.fetch_load_slot();
 
-        if let Err(exp) = self.store::<Word>(addr, val) {
+        if let Err(exp) = self.store::<u32>(addr, val) {
             self.throw_exception(exp);
         }
     }
 
-    /// SWR - Store world right.
+    /// # SWR - Store world right
     ///
     /// See 'op_swl'.
     fn op_swr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
@@ -1477,7 +1478,7 @@ impl Cpu {
         dbg.data_store(aligned);
         dbg.data_load(aligned);
 
-        match self.load::<Word>(aligned) {
+        match self.load::<u32>(aligned) {
             Ok((word, time)) => {
                 let val = match addr & 3 {
                     0 => val,
@@ -1490,7 +1491,7 @@ impl Cpu {
                 self.bus.schedule.advance(time);
                 self.fetch_load_slot();
 
-                if let Err(ex) = self.store::<Word>(aligned, val) {
+                if let Err(ex) = self.store::<u32>(aligned, val) {
                     self.throw_exception(ex);
                 }
             }
@@ -1498,7 +1499,7 @@ impl Cpu {
         }
     }
 
-    /// LWC0 - Load word in Coprocessor0.
+    /// LWC0 - Load word in Coprocessor0
     fn op_lwc0(&mut self) {
         // This doesn't work on the COP0.
         self.throw_exception(Exception::CopUnusable);
@@ -1519,7 +1520,7 @@ impl Cpu {
 
         self.fetch_load_slot();
 
-        match self.load::<Word>(addr) {
+        match self.load::<u32>(addr) {
             Ok((val, time)) => {
                 self.bus.schedule.advance(time);
                 self.gte.data_store(op.rt().0 as u32, val);
@@ -1557,7 +1558,7 @@ impl Cpu {
 
         self.fetch_load_slot();
 
-        if let Err(ex) = self.store::<Word>(addr, val) {
+        if let Err(ex) = self.store::<u32>(addr, val) {
             self.throw_exception(ex);
         }
     }

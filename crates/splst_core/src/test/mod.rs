@@ -2,7 +2,12 @@ mod cpu;
 mod dma;
 
 use crate::bus::bios::Bios;
+use crate::io_port::Controllers;
+use crate::cdrom::Disc;
 use crate::Cpu;
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 fn run_cpu(cpu: &mut Cpu) {
     loop {
@@ -24,8 +29,12 @@ pub fn run_code(input: &str) -> Box<Cpu> {
         Err(error) => panic!("{error}"),
     };
 
+    let controllers = Rc::new(RefCell::new(Controllers::default()));
+    let disc = Rc::new(RefCell::new(Disc::default()));
+    let renderer = Rc::new(RefCell::new(()));
+
     let bios = Bios::from_code(base, &code);
-    let mut cpu = Cpu::new(bios, None);
+    let mut cpu = Cpu::new(bios, renderer, disc, controllers);
 
     cpu.pc = main;
     cpu.next_pc = main + 4;

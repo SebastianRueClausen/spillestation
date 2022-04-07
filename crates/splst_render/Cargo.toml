@@ -11,5 +11,7 @@ ultraviolet = { version = "0.8.1" }
 pollster = "0.2.4"
 bytemuck = { version = "1.7.2", features = [ "derive" ] }
 
+splst_core = { path = "../splst_core" }
+
 log = "*"
 thiserror = "*"

@@ -8,6 +8,7 @@ use crate::bus::BusMap;
 use crate::schedule::{Schedule, Event, EventId};
 use crate::cpu::Irq;
 use crate::SysTime;
+use crate::bus::{self, AddrUnit};
 
 use memcard::MemCard;
 
@@ -76,22 +77,22 @@ impl IoPort {
         }
     }
 
-    pub fn store(&mut self, schedule: &mut Schedule, addr: u32, val: u32) {
+    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: T) {
         match addr {
             0 => {
                 if self.tx_fifo.is_some() {
                     warn!("Write to TX FIFO while full");
                 }
 
-                self.tx_fifo = Some(val as u8);
+                self.tx_fifo = Some(val.as_u8());
 
                 if self.can_begin_transfer() && !self.state.in_transfer() {
                     self.begin_transfer(schedule);
                 }
             }
-            8 => self.mode = ModeReg(val as u16),
+            8 => self.mode = ModeReg(val.as_u16()),
             10 => {
-                self.ctrl = CtrlReg(val as u16);
+                self.ctrl = CtrlReg(val.as_u16());
 
                 if self.ctrl.reset() {
                     trace!("io port control reset");
@@ -131,13 +132,13 @@ impl IoPort {
                     }
                 }
             },
-            14 => self.baud = val as u16,
-            _ => todo!("{}", addr),
+            14 => self.baud = val.as_u16(),
+            _ => todo!("I/O port store to {addr}"),
         }
     }
 
-    pub fn load(&mut self, schedule: &mut Schedule, addr: u32) -> u32 {
-        match addr {
+    pub fn load<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32) -> T {
+        let val: u32 = match addr {
             0 => {
                 if let State::InTrans { event, .. } = self.state {
                     schedule.trigger_early(event);
@@ -167,7 +168,27 @@ impl IoPort {
             10 => self.ctrl.0.into(),
             14 => self.baud.into(),
             _ => todo!("IoPort load at offset {addr}"),
-        }
+        };
+
+        T::from_u32(val)
+    }
+
+    /// The same as 'load' but without side effects.
+    pub fn peek<T: AddrUnit>(&self, addr: u32) -> T {
+        let val: u32 = match bus::align_as::<u32>(addr) {
+            0 => {
+                let val: u32 = self.rx_fifo
+                    .unwrap_or(0xff)
+                    .into();
+                val | (val << 8) | (val << 16) | (val << 24)
+            }
+            4 => self.stat_reg().0.into(),
+            10 => self.ctrl.0.into(),
+            14 => self.baud.into(),
+            _ => todo!("IoPort load at offset {addr}"),
+        };
+
+        T::from_u32_aligned(val, addr)
     }
 
     pub fn stat_reg(&self) -> StatReg {
@@ -264,7 +285,6 @@ impl IoPort {
                             (controller::Port::Digital(ctrl), _) => {
                                 let (val, ack) = ctrl.transfer(self.tx_val);
                                 if ack {
-                                    debug!("active controller");
                                     self.active_device = Some(Device::Controller);
                                 }
                                 (val, ack)

@@ -4,6 +4,7 @@ use crate::cpu::Irq;
 use crate::bus::BusMap;
 use crate::schedule::{Schedule, Event, EventId};
 use crate::SysTime;
+use crate::bus::{self, AddrUnit};
 
 use std::fmt;
 
@@ -46,7 +47,7 @@ impl fmt::Display for TimerId {
 /// All the possible sync mode for all the timers. The kind of sync modes vary from counter to
 /// counter.
 ///
-/// # The naming follows the convention:
+/// # The naming follows the convention
 ///
 /// - 'Pause' - The timer is paused during V/H Blank.
 /// - 'Reset' - The timer resets to 0 when entering V/H Blank.
@@ -218,14 +219,14 @@ impl Mode {
         }
     }
 
-    fn load(&mut self) -> u32 {
+    fn load(&mut self) -> u16 {
         let val = self.0;
 
         // Overflow/target reached flags get's reset after each read.
         self.set_target_reached(false);
         self.set_overflow_reached(false);
 
-        val as u32
+        val
     }
 
     fn set_master_irq_flag(&mut self, val: bool) {
@@ -265,32 +266,44 @@ impl Timer {
         }
     }
 
-    fn load(&mut self, offset: u32) -> u32 {
+    /// Load memory fromy timer. This ignores everything but the 4 lsb of the offset, so it won't
+    /// verify that the offset actually points into this timer.
+    fn load(&mut self, offset: u32) -> u16 {
         match offset.bit_range(0, 3) {
             0 => {
                 trace!("timer {} counter read", self.id);
-                self.counter.into()
+                self.counter
             }
             4 => {
                 trace!("timer {} mode read", self.id);
-                self.mode.load()
+                self.mode.load() 
             }
-            8 => self.target.into(),
+            8 => self.target,
             _ => unreachable!(),
         }
     }
 
-    fn store(&mut self, offset: u32, value: u32) {
+    /// Same as 'load' but without side effects.
+    fn peek(&self, offset: u32) -> u16 {
+        match offset.bit_range(0, 3) {
+            0 => self.counter,
+            4 => self.mode.0,
+            8 => self.target,
+            _ => unreachable!(),
+        }
+    }
+
+    fn store(&mut self, offset: u32, val: u16) {
         match offset.bit_range(0, 3) {
             0 => {
                 self.has_triggered = false;
-                self.counter = value as u16;
+                self.counter = val;
             }
             4 => {
                 self.counter = 0;
                 self.has_triggered = false;
 
-                self.mode.store(value as u16);
+                self.mode.store(val);
 
                 trace!("Timer {} mode set", self.id);
 
@@ -298,7 +311,7 @@ impl Timer {
                     warn!("Sync enabled for timer {}", self.id);
                 }
             }
-            8 => self.target = value as u16,
+            8 => self.target = val,
             _ => unreachable!(),
         }
     }
@@ -439,27 +452,40 @@ impl Timers {
         }
     }
 
-    pub fn load(&mut self, schedule: &mut Schedule, offset: u32) -> u32 {
+    /// Load memory from either timer 1, 2 or 3 depending on the offset.
+    pub fn load<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32) -> T {
         let id = TimerId::from_value(offset.bit_range(4, 5));
 
         self.update_timer(schedule, id);
 
         let (tmr, _) = &mut self.timers[id as usize];
+
+        // TODO: Check what happens when you read an unaligned byte for instance.
         let val = tmr.load(offset);
 
         tmr.schedule_next_run(schedule);
 
-        val
+        T::from_u32(u32::from(val))
     }
 
-    pub fn store(&mut self, schedule: &mut Schedule, offset: u32, val: u32) {
+    /// Same as 'load' but without side effects.
+    pub fn peek<T: AddrUnit>(&self, offset: u32) -> T {
+        let id = TimerId::from_value(offset.bit_range(4, 5));
+        let (tmr, _) = &self.timers[id as usize];
+
+        let val = tmr.peek(bus::align_as::<u32>(offset));
+
+        T::from_u32_aligned(u32::from(val), offset)
+    }
+
+    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
         let id = TimerId::from_value(offset.bit_range(4, 5));
 
         self.update_timer(schedule, id);
 
         let (tmr, _) = &mut self.timers[id as usize];
 
-        tmr.store(offset, val);
+        tmr.store(offset, val.as_u16());
         tmr.schedule_next_run(schedule);
     }
 

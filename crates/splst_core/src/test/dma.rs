@@ -22,8 +22,8 @@ fn otc_clear() {
             break 0
     "#);
 
-    assert_eq!(cpu.bus_mut().peek::<Word>(16), Some(12));
-    assert_eq!(cpu.bus_mut().peek::<Word>(12), Some(8));
-    assert_eq!(cpu.bus_mut().peek::<Word>(8), Some(4));
-    assert_eq!(cpu.bus_mut().peek::<Word>(4), Some(0));
+    assert_eq!(cpu.bus.peek::<Word>(16), Some(12));
+    assert_eq!(cpu.bus.peek::<Word>(12), Some(8));
+    assert_eq!(cpu.bus.peek::<Word>(8), Some(4));
+    assert_eq!(cpu.bus.peek::<Word>(4), Some(0));
 }

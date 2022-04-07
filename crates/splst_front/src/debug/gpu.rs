@@ -18,7 +18,7 @@ pub struct GpuStatus {
 
 impl GpuStatus {
     /// Write information to all the fields.
-    fn write_fields(&mut self, gpu: &Gpu) -> Result<(), std::fmt::Error> {
+    fn update_fields(&mut self, gpu: &Gpu) -> Result<(), std::fmt::Error> {
         write!(self.fields[0], "{:08x}", gpu.x_offset)?;
         write!(self.fields[1], "{:08x}", gpu.y_offset)?;
         write!(self.fields[2], "{:08x}", gpu.vram_x_start)?;
@@ -27,27 +27,30 @@ impl GpuStatus {
         write!(self.fields[5], "{:08x}", gpu.dis_x_end)?;
         write!(self.fields[6], "{:08x}", gpu.dis_y_start)?;
         write!(self.fields[7], "{:08x}", gpu.dis_y_end)?;
-        write!(self.fields[8], "{:08x}", gpu.status.tex_page_x())?;
-        write!(self.fields[9], "{:08x}", gpu.status.tex_page_y())?;
-        write!(self.fields[10], "{}", gpu.status.blend_mode())?;
-        write!(self.fields[11], "{}", gpu.status.texture_depth())?;
-        write!(self.fields[12], "{}", gpu.status.dithering_enabled())?;
-        write!(self.fields[13], "{}", gpu.status.draw_to_display())?;
-        write!(self.fields[14], "{}", gpu.status.set_mask_bit())?;
-        write!(self.fields[15], "{}", gpu.status.draw_masked_pixels())?;
-        write!(self.fields[16], "{}", gpu.status.interlace_field())?;
-        write!(self.fields[17], "{}", gpu.status.texture_disabled())?;
-        write!(self.fields[18], "{}", gpu.status.horizontal_res())?;
-        write!(self.fields[19], "{}", gpu.status.vertical_res())?;
-        write!(self.fields[20], "{}", gpu.status.video_mode())?;
-        write!(self.fields[21], "{}", gpu.status.color_depth())?;
-        write!(self.fields[22], "{}", gpu.status.vertical_interlace())?;
-        write!(self.fields[23], "{}", gpu.status.display_enabled())?;
-        write!(self.fields[24], "{}", gpu.status.irq_enabled())?;
-        write!(self.fields[25], "{}", gpu.status.cmd_ready())?;
-        write!(self.fields[26], "{}", gpu.status.vram_to_cpu_ready())?;
-        write!(self.fields[27], "{}", gpu.status.dma_block_ready())?;
-        write!(self.fields[28], "{}", gpu.status.dma_direction())?;
+
+        let status = gpu.status();
+
+        write!(self.fields[8], "{:08x}", status.tex_page_x())?;
+        write!(self.fields[9], "{:08x}", status.tex_page_y())?;
+        write!(self.fields[10], "{}", status.blend_mode())?;
+        write!(self.fields[11], "{}", status.texture_depth())?;
+        write!(self.fields[12], "{}", status.dithering_enabled())?;
+        write!(self.fields[13], "{}", status.draw_to_display())?;
+        write!(self.fields[14], "{}", status.set_mask_bit())?;
+        write!(self.fields[15], "{}", status.draw_masked_pixels())?;
+        write!(self.fields[16], "{}", status.interlace_field())?;
+        write!(self.fields[17], "{}", status.texture_disabled())?;
+        write!(self.fields[18], "{}", status.horizontal_res())?;
+        write!(self.fields[19], "{}", status.vertical_res())?;
+        write!(self.fields[20], "{}", status.video_mode())?;
+        write!(self.fields[21], "{}", status.color_depth())?;
+        write!(self.fields[22], "{}", status.vertical_interlace())?;
+        write!(self.fields[23], "{}", status.display_enabled())?;
+        write!(self.fields[24], "{}", status.irq_enabled())?;
+        write!(self.fields[25], "{}", status.cmd_ready())?;
+        write!(self.fields[26], "{}", status.vram_to_cpu_ready())?;
+        write!(self.fields[27], "{}", status.dma_block_ready())?;
+        write!(self.fields[28], "{}", status.dma_direction())?;
         Ok(())
     }
 }
@@ -59,7 +62,7 @@ impl DebugApp for GpuStatus {
 
     fn update_tick(&mut self, _: Duration, system: &mut System) {
         self.fields.iter_mut().for_each(|field| field.clear());
-        if let Err(err) = self.write_fields(system.gpu()) {
+        if let Err(err) = self.update_fields(system.gpu()) {
             eprintln!("{}", err);
         }
     }

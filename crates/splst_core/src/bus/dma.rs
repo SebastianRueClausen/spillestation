@@ -2,13 +2,14 @@
 //! this is running, but the CPU can be allowed to run in intervals called chopping.
 //!
 //! # TODO
+//!
 //! - Add proper timings for transfers.
 
 use splst_util::{Bit, BitSet};
 
 use crate::cpu::Irq;
 use crate::SysTime;
-use crate::bus::{Ram, Word, Bus, BusMap, Schedule, Event};
+use crate::bus::{Ram, AddrUnit, Bus, BusMap, Schedule, Event};
 
 use std::ops::{Index, IndexMut};
 use std::fmt;
@@ -47,11 +48,11 @@ impl Dma {
         }
     }
 
-    pub fn load(&self, offset: u32) -> u32 {
+    pub fn load<T: AddrUnit>(&self, offset: u32) -> T {
         let chan = offset.bit_range(4, 6);
         let reg = offset.bit_range(0, 3);
 
-        match chan {
+        let val = match chan {
             0..=6 => self.channels[chan as usize].load(reg),
             7 => match reg {
                 0 => self.ctrl.0,
@@ -59,18 +60,22 @@ impl Dma {
                 _ => unreachable!(),
             },
             _ => unreachable!(),
-        }
+        };
+
+        T::from_u32_aligned(val, offset)
     }
 
-    pub fn store(&mut self, schedule: &mut Schedule, offset: u32, value: u32) {
+    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
         let chan = offset.bit_range(4, 6);
         let reg = offset.bit_range(0, 3);
 
+        let val = val.as_u32_aligned(offset);
+
         match chan {
-            0..=6 => self.channels[chan as usize].store(reg, value),
+            0..=6 => self.channels[chan as usize].store(reg, val),
             7 => match reg {
-                0 => self.ctrl.0 = value,
-                4 => self.irq.store(schedule, value),
+                0 => self.ctrl.0 = val,
+                4 => self.irq.store(schedule, val),
                 _ => unreachable!(),
             },
             _ => unreachable!(),
@@ -155,7 +160,7 @@ impl Dma {
                     },
                     SyncMode::LinkedList => {
                         if stat.base != 0x00ff_ffff {
-                            let header = ram.load::<Word>(stat.base & 0x001f_fffc);
+                            let header: u32 = ram.load(stat.base & 0x001f_fffc);
 
                             let tran = Transfer {
                                 inc: stat.ctrl.step().step_amount(),
@@ -207,7 +212,7 @@ impl Dma {
                             let addr = tran.cursor & 0x001f_fffc;
                             let val = chan.dma_load(schedule, (tran.size as u16, tran.cursor));
 
-                            ram.store::<Word>(addr, val);
+                            ram.store(addr, val);
 
                             tran.cursor = tran.cursor.wrapping_add(tran.inc) & 0x00ff_ffff;
                             tran.size = size;
@@ -249,7 +254,7 @@ impl Dma {
 
                         if let Some(size) = tran.size.checked_sub(1) {
                             let addr = tran.cursor & 0x001f_fffc;
-                            let val = ram.load::<Word>(addr);
+                            let val: u32 = ram.load(addr);
 
                             chan.dma_store(schedule, val);
 

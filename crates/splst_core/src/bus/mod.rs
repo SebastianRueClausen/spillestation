@@ -1,6 +1,7 @@
 //! Represent the memory BUS of the playstation 1.
 //!
 //! # TODO
+//!
 //! - Add a debug peek funktion to read from devices without side effects. For now reading data
 //!   through the debugger could potentially have side effects.
 //!
@@ -14,8 +15,7 @@ pub mod scratchpad;
 mod raw;
 
 use splst_util::Bit;
-use splst_render::Renderer;
-use crate::SysTime;
+use crate::{VideoOutput, SysTime};
 use crate::schedule::{Event, Schedule};
 use crate::gpu::Gpu;
 use crate::cdrom::{CdRom, Disc};
@@ -30,6 +30,7 @@ use scratchpad::ScratchPad;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::fmt;
 
 pub struct Bus {
     pub cache_ctrl: CacheCtrl,
@@ -51,7 +52,7 @@ pub struct Bus {
 impl Bus {
     pub fn new(
         bios: Bios,
-        renderer: Rc<RefCell<Renderer>>,
+        renderer: Rc<RefCell<dyn VideoOutput>>,
         disc: Rc<RefCell<Disc>>,
         controllers: Rc<RefCell<Controllers>>,
     ) -> Self {
@@ -78,37 +79,80 @@ impl Bus {
         }
     }
 
-    /// TODO: Make this not have side effects.
-    pub fn peek<T: MemUnit>(&mut self, addr: u32) -> Option<u32> {
+    /// Read from memory address on the bus without side effects.
+    pub fn peek<T: AddrUnit>(&self, addr: u32) -> Option<T> {
         let addr = regioned_addr(addr);
-        self.load::<T>(addr).map(|(val, _)| val)
+        let val: T = match addr {
+            Ram::BUS_BEGIN..=Ram::BUS_END => {
+                self.ram.load(addr)
+            }
+            Bios::BUS_BEGIN..=Bios::BUS_END => {
+                self.bios.load(addr - Bios::BUS_BEGIN)
+            }
+            MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
+                let val = self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN);
+                T::from_u32_aligned(val, addr)
+            }
+            RamSize::BUS_BEGIN..=RamSize::BUS_END => {
+                T::from_u32_aligned(self.ram_size.0, addr)
+            }
+            CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
+                T::from_u32_aligned(self.cache_ctrl.0, addr)
+            }
+            EXP1_BEGIN..=EXP1_END => T::from_u32(0xff),
+            EXP2_BEGIN..=EXP2_END => T::from_u32(0xff),
+            Gpu::BUS_BEGIN..=Gpu::BUS_END => {
+                self.gpu.peek(addr - Gpu::BUS_BEGIN)
+            }
+            IrqState::BUS_BEGIN..=IrqState::BUS_END => {
+                self.irq_state.load(addr - IrqState::BUS_BEGIN)
+            }
+            Dma::BUS_BEGIN..=Dma::BUS_END => {
+                self.dma.load(addr - Dma::BUS_BEGIN)
+            }
+            CdRom::BUS_BEGIN..=CdRom::BUS_END => {
+                self.cdrom.peek(addr - CdRom::BUS_BEGIN)
+            }
+            Spu::BUS_BEGIN..=Spu::BUS_END => {
+                self.spu.load(addr - Spu::BUS_BEGIN)
+            }
+            Timers::BUS_BEGIN..=Timers::BUS_END => {
+                self.timers.peek(addr - Timers::BUS_BEGIN)
+            }
+            IoPort::BUS_BEGIN..=IoPort::BUS_END => {
+                self.io_port.peek(addr - IoPort::BUS_BEGIN)
+            }
+            _ => return None,
+        };
+        Some(val)
     }
 
-    pub fn load<T: MemUnit>(&mut self, addr: u32) -> Option<(u32, SysTime)> {
+    pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Option<(T, SysTime)> {
         let (val, time) = match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
-                (self.ram.load::<T>(addr), SysTime::new(3))
+                (self.ram.load(addr), SysTime::new(3))
             }
             Bios::BUS_BEGIN..=Bios::BUS_END => {
                 let time = SysTime::new(6 * T::WIDTH as u64);
-                (self.bios.load::<T>(addr - Bios::BUS_BEGIN), time)
+                (self.bios.load(addr - Bios::BUS_BEGIN), time)
             }
             MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
-                (self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN), SysTime::new(3))
+                let val = self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN);
+                (T::from_u32_aligned(val, addr), SysTime::new(3))
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
-                (self.ram_size.0, SysTime::new(3))
+                (T::from_u32(self.ram_size.0), SysTime::new(3))
             }
             CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
-                (self.cache_ctrl.0, SysTime::new(2))
+                (T::from_u32(self.cache_ctrl.0), SysTime::new(2))
             }
             EXP1_BEGIN..=EXP1_END => {
                 let time = SysTime::new(7 * T::WIDTH as u64);
-                (0xff, time)
+                (T::from_u32(0xff), time)
             }
             EXP2_BEGIN..=EXP2_END => {
                 let time = SysTime::new(10 * T::WIDTH as u64);
-                (0xff, time)
+                (T::from_u32(0xff), time)
             }
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
                 (self.irq_state.load(addr - IrqState::BUS_BEGIN), SysTime::new(3))
@@ -118,24 +162,24 @@ impl Bus {
                 (self.dma.load(addr - Dma::BUS_BEGIN), SysTime::new(3))
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
-                (self.cdrom.load::<T>(addr - CdRom::BUS_BEGIN), SysTime::new(6))
+                (self.cdrom.load(addr - CdRom::BUS_BEGIN), SysTime::new(6))
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
-                let time = match T::KIND {
-                    MemUnitKind::Word => SysTime::new(39),
+                let time = match T::WIDTH {
+                    AddrUnitWidth::Word => SysTime::new(39),
                     _ => SysTime::new(18), 
                 };
-                (self.spu.load::<T>(addr - Spu::BUS_BEGIN), time)
+                (self.spu.load(addr - Spu::BUS_BEGIN), time)
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
-                let val = self.timers.load(
+                let val: T = self.timers.load(
                     &mut self.schedule,
                     addr - Timers::BUS_BEGIN,
                 );
                 (val, SysTime::new(3))
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
-                let val = self.gpu.load::<T>(
+                let val: T = self.gpu.load::<T>(
                     addr - Gpu::BUS_BEGIN,
                     &mut self.schedule,
                     &mut self.timers,
@@ -143,7 +187,7 @@ impl Bus {
                 (val, SysTime::new(3))
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
-                let val = self.io_port.load(
+                let val: T = self.io_port.load(
                     &mut self.schedule,
                     addr - IoPort::BUS_BEGIN,
                 );
@@ -157,25 +201,25 @@ impl Bus {
         Some((val, time))
     }
 
-    pub fn store<T: MemUnit>(&mut self, addr: u32, val: u32) -> Option<()> {
+    pub fn store<T: AddrUnit>(&mut self, addr: u32, val: T) -> Option<()> {
         match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
-                self.ram.store::<T>(addr, val)
+                self.ram.store(addr, val)
             }
             ScratchPad::BUS_BEGIN..=ScratchPad::BUS_END => {
-                self.scratchpad.store::<T>(addr - ScratchPad::BUS_BEGIN, val)
+                self.scratchpad.store(addr - ScratchPad::BUS_BEGIN, val)
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
-                self.ram_size.0 = val
+                self.ram_size.0 = val.as_u32()
             }
             MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
-                self.mem_ctrl.store(addr - MemCtrl::BUS_BEGIN, val)
+                self.mem_ctrl.store(addr - MemCtrl::BUS_BEGIN, val.as_u32())
             }
             CacheCtrl::BUS_BEGIN..=CacheCtrl::BUS_END => {
-                self.cache_ctrl.0 = val
+                self.cache_ctrl.0 = val.as_u32()
             }
             Spu::BUS_BEGIN..=Spu::BUS_END => {
-                self.spu.store::<T>(&mut self.schedule, addr - Spu::BUS_BEGIN, val)
+                self.spu.store(&mut self.schedule, addr - Spu::BUS_BEGIN, val)
             }
             EXP1_BEGIN..=EXP1_END => {}
             EXP2_BEGIN..=EXP2_END => {}
@@ -183,14 +227,14 @@ impl Bus {
                 self.irq_state.store(
                     &mut self.schedule,
                     addr - IrqState::BUS_BEGIN,
-                    val
+                    val,
                 )
             }
             Timers::BUS_BEGIN..=Timers::BUS_END => {
                 self.timers.store(
                     &mut self.schedule,
                     addr - Timers::BUS_BEGIN,
-                    val
+                    val,
                 );
             }
             Dma::BUS_BEGIN..=Dma::BUS_END => {
@@ -202,14 +246,14 @@ impl Bus {
                 self.run_dma();
             }
             CdRom::BUS_BEGIN..=CdRom::BUS_END => {
-                self.cdrom.store::<T>(
+                self.cdrom.store(
                     &mut self.schedule,
                     addr - CdRom::BUS_BEGIN,
                     val,
                 );
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
-                self.gpu.store::<T>(&mut self.schedule, addr - Gpu::BUS_BEGIN, val);
+                self.gpu.store(&mut self.schedule, addr - Gpu::BUS_BEGIN, val);
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
                 self.io_port.store(&mut self.schedule, addr - IoPort::BUS_BEGIN, val);
@@ -303,7 +347,7 @@ impl MemCtrl {
             4 if val != 0x1f80_2000 => {
                 todo!("Expansion 2 base address"); 
             }
-            _ => {},
+            _ => (),
         }
         self.regs[(addr >> 2) as usize] = val;
     }
@@ -318,49 +362,150 @@ impl BusMap for MemCtrl {
     const BUS_END: u32 = Self::BUS_BEGIN + 36 - 1;
 }
 
-pub enum MemUnitKind {
-    Byte,
-    HalfWord,
-    Word,
+/// The width of an addressable unit. The value represents the amount of bytes in the unit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AddrUnitWidth {
+   Byte = 1,
+   HalfWord = 2,
+   Word = 4,
 }
 
-pub trait MemUnit {
-    const WIDTH: usize;
-    const KIND: MemUnitKind;
+impl AddrUnitWidth {
+    pub fn is_byte(self) -> bool {
+        matches!(self, AddrUnitWidth::Byte)
+    }
 
-    fn is_aligned(address: u32) -> bool;
-}
+    pub fn is_half_word(self) -> bool {
+        matches!(self, AddrUnitWidth::HalfWord)
+    }
 
-pub struct Byte;
-
-impl MemUnit for Byte {
-    const WIDTH: usize = 1;
-    const KIND: MemUnitKind = MemUnitKind::Byte;
-
-    fn is_aligned(_: u32) -> bool {
-        true
+    pub fn is_word(self) -> bool {
+        matches!(self, AddrUnitWidth::Word)
     }
 }
 
-pub struct HalfWord;
-
-impl MemUnit for HalfWord {
-    const WIDTH: usize = 2;
-    const KIND: MemUnitKind = MemUnitKind::HalfWord;
-
-    fn is_aligned(addr: u32) -> bool {
-        (addr & 0x1) == 0
+impl fmt::Display for AddrUnitWidth {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            AddrUnitWidth::Byte => "byte",
+            AddrUnitWidth::HalfWord => "half word",
+            AddrUnitWidth::Word => "word",
+        })
     }
 }
 
-pub struct Word;
+/// Addressable unit.
+pub trait AddrUnit: Into<u32> + From<u8> {
+    /// The width of the addressable unit.
+    const WIDTH: AddrUnitWidth;
 
-impl MemUnit for Word {
-    const WIDTH: usize = 4;
-    const KIND: MemUnitKind = MemUnitKind::Word;
+    /// Create from 'u32' where it gets the value from the bytes of 'val', depending on the
+    /// value of 'addr'. 'addr' should be aligned to get a correct value.
+    ///
+    /// # Example
+    ///
+    /// '''
+    /// let val: u8 = u8::from_u32(0xff00, 1);
+    /// assert_eq!(val, 0xff);
+    /// '''
+    fn from_u32_aligned(val: u32, addr: u32) -> Self;
 
-    fn is_aligned(addr: u32) -> bool {
-        (addr & 0x3) == 0
+    /// Get from 'u32' which may be lossy.
+    fn from_u32(val: u32) -> Self;
+
+    /// Get from 'u8'.
+    fn from_u8(val: u8) -> Self {
+        Self::from(val)
+    }
+
+    /// Get as 'u32' where the value depend on the alignment of 'addr'. 'addr' should be correctly
+    /// aligned.
+    ///
+    /// # Example
+    ///
+    /// '''
+    /// let val: u16 = 0xff00;
+    /// assert_eq!(val.as_u32(2), 0xff00_0000);
+    /// '''
+    fn as_u32_aligned(self, addr: u32) -> u32 {
+        let val: u32 = self.into();
+        let align = addr & 3;
+        val << (8 * align)
+    }
+
+    /// Cast to u32 like 'self as u32'.
+    fn as_u32(self) -> u32 {
+        self.into()
+    }
+
+    /// Cast to u16 like 'self as u16'.
+    fn as_u16(self) -> u16 {
+        self.as_u32() as u16
+    }
+
+    /// Cast to u8 like 'self as u8'.
+    fn as_u8(self) -> u8 {
+        self.as_u32() as u8
+    }
+}
+
+/// Align 'addr' to the an address with alignment of ['AddrUnit'] 'T'. It will always round down,
+///
+/// # Example
+///
+/// '''
+/// assert_eq!(align_as::<u16>(3), 2);
+/// assert_eq!(align_as::<u32>(3), 0);
+/// '''
+pub fn align_as<T: AddrUnit>(addr: u32) -> u32 {
+    addr & !(T::WIDTH as u32 - 1)
+}
+
+/// Check if an address is aligned to the width of an ['AddrUnit'].
+///
+/// # Example
+///
+/// '''
+/// assert_eq!(is_aligned_as::<u16>(3), false);
+/// assert_eq!(is_aligned_as::<u32>(4), true);
+/// '''
+pub fn is_aligned_to<T: AddrUnit>(addr: u32) -> bool {
+    (addr % T::WIDTH as u32) == 0
+}
+
+impl AddrUnit for u32 {
+    const WIDTH: AddrUnitWidth = AddrUnitWidth::Word;
+
+    fn from_u32(val: u32) -> Self {
+        val
+    }
+
+    fn from_u32_aligned(val: u32, _: u32) -> Self {
+        val
+    }
+}
+
+impl AddrUnit for u16 {
+    const WIDTH: AddrUnitWidth = AddrUnitWidth::HalfWord;
+
+    fn from_u32(val: u32) -> Self {
+        val as u16
+    }
+
+    fn from_u32_aligned(val: u32, addr: u32) -> Self {
+        (val >> (8 * (addr % 4))) as u16
+    }
+}
+
+impl AddrUnit for u8 {
+    const WIDTH: AddrUnitWidth = AddrUnitWidth::Byte;
+
+    fn from_u32(val: u32) -> Self {
+        val as u8
+    }
+
+    fn from_u32_aligned(val: u32, addr: u32) -> Self {
+        (val >> (8 * (addr % 4))) as u8
     }
 }
 

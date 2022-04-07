@@ -1,5 +1,5 @@
 use super::raw::RawMem;
-use super::{MemUnit, BusMap};
+use super::{AddrUnit, BusMap};
 
 pub struct ScratchPad(RawMem<{Self::SIZE}>);
 
@@ -11,13 +11,13 @@ impl ScratchPad {
     }
 
     #[inline]
-    pub fn load<T: MemUnit>(&mut self, offset: u32) -> u32 {
-        self.0.load::<T>(offset)
+    pub fn load<T: AddrUnit>(&mut self, offset: u32) -> T {
+        self.0.load(offset)
     }
 
     #[inline]
-    pub fn store<T: MemUnit>(&mut self, offset: u32, val: u32) {
-        self.0.store::<T>(offset, val)
+    pub fn store<T: AddrUnit>(&mut self, offset: u32, val: T) {
+        self.0.store(offset, val)
     }
 }
 
