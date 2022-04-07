@@ -8,7 +8,7 @@
 use splst_util::{Bit, BitSet};
 
 use crate::cpu::Irq;
-use crate::SysTime;
+use crate::{SysTime, Timestamp};
 use crate::bus::{Ram, AddrUnit, Bus, BusMap, Schedule, Event};
 
 use std::ops::{Index, IndexMut};
@@ -108,14 +108,14 @@ impl Dma {
         let ctrl = self[port].ctrl;
 
         let done = if ctrl.chopping_enabled() {
-            ctrl.dma_chop_size() + schedule.since_startup()
+            schedule.now() + ctrl.dma_chop_size()
         } else {
-            SysTime::FOREVER
+            Timestamp::NEVER
         };
 
         let mut manual_done = false;
 
-        while schedule.since_startup() < done
+        while schedule.now() < done
             && self[port].ctrl.enabled()
             && chan.dma_ready(self[port].ctrl.direction())
         {
@@ -190,7 +190,7 @@ impl Dma {
             self[port].transfer = match stat.ctrl.direction() {
                 Direction::ToRam => {
                     loop {
-                        if schedule.since_startup() > done {
+                        if schedule.now() > done {
                             let stat = &mut self[port];
                            
                             // If the channel is in manual sync mode, then the base address will
@@ -237,7 +237,7 @@ impl Dma {
                 }
                 Direction::ToPort => {
                     loop {
-                        if schedule.since_startup() > done {
+                        if schedule.now() > done {
                             let stat = &mut self[port];
                            
                             if let SyncMode::Manual = stat.ctrl.sync_mode() {

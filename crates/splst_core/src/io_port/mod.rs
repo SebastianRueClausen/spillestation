@@ -350,6 +350,7 @@ impl IoPort {
         }
     }
 
+    /// Acknowledge input.
     fn ack_input(&mut self, schedule: &mut Schedule) {
         // Set acknowledge input flag.
         self.stat.0 = self.stat.0.set_bit(7, true);

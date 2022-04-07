@@ -20,7 +20,7 @@ use crate::bus::{self, dma, Bus, BusMap, AddrUnit};
 use crate::schedule::{Event, Schedule};
 use crate::timing;
 use crate::timer::Timers;
-use crate::{VideoOutput, SysTime};
+use crate::{VideoOutput, SysTime, Timestamp};
 
 use fifo::{Fifo, PushAction};
 use primitive::Color;
@@ -293,10 +293,10 @@ impl Gpu {
     pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
         self.try_gp0_exec(schedule);
 
-        let elapsed = schedule.since_startup() - self.timing.last_update;
+        let elapsed = schedule.now().time_since(&self.timing.last_update);
 
         self.timing.scln_prog += elapsed.as_gpu_cycles();
-        self.timing.last_update = schedule.since_startup();
+        self.timing.last_update = schedule.now();
 
         // If the progress is less than a single scanline. This is just to have a fast path to
         // allow running the GPU often without a big performance loss.
@@ -954,8 +954,8 @@ struct Timing {
     scln: u16,
     /// The current progress into the scanline in GPU cycles.
     scln_prog: u64,
-    /// The amount of time since startup that the GPU was last updated.
-    last_update: SysTime,
+    /// When the GPU was last update / refreshed.
+    last_update: Timestamp,
     /// The absolute number of the previous frame.
     frame_count: u64,
     /// How many GPU cycles it takes to draw a scanline which depend on ['VideoMode'] and
@@ -985,7 +985,7 @@ impl Timing {
             scln_prog: 0,
             in_hblank: false,
             in_vblank: false,
-            last_update: SysTime::ZERO,
+            last_update: Timestamp::STARTUP,
             frame_count: 0,
             cycles_per_scln: 0,
             scln_count: 0,

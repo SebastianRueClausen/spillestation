@@ -3,7 +3,7 @@ use splst_util::{Bit, BitSet};
 use crate::cpu::Irq;
 use crate::bus::BusMap;
 use crate::schedule::{Schedule, Event, EventId};
-use crate::SysTime;
+use crate::{SysTime, Timestamp};
 use crate::bus::{self, AddrUnit};
 
 use std::fmt;
@@ -438,16 +438,16 @@ impl Timer {
 /// simultaneously. Each timer can be configured to take different sources, have different targets
 /// and what to do when reaching the target such as triggering an interrupt.
 pub struct Timers {
-    pub timers: [(Timer, SysTime); 3],
+    pub timers: [(Timer, Timestamp); 3],
 }
 
 impl Timers {
     pub fn new() -> Self {
         Self {
             timers: [
-                (Timer::new(TimerId::Tmr0), SysTime::ZERO),
-                (Timer::new(TimerId::Tmr1), SysTime::ZERO),
-                (Timer::new(TimerId::Tmr2), SysTime::ZERO),
+                (Timer::new(TimerId::Tmr0), Timestamp::STARTUP),
+                (Timer::new(TimerId::Tmr1), Timestamp::STARTUP),
+                (Timer::new(TimerId::Tmr2), Timestamp::STARTUP),
             ],
         }
     }
@@ -493,9 +493,9 @@ impl Timers {
     /// the timer gets run.
     fn update_timer(&mut self, schedule: &mut Schedule, id: TimerId) {
         let (tmr, last_update) = &mut self.timers[id as usize];
-        let time = schedule.since_startup() - *last_update;
+        let time = schedule.now().time_since(last_update);
 
-        *last_update = schedule.since_startup();
+        *last_update = schedule.now();
 
         if tmr.clock_source() != ClockSource::Hblank {
             tmr.run(schedule, tmr.clock_source().time_to_ticks(time));

@@ -4,7 +4,7 @@ use crate::gpu::Gpu;
 use crate::timer::{Timers, TimerId};
 use crate::cdrom::CdRom;
 use crate::io_port::IoPort;
-use crate::SysTime;
+use crate::{SysTime, Timestamp};
 use crate::bus::dma;
 
 use std::collections::BinaryHeap;
@@ -16,23 +16,22 @@ use std::fmt;
 pub struct Schedule {
     /// The ID of the next event scheduled.
     next_event_id: EventId,
-    /// The amount of time the system has been running since startup. It's used for timing event and
-    /// allow the devices on ['Bus'] to pick an absolute cycle to run an event.
-    now: SysTime,
+    /// The amount of time since startup.
+    now: Timestamp,
     /// Event queue. This allows for a fast way to check if any events should run at any given cycle.
     /// Events are sorted in the binary queue such that the next event to run is the root item.
     events: BinaryHeap<EventEntry>,
     /// The timestamp when the next event is ready. This is simply an optimization. Just peeking
     /// at the first item in 'events' is constant time, bit requires 4 branches.
-    next_event: SysTime,
+    next_event: Timestamp,
 }
 
 impl Schedule {
     pub fn new() -> Self {
         Self {
             next_event_id: EventId(0),
-            now: SysTime::ZERO,
-            next_event: SysTime::FOREVER,
+            now: Timestamp::STARTUP,
+            next_event: Timestamp::NEVER,
             events: BinaryHeap::with_capacity(16),
         }
     }
@@ -49,7 +48,7 @@ impl Schedule {
        self.next_event = self.events
            .peek()
            .map(|entry| entry.ready)
-           .unwrap_or(SysTime::FOREVER);
+           .unwrap_or(Timestamp::NEVER);
     }
 
     fn push_event(&mut self, entry: EventEntry) {
@@ -65,9 +64,12 @@ impl Schedule {
     /// Schedule an ['Event'] to trigger in 'time' and repeat with an interval of 'time'.
     pub fn schedule_repeat(&mut self, time: SysTime, event: Event) -> EventId {
         let id = self.get_event_id();
-        let ready = self.since_startup() + time;
+        let ready = self.now() + time;
         let entry = EventEntry {
-            event, id, ready, mode: RepeatMode::Repeat(time),
+            mode: RepeatMode::Repeat(time),
+            event,
+            id,
+            ready,
         };
         self.push_event(entry);
         id
@@ -76,7 +78,7 @@ impl Schedule {
     /// Schedule an ['Event'] to trigger in 'time' and don't repeat it.
     pub fn schedule(&mut self, time: SysTime, event: Event) -> EventId {
         let id = self.get_event_id();
-        let ready = self.since_startup() + time;
+        let ready = self.now() + time;
         let entry = EventEntry {
             event, id, ready, mode: RepeatMode::Once,
         };
@@ -88,12 +90,14 @@ impl Schedule {
     pub fn trigger_repeat(&mut self, time: SysTime, event: Event) -> EventId {
         let id = self.get_event_id();
         let entry = EventEntry {
-            event, id, ready: SysTime::ZERO, mode: RepeatMode::Repeat(time),
+            ready: Timestamp::STARTUP,
+            mode: RepeatMode::Repeat(time),
+            event,
+            id,
         };
 
-        // We already know that the next event is ready immediatly
         self.events.push(entry);
-        self.next_event = SysTime::ZERO;
+        self.next_event = Timestamp::STARTUP;
 
         id
     }
@@ -102,12 +106,11 @@ impl Schedule {
     pub fn trigger(&mut self, event: Event) -> EventId {
         let id = self.get_event_id();
         let entry = EventEntry {
-            event, id, ready: SysTime::ZERO, mode: RepeatMode::Once,
+            event, id, ready: Timestamp::STARTUP, mode: RepeatMode::Once,
         };
 
-        // We already know that the next event is ready immediatly
         self.events.push(entry);
-        self.next_event = SysTime::ZERO;
+        self.next_event = Timestamp::STARTUP;
 
         id
     }
@@ -124,7 +127,7 @@ impl Schedule {
 
             // Added the event again if it's in repeat mode.
             if let RepeatMode::Repeat(time) = entry.mode {
-                entry.ready = self.since_startup() + time;
+                entry.ready = self.now() + time;
                 self.events.push(entry);
             }
 
@@ -146,7 +149,7 @@ impl Schedule {
             
             // Check if it should be repeated.
             if let RepeatMode::Repeat(time) = entry.mode {
-                entry.ready = self.since_startup() + time;
+                entry.ready = self.now() + time;
                 self.events.push(entry.clone());
             }
 
@@ -164,7 +167,7 @@ impl Schedule {
     }
 
     /// The amount of system time since startup.
-    pub fn since_startup(&self) -> SysTime {
+    pub fn now(&self) -> Timestamp {
         self.now
     }
 
@@ -175,7 +178,7 @@ impl Schedule {
 
     /// Skip to an amount of time since startup. It can only skip forward, so if the time given
     /// is less than the current amount of time since startup, then nothing happens.
-    pub fn skip_to(&mut self, time: SysTime) {
+    pub fn skip_to(&mut self, time: Timestamp) {
         self.now = self.now.max(time);
     }
 }
@@ -245,10 +248,9 @@ impl fmt::Display for Event {
 pub struct EventEntry {
     /// The type and data of the event.
     pub event: Event,
-    /// The amount of system time since startup that the event is ready to get triggered. This may
-    /// be lower than the current time since startup, in which case the event will get triggered as
-    /// soon as possible.
-    pub ready: SysTime,
+    /// When the event is ready to trigger. It may not be triggered at this exact time, but not
+    /// before.
+    pub ready: Timestamp,
     /// Which repeat mode the event has.
     pub mode: RepeatMode,
     /// The ID of the event.
@@ -287,9 +289,15 @@ pub fn trigger_event(cpu: &mut Cpu, event: Event) {
     match event {
         Event::IrqCheck => cpu.check_for_pending_irq(),
         Event::Dma(port, callback) => callback(&mut cpu.bus, port),
-        Event::CdRom(callback) => callback(&mut cpu.bus.cdrom, &mut cpu.bus.schedule),
-        Event::IoPort(callback) => callback(&mut cpu.bus.io_port, &mut cpu.bus.schedule),
-        Event::Timer(id, callback) => callback(&mut cpu.bus.timers, &mut cpu.bus.schedule, id),
+        Event::CdRom(callback) => {
+            callback(&mut cpu.bus.cdrom, &mut cpu.bus.schedule)
+        }
+        Event::IoPort(callback) => {
+            callback(&mut cpu.bus.io_port, &mut cpu.bus.schedule)
+        }
+        Event::Timer(id, callback) => {
+            callback(&mut cpu.bus.timers, &mut cpu.bus.schedule, id)
+        }
         Event::Gpu(callback) => {
             callback(&mut cpu.bus.gpu, &mut cpu.bus.schedule, &mut cpu.bus.timers);
         }

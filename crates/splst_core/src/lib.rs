@@ -42,12 +42,13 @@ use std::ops::{Add, Sub, Mul};
 pub struct SysTime(u64);
 
 impl SysTime {
+    /// An duration of zero time.
     pub const ZERO: Self = Self(0);
 
-    /// Represents an infinite amount of time.
+    /// An infinite amount of time.
     pub const FOREVER: Self = Self(u64::MAX);
 
-    /// Same as 'from_cycle'.
+    /// Same as ['from_cycle'].
     pub fn new(cycles: u64) -> Self {
         Self::from_cpu_cycles(cycles)
     }
@@ -111,6 +112,43 @@ impl Mul<u64> for SysTime {
     }
 }
 
+/// A total amount of time since startup.
+#[derive(Debug, Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Timestamp(SysTime);
+
+impl Timestamp {
+    /// The timestamp at startup.
+    pub const STARTUP: Self = Self(SysTime::ZERO);
+
+    /// A timestamp which will never be reached.
+    pub const NEVER: Self = Self(SysTime::FOREVER);
+
+    /// Create from time elapsed since startup
+    pub fn new(time: SysTime) -> Self {
+        Self(time)
+    }
+
+    pub fn time_since(&self, earlier: &Self) -> SysTime {
+        let cycles = self.0
+            .as_cpu_cycles()
+            .checked_sub(earlier.0.as_cpu_cycles())
+            .expect("time earlier than self");
+        SysTime::new(cycles)
+    }
+
+    pub fn time_since_startup(&self) -> SysTime {
+        self.0
+    }
+}
+
+impl Add<SysTime> for Timestamp {
+    type Output = Self;
+
+    fn add(self, other: SysTime) -> Self {
+        Self(self.0 + other)
+    }
+}
+
 pub struct System {
     pub cpu: Box<Cpu>,
 }
@@ -130,9 +168,9 @@ impl System {
     /// Run at native speed for a given amount of time.
     pub fn run(&mut self, time: Duration) {
         let cycles = SysTime::new((time.as_nanos() / NANOS_PER_CYCLE) as u64);
-        let end = self.cpu.bus.schedule.since_startup() + cycles;
+        let end = self.cpu.bus.schedule.now() + cycles;
 
-        while self.cpu.bus.schedule.since_startup() <= end {
+        while self.cpu.bus.schedule.now() <= end {
             self.cpu.step(&mut ());
         }
     }

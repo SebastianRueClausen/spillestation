@@ -22,7 +22,7 @@ use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
 use crate::bus::{self, AddrUnit, Bus, BusMap};
 use crate::schedule;
-use crate::{SysTime, Debugger, VideoOutput};
+use crate::{SysTime, Timestamp, Debugger, VideoOutput};
 use splst_util::Bit;
 
 use cop0::{Cop0, Exception};
@@ -34,12 +34,21 @@ use std::rc::Rc;
 pub use irq::{Irq, IrqState};
 pub use opcode::{Opcode, RegIdx};
 
-#[derive(Default, Clone, Copy)]
+#[derive(Clone)]
 struct DelaySlot {
     reg: RegIdx,
-    /// The amount of time since startup that the delay slot is ready.
-    ready: SysTime,
+    ready: Timestamp,
     val: u32,
+}
+
+impl Default for DelaySlot {
+    fn default() -> Self {
+        Self {
+            reg: RegIdx::ZERO,
+            ready: Timestamp::STARTUP,
+            val: 0,
+        }
+    }
 }
 
 pub struct Cpu {
@@ -75,11 +84,12 @@ pub struct Cpu {
     /// lo.
     pub hi: u32,
     pub lo: u32,
-    /// This stores the system time since startup that the result of an multiply or divide
-    /// instruction is ready since they take more than a single cycle to complete. The
-    /// CPU can run while the result is being calculated, but if the result is being read
+    /// This stores the timestamp that the result of an multiply or divide instruction is ready
+    /// since they take more than a single cycle to complete.
+    ///
+    /// The CPU can run while the result is being calculated, but if the result is being read
     /// before it's ready, the CPU will wait before continuing.
-    hi_lo_ready: SysTime,
+    hi_lo_ready: Timestamp,
     /// # Registers
     ///
     /// All registers of the MIPS R3000 are essentially general purpose besides $r0 which always
@@ -154,7 +164,7 @@ impl Cpu {
             branched: false,
             hi: 0x0,
             lo: 0x0,
-            hi_lo_ready: SysTime::ZERO,
+            hi_lo_ready: Timestamp::STARTUP,
             registers: [0x0; 32],
             load_delay: DelaySlot::default(),
             gte: Gte::new(),
@@ -261,19 +271,19 @@ impl Cpu {
         self.bus.schedule.skip_to(self.load_delay.ready);
         self.set_reg(lreg, self.load_delay.val);
 
-        let ready = self.bus.schedule.since_startup() + time;
+        let ready = self.bus.schedule.now() + time;
         self.load_delay = DelaySlot { reg, val, ready };
     }
 
-    /// Almost the same as 'pipeline_bus_load' but doesn't have to wait for any previous loads to
+    /// Almost the same as ['pipeline_bus_load'] but doesn't have to wait for any previous loads to
     /// come in. It will however still execute the next instruction in the load delay slot.
     fn pipeline_cop_load(&mut self, reg: RegIdx, val: u32) {
         let diff = (self.load_delay.reg != reg) as u8;
-
         let lreg = RegIdx::from(self.load_delay.reg.0 * diff);
 
         self.set_reg(lreg, self.load_delay.val);
-        self.load_delay = DelaySlot { reg, val, ready: SysTime::ZERO };
+
+        self.load_delay = DelaySlot { reg, val, ready: Timestamp::STARTUP };
     }
 
     /// Access a register, meaning that it's either gonna be get written to or read from. If there
@@ -281,7 +291,8 @@ impl Cpu {
     /// done.
     fn access_reg(&mut self, reg: RegIdx) -> RegIdx {
         let same = self.load_delay.reg == reg;
-        self.bus.schedule.skip_to(self.load_delay.ready * same as u64);
+        let skip = Timestamp::new(self.load_delay.ready.time_since_startup() * same as u64);
+        self.bus.schedule.skip_to(skip);
         reg
     }
 
@@ -295,7 +306,7 @@ impl Cpu {
 
     /// Add result to hi and lo register.
     fn add_pending_hi_lo(&mut self, time: SysTime, hi: u32, lo: u32) {
-        self.hi_lo_ready = self.bus.schedule.since_startup() + time;
+        self.hi_lo_ready = self.bus.schedule.now() + time;
         self.hi = hi;
         self.lo = lo;
     }

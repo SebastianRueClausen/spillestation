@@ -1,20 +1,21 @@
 //! A small Mips assmebler. Written mainly to be used for convenient testing and debugging.
 //!
-//! todo:
-//! * Support for scoping.
+//! # todo
 //!
-//! * More pseudo instructions / directives such as 'align'.
+//! - Support for scoping.
 //!
-//! * Macros.
+//! - More pseudo instructions / directives such as 'align'.
 //!
-//! * Mfc0 / Mtc0 should take register arguments instead of immediate values for the second
+//! - Macros.
+//!
+//! - Mfc0 / Mtc0 should take register arguments instead of immediate values for the second
 //!   argument. Problem is that it should only take numbered register arguments.
 //!
-//! * Allow numeric labels:
+//! - Allow numeric labels:
 //!
-//! * 'EQU' constants.
+//! - 'EQU' constants.
 //!
-//! * Check for overflow in immediate values.
+//! - Check for overflow in immediate values.
 
 mod lex;
 mod parse;

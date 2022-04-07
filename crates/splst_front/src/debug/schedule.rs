@@ -20,7 +20,7 @@ impl DebugApp for ScheduleView {
     }
 
     fn update_tick(&mut self, _: Duration, system: &mut System) {
-        let now = system.schedule().since_startup();
+        let now = system.schedule().now().time_since_startup();
 
         self.cycles.clear();
         self.run_time.clear();
@@ -37,6 +37,7 @@ impl DebugApp for ScheduleView {
             .iter_event_entries()
             .map(|entry| {
                 let cycles_until = entry.ready
+                    .time_since_startup()
                     .saturating_sub(now)
                     .as_cpu_cycles()
                     .to_string();
