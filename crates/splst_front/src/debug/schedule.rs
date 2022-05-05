@@ -30,7 +30,7 @@ impl DebugApp for ScheduleView {
             (dur.as_secs() / 60, dur.as_secs() % 60, dur.subsec_millis())
         };
 
-        write!(&mut self.run_time, "{}.{}.{}", mins, secs, millis).unwrap();
+        write!(&mut self.run_time, "{},{}.{}", mins, secs, millis).unwrap();
         write!(&mut self.cycles, "{}", now.as_cpu_cycles()).unwrap();
 
         self.events = system.schedule()

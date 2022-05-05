@@ -16,14 +16,14 @@ mod gte;
 pub mod irq;
 pub mod opcode;
 
+use splst_util::Bit;
 use crate::io_port::Controllers;
 use crate::cdrom::Disc;
 use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
 use crate::bus::{self, AddrUnit, Bus, BusMap};
-use crate::schedule;
-use crate::{SysTime, Timestamp, Debugger, VideoOutput};
-use splst_util::Bit;
+use crate::schedule::Event;
+use crate::{SysTime, Timestamp, Debugger, VideoOutput, AudioOutput};
 
 use cop0::{Cop0, Exception};
 use gte::Gte;
@@ -145,13 +145,15 @@ const PC_START_ADDRESS: u32 = 0xbfc00000;
 impl Cpu {
     pub fn new(
         bios: Bios,
-        renderer: Rc<RefCell<dyn VideoOutput>>,
+        video_output: Rc<RefCell<dyn VideoOutput>>,
+        audio_output: Rc<RefCell<dyn AudioOutput>>,
         disc: Rc<RefCell<Disc>>,
         controllers: Rc<RefCell<Controllers>>,
     ) -> Box<Self> {
         let bus = Bus::new(
             bios,
-            renderer,
+            video_output,
+            audio_output,
             disc,
             controllers,
         );
@@ -385,60 +387,139 @@ impl Cpu {
     }
 
     /// Check if there is any irq pending and throw exception if there is.
-    pub fn check_for_pending_irq(&mut self) {
+    fn check_for_pending_irq(&mut self) {
         if self.irq_pending() {
             self.next_pc();
             self.fetch_load_slot();
             self.throw_exception(Exception::Interrupt);
         }
     }
+    
+    /// Execute a single instruction. It doesn't check for any events.
+    fn execute_instruction(&mut self, dbg: &mut impl Debugger) {
+        let addr = self.next_pc();
 
-    /// Fetch and execute next instruction.
-    pub fn step(&mut self, dbg: &mut impl Debugger) {
-        match self.bus.schedule.get_pending_event() {
-            Some(event) => {
-                schedule::trigger_event(self, event);
+        dbg.instruction_load(addr);
+
+        if bus::addr_cached(addr) && self.bus.cache_ctrl.icache_enabled() {
+            let tag = addr.bit_range(12, 30);
+            let word_idx = addr.bit_range(2, 3) as usize;
+            let line_idx = addr.bit_range(4, 11) as usize;
+
+            let mut line = self.icache[line_idx];
+
+            if line.tag() != tag || line.valid_word_idx() > word_idx {
+                self.bus.schedule.skip_to(self.load_delay.ready);
+
+                match self.fetch_cachline(&mut line, word_idx, addr) {
+                    Ok(()) => self.exec(dbg, Opcode::new(line.data[word_idx])),
+                    Err(exp) => self.throw_exception(exp),
+                }
+
+                line.set_tag(addr);
+
+                self.icache[line_idx] = line;
+                self.icache_misses += 1;
+            } else {
+                self.exec(dbg, Opcode::new(line.data[word_idx]));
             }
-            // Run the next instruction if there is no event this cycle.
-            None => {
-                let addr = self.next_pc();
+        } else {
+            self.bus.schedule.skip_to(self.load_delay.ready);
 
-                dbg.instruction_load(addr);
+            // Cache misses take about 4 cycles.
+            self.bus.schedule.advance(SysTime::new(4));
 
-                if bus::addr_cached(addr) && self.bus.cache_ctrl.icache_enabled() {
-                    let tag = addr.bit_range(12, 30);
-                    let word_idx = addr.bit_range(2, 3) as usize;
-                    let line_idx = addr.bit_range(4, 11) as usize;
+            match self.load_code::<u32>(addr) {
+                Ok(val) => self.exec(dbg, Opcode::new(val)),
+                Err(exp) => self.throw_exception(exp),
+            }
+        }
+        self.bus.schedule.advance(SysTime::new(1));
+    }
 
-                    let mut line = self.icache[line_idx];
-
-                    if line.tag() != tag || line.valid_word_idx() > word_idx {
-                        self.bus.schedule.skip_to(self.load_delay.ready);
-
-                        match self.fetch_cachline(&mut line, word_idx, addr) {
-                            Ok(()) => self.exec(dbg, Opcode::new(line.data[word_idx])),
-                            Err(exp) => self.throw_exception(exp),
-                        }
-
-                        line.set_tag(addr);
-
-                        self.icache[line_idx] = line;
-                        self.icache_misses += 1;
-                    } else {
-                        self.exec(dbg, Opcode::new(line.data[word_idx]));
+    /// Execute pending event (if any) and execute a single instruction.
+    ///
+    /// It doesn't check if the debugger has hit a breakpoint. No timeput event should be pending
+    /// when calling the function.
+    pub fn step(&mut self, dbg: &mut impl Debugger) {
+        while let Some(event) = self.bus.schedule.get_pending_event() {
+            match event {
+                Event::IrqCheck => self.check_for_pending_irq(),
+                Event::Dma(port, callback) => callback(&mut self.bus, port),
+                Event::CdRom(callback) => {
+                    callback(&mut self.bus.cdrom, &mut self.bus.schedule)
+                }
+                Event::IoPort(callback) => {
+                    callback(&mut self.bus.io_port, &mut self.bus.schedule)
+                }
+                Event::Timer(id, callback) => {
+                    callback(&mut self.bus.timers, &mut self.bus.schedule, id)
+                }
+                Event::Gpu(callback) => {
+                    callback(&mut self.bus.gpu, &mut self.bus.schedule, &mut self.bus.timers);
+                }
+                Event::Irq(irq) => {
+                    self.bus.irq_state.trigger(irq);
+                    self.check_for_pending_irq();
+                }
+                Event::Spu(callback) => {
+                    callback(&mut self.bus.spu, &mut self.bus.schedule, &mut self.bus.cdrom);
+                }
+                Event::ExecutionTimeout => {
+                    unreachable!("timeout event while single stepping instructions")
+                }
+            }
+        }
+        
+        self.execute_instruction(dbg);
+    }
+    
+    /// Run the CPU for a given amount of time. If the debugger 'dbg' hits any breakpoints while
+    /// running, the remaining amount of 'time' will be returned.
+    pub fn run(&mut self, dbg: &mut impl Debugger, time: SysTime) -> Option<SysTime> {
+        let timeout = self.bus.schedule.schedule(time, Event::ExecutionTimeout);
+        
+        loop {
+            match self.bus.schedule.get_pending_event() {
+                Some(event) => match event {
+                    Event::IrqCheck => self.check_for_pending_irq(),
+                    Event::Dma(port, callback) => callback(&mut self.bus, port),
+                    Event::CdRom(callback) => {
+                        callback(&mut self.bus.cdrom, &mut self.bus.schedule)
                     }
-                } else {
-                    self.bus.schedule.skip_to(self.load_delay.ready);
-
-                    // Cache misses take about 4 cycles.
-                    self.bus.schedule.advance(SysTime::new(4));
-
-                    match self.load_code::<u32>(addr) {
-                        Ok(val) => self.exec(dbg, Opcode::new(val)),
-                        Err(exp) => self.throw_exception(exp),
+                    Event::IoPort(callback) => {
+                        callback(&mut self.bus.io_port, &mut self.bus.schedule)
+                    }
+                    Event::Timer(id, callback) => {
+                        callback(&mut self.bus.timers, &mut self.bus.schedule, id)
+                    }
+                    Event::Gpu(callback) => {
+                        callback(&mut self.bus.gpu, &mut self.bus.schedule, &mut self.bus.timers);
+                    }
+                    Event::Irq(irq) => {
+                        self.bus.irq_state.trigger(irq);
+                        self.check_for_pending_irq();
+                    }
+                    Event::Spu(callback) => {
+                        callback(&mut self.bus.spu, &mut self.bus.schedule, &mut self.bus.cdrom);
+                    }
+                    Event::ExecutionTimeout => {
+                        break None;
                     }
                 }
-                self.bus.schedule.advance(SysTime::new(1));
+                // Run the next instruction if there is no event this cycle.
+                None => {
+                    self.execute_instruction(dbg);
+
+                    if dbg.should_stop() {
+                        let time_left = self.bus.schedule
+                            .time_until_event(timeout)
+                            .expect("timeout event not found");
+
+                        self.bus.schedule.unschedule(timeout);
+                        break Some(time_left);
+                    }
+                }
             }
         }
     }

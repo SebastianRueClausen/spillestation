@@ -7,8 +7,9 @@ extern crate log;
 mod test;
 
 mod cdrom;
-mod spu;
+mod fifo;
 
+pub mod spu;
 pub mod io_port;
 pub mod schedule;
 pub mod timer;
@@ -36,8 +37,7 @@ use std::ops::{Add, Sub, Mul};
 
 /// An duration of time the system is running, independent of actual time. It's represented
 /// as CPU cycles. The system doesn't handle anything syb-cycle, meaning that everything can
-/// broken down to CPU cycles. The cycle number is stored as 'u64', which will never
-/// overflow, unless the emulator runs for 17.725 years.
+/// broken down to CPU cycles.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SysTime(u64);
 
@@ -49,12 +49,12 @@ impl SysTime {
     pub const FOREVER: Self = Self(u64::MAX);
 
     /// Same as ['from_cycle'].
-    pub fn new(cycles: u64) -> Self {
+    pub const fn new(cycles: u64) -> Self {
         Self::from_cpu_cycles(cycles)
     }
 
     /// From the a given amount of CPU cycles.
-    pub fn from_cpu_cycles(cycles: u64) -> Self {
+    pub const fn from_cpu_cycles(cycles: u64) -> Self {
         Self(cycles) 
     }
 
@@ -69,7 +69,7 @@ impl SysTime {
     }
 
     /// Get as amount of CPU cycles.
-    pub fn as_cpu_cycles(self) -> u64 {
+    pub const fn as_cpu_cycles(self) -> u64 {
         self.0
     }
 
@@ -124,7 +124,7 @@ impl Timestamp {
     pub const NEVER: Self = Self(SysTime::FOREVER);
 
     /// Create from time elapsed since startup
-    pub fn new(time: SysTime) -> Self {
+    pub const fn new(time: SysTime) -> Self {
         Self(time)
     }
 
@@ -156,23 +156,19 @@ pub struct System {
 impl System {
     pub fn new(
         bios: Bios,
-        renderer: Rc<RefCell<dyn VideoOutput>>,
+        video_output: Rc<RefCell<dyn VideoOutput>>,
+        audio_output: Rc<RefCell<dyn AudioOutput>>,
         disc: Rc<RefCell<Disc>>,
         controllers: Rc<RefCell<Controllers>>,
     ) -> Self {
         Self {
-            cpu: Cpu::new(bios, renderer, disc, controllers),
+            cpu: Cpu::new(bios, video_output, audio_output, disc, controllers),
         }
     }
 
     /// Run at native speed for a given amount of time.
     pub fn run(&mut self, time: Duration) {
-        let cycles = SysTime::new((time.as_nanos() / NANOS_PER_CYCLE) as u64);
-        let end = self.cpu.bus.schedule.now() + cycles;
-
-        while self.cpu.bus.schedule.now() <= end {
-            self.cpu.step(&mut ());
-        }
+        self.cpu.run(&mut (), SysTime::from_duration(time));
     }
 
     /// Run at a given speed in debug mode.
@@ -200,7 +196,7 @@ impl System {
             }
         }
 
-        (time, StopReason::Time)
+        (time, StopReason::Timeout)
     }
 
     /// Run for a given number of instructions in debug mode.
@@ -218,15 +214,11 @@ impl System {
                 return StopReason::Break;
             }
         }
-        StopReason::Time
+        StopReason::Timeout
     }
 
     pub fn bios(&self) -> &Bios {
         &self.cpu.bus.bios
-    }
-
-    pub fn bus_mut(&mut self) -> &mut Bus {
-        &mut self.cpu.bus
     }
 
     pub fn bus(&self) -> &Bus {
@@ -254,9 +246,12 @@ impl System {
     }
 }
 
+/// The result of running the emulator.
 #[derive(PartialEq, Eq)]
 pub enum StopReason {
-    Time,
+    /// The run session has timed out, meaning that the specified runtime has elapsed.
+    Timeout,
+    /// The emulator has hit a breakpoint.
     Break,
 }
 
@@ -292,4 +287,13 @@ impl VideoOutput for () {
     fn send_frame(&mut self, _: (u32, u32), _: &[u8; 1024 * 1024]) {}
 }
 
+pub trait AudioOutput {
+    fn send_audio(&mut self, samples: [i16; 2]);
+}
+
+impl AudioOutput for () {
+    fn send_audio(&mut self, _: [i16; 2]) {}
+}
+
+/// TODO: This is not very accurate.
 const NANOS_PER_CYCLE: u128 = 33;

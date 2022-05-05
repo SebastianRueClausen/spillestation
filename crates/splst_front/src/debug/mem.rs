@@ -71,7 +71,7 @@ impl DebugApp for MemView {
                 for (i, ins) in ins.iter_mut().enumerate() {
                     ins.clear();
                     let addr = start_addr + (i * 4) as u32;
-                    match system.bus_mut().peek::<u32>(addr) {
+                    match system.bus().peek::<u32>(addr) {
                         None => write!(ins, "??").unwrap(),
                         Some(val) => {
                             write!(ins, "{}", Opcode::new(val)).unwrap()
@@ -84,7 +84,7 @@ impl DebugApp for MemView {
                     let mut as_text = [0; 4];
                     for (j, col) in row.iter_mut().enumerate() {
                         let addr = (i * 4 + j) as u32 + start_addr;
-                        match system.bus_mut().peek::<u8>(addr) {
+                        match system.bus().peek::<u8>(addr) {
                             Some(val) => {
                                 as_text[j] = val;
                                 col[0] = HEX_ASCII[((val >> 4) & 0xf) as usize];

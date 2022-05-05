@@ -1,5 +1,6 @@
-use crate::cpu::{Irq, Cpu};
+use crate::cpu::Irq;
 use crate::bus::Bus;
+use crate::spu::Spu;
 use crate::gpu::Gpu;
 use crate::timer::{Timers, TimerId};
 use crate::cdrom::CdRom;
@@ -165,6 +166,18 @@ impl Schedule {
         self.events.retain(|event| event.id != id);
         self.update_next_event();
     }
+    
+    /// Get the amount of time until event with 'id' is ready to trigger. It will return 'None'
+    /// if no event exists with the id 'id'.
+    pub fn time_until_event(&self, id: EventId) -> Option<SysTime> {
+        self.iter_event_entries()
+            .find(|entry| entry.id == id)
+            .map(|entry| {
+                entry.ready
+                    .time_since_startup()
+                    .saturating_sub(self.now().time_since_startup())
+            })
+    }
 
     /// The amount of system time since startup.
     pub fn now(&self) -> Timestamp {
@@ -228,6 +241,9 @@ pub enum Event {
     /// Updating the a specific timer.
     Timer(TimerId, fn(&mut Timers, &mut Schedule, TimerId)),
     IoPort(fn(&mut IoPort, &mut Schedule)),
+    Spu(fn(&mut Spu, &mut Schedule, &mut CdRom)),
+    /// Stop CPU execution and return from ['crate::cpu::Cpu::run'].
+    ExecutionTimeout,
 }
 
 impl fmt::Display for Event {
@@ -240,6 +256,8 @@ impl fmt::Display for Event {
             Event::CdRom(..) => f.write_str("CD-ROM"),
             Event::Timer(..) => f.write_str("timer"),
             Event::IoPort(..) => f.write_str("I/O Port"),
+            Event::Spu(..) => f.write_str("SPU"),
+            Event::ExecutionTimeout=> f.write_str("execution timeout"),
         }
     }
 }
@@ -282,28 +300,5 @@ impl PartialOrd for EventEntry {
 impl Ord for EventEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         other.ready.cmp(&self.ready)
-    }
-}
-
-pub fn trigger_event(cpu: &mut Cpu, event: Event) {
-    match event {
-        Event::IrqCheck => cpu.check_for_pending_irq(),
-        Event::Dma(port, callback) => callback(&mut cpu.bus, port),
-        Event::CdRom(callback) => {
-            callback(&mut cpu.bus.cdrom, &mut cpu.bus.schedule)
-        }
-        Event::IoPort(callback) => {
-            callback(&mut cpu.bus.io_port, &mut cpu.bus.schedule)
-        }
-        Event::Timer(id, callback) => {
-            callback(&mut cpu.bus.timers, &mut cpu.bus.schedule, id)
-        }
-        Event::Gpu(callback) => {
-            callback(&mut cpu.bus.gpu, &mut cpu.bus.schedule, &mut cpu.bus.timers);
-        }
-        Event::Irq(irq) => {
-            cpu.bus.irq_state.trigger(irq);
-            cpu.check_for_pending_irq();
-        }
     }
 }

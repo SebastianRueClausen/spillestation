@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Error, Debug)]
 pub enum BiosError {
-    #[error("Failed to load BIOS: {0}")]
+    #[error("failed to load BIOS: {0}")]
     IoError(#[from] io::Error),
 
-    #[error("Invalid BIOS file: must be 512 kb, is {0} bytes")]
+    #[error("invalid BIOS file: must be 512 kb, is {0} bytes")]
     InvalidSize(usize),
 }
 

@@ -141,18 +141,24 @@ impl Renderer {
                 _ => panic!("Surface Error {}", err),
             })
             .expect("Failed to get surface");
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder")
             });
+
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+
         self.draw_stage.render_canvas(&mut encoder, &view);
+
         func(&mut encoder, &view, self);
+
         self.queue.submit(Some(encoder.finish()));
         self.pending_frame = false;
+
         frame.present();
     }
 

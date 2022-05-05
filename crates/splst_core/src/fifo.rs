@@ -1,19 +1,30 @@
 use splst_util::Bit;
 
+use std::ops::Index;
+
 const FIFO_SIZE: usize = 16;
 
-pub struct Fifo {
-   data: [u8; FIFO_SIZE],
-   /// The head pointer is 4 bits and a carry bit.
+/// FIFO used by the SPU and CD-ROM. The head and tail is 4 bits with one carry bit.
+pub struct Fifo<T: Copy + Clone + Default, const SIZE: usize> {
+   data: [T; SIZE],
    head: u8,
-   /// The tail pointer is 4 bits and a carry bit.
    tail: u8,
 }
 
-impl Fifo {
+impl<T: Clone + Copy + Default, const SIZE: usize> Default for Fifo<T, SIZE> {
+    fn default() -> Self {
+        Self {
+            data: [T::default(); SIZE],
+            head: 0,
+            tail: 0,
+        }
+    }
+}
+
+impl<T: Clone + Copy + Default, const SIZE: usize> Fifo<T, SIZE> {
     pub fn new() -> Self {
         Self {
-            data: [0x0; FIFO_SIZE],
+            data: [T::default(); SIZE],
             head: 0,
             tail: 0,
         }
@@ -38,7 +49,7 @@ impl Fifo {
         self.head = self.tail;
     }
 
-    pub fn push(&mut self, val: u8) {
+    pub fn push(&mut self, val: T) {
         debug_assert!(!self.is_full());
         let idx: usize = self.head
             .bit_range(0, 3)
@@ -49,13 +60,13 @@ impl Fifo {
         self.data[idx] = val;
     }
 
-    pub fn push_slice(&mut self, values: &[u8]) {
+    pub fn push_slice(&mut self, values: &[T]) {
         for val in values {
             self.push(*val);
         }
     }
 
-    pub fn pop(&mut self) -> u8 {
+    pub fn pop(&mut self) -> T {
         debug_assert!(!self.is_empty());
         let idx: usize = self.tail
             .bit_range(0, 3)
@@ -66,13 +77,28 @@ impl Fifo {
         self.data[idx]
     }
 
-    pub fn try_pop(&mut self) -> Option<u8> {
+    pub fn pop_n(&mut self, n: usize) {
+        debug_assert!(self.len() >= n);
+        self.tail = self.tail.wrapping_add(n as u8).bit_range(0, 3);
+    }
+
+    pub fn try_pop(&mut self) -> Option<T> {
         self.is_empty().then(|| self.pop())
     }
 
-    pub fn peek(&self) -> Option<u8> {
+    pub fn peek(&self) -> Option<T> {
         self.is_empty().then(|| {
             self.data[self.tail.bit_range(0, 3) as usize]
         })
+    }
+}
+
+impl<T: Clone + Copy + Default, const SIZE: usize> Index<usize> for Fifo<T, SIZE> {
+    type Output = T;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        debug_assert!(idx < self.len());
+        let idx = self.tail.wrapping_add(idx as u8) as usize % SIZE;
+        &self.data[idx]
     }
 }

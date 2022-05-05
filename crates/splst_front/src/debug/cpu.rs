@@ -1,5 +1,6 @@
-//! TODO:
-//! * Pressing enter to add a checkpoint should check at least that the App is focused or
+//! # TODO
+//! 
+//! - Pressing enter to add a checkpoint should check at least that the App is focused or
 //!   something.
 
 use super::DebugApp;
@@ -335,7 +336,7 @@ impl DebugApp for CpuCtrl {
                     self.bp_msg = None;
                     sys.step_debug(amount, &mut self.bps)
                 } else {
-                    StopReason::Time 
+                    StopReason::Timeout
                 }
             }
             RunMode::Run { speed, ref mut remainder } => {

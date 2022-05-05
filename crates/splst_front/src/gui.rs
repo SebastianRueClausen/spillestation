@@ -117,10 +117,11 @@ fn widget_style() -> egui::style::Widgets {
         active: egui::style::WidgetVisuals {
             bg_fill: egui::Color32::from_rgb(229, 229, 229),
             bg_stroke: egui::Stroke {
-                color: PERSIAN_ACCENT,
+                color: egui::Color32::BLACK,
+                // color: PERSIAN_ACCENT,
                 width: 2.0,
             },
-            corner_radius: 4.0,
+            corner_radius: CORNER_RADIUS,
             fg_stroke: egui::Stroke {
                 color: egui::Color32::from_rgb(132, 132, 132),
                 width: 2.0,
@@ -133,7 +134,7 @@ fn widget_style() -> egui::style::Widgets {
                 color: egui::Color32::from_rgb(132, 132, 132),
                 width: 1.0,
             },
-            corner_radius: 4.0,
+            corner_radius: CORNER_RADIUS,
             fg_stroke: egui::Stroke {
                 color: egui::Color32::BLACK,
                 width: 1.0,
@@ -146,7 +147,7 @@ fn widget_style() -> egui::style::Widgets {
                 color: PERSIAN_ACCENT,
                 width: 2.0,
             },
-            corner_radius: 4.0,
+            corner_radius: CORNER_RADIUS,
             fg_stroke: egui::Stroke {
                 color: egui::Color32::BLACK,
                 width: 1.0,
@@ -159,7 +160,7 @@ fn widget_style() -> egui::style::Widgets {
                 color: egui::Color32::from_rgb(132, 132, 132),
                 width: 1.0,
             },
-            corner_radius: 4.0,
+            corner_radius: CORNER_RADIUS,
             fg_stroke: egui::Stroke {
                 color: egui::Color32::BLACK,
                 width: 1.0,
@@ -172,7 +173,7 @@ fn widget_style() -> egui::style::Widgets {
                 color: PERSIAN_ACCENT,
                 width: 1.0,
             },
-            corner_radius: 4.0,
+            corner_radius: CORNER_RADIUS,
             fg_stroke: egui::Stroke {
                 color: egui::Color32::BLACK,
                 width: 1.0,
@@ -181,6 +182,8 @@ fn widget_style() -> egui::style::Widgets {
         },
     }
 }
+
+const CORNER_RADIUS: f32 = 6.0;
 
 pub const PERSIAN_ACCENT: egui::Color32 = egui::Color32::from_rgb(1, 172, 159);
 // pub const RED_ACCENT: egui::Color32 = egui::Color32::from_rgb(223, 0, 36);

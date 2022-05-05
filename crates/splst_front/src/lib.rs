@@ -1,9 +1,10 @@
-#![feature(vec_retain_mut, let_else)]
+#![feature(let_else)]
 
 //! The frontend of the emulator. Handles the window, input/output, rendering, GUI and controls the
 //! emulator itself.
 //!
 //! # TODO
+//! 
 //! - Find some way to make the emulator sleep in emulation mode if we are keeping up. Right now it
 //!   will just continue to run for very small intervals all the time.
 
@@ -15,6 +16,7 @@ mod start_menu;
 mod debug;
 mod config;
 mod keys;
+mod audio_stream;
 
 use splst_core::{System, timing, Controllers, Disc};
 use splst_render::{Renderer, SurfaceSize};
@@ -22,6 +24,7 @@ use gui::GuiCtx;
 use start_menu::StartMenu;
 use debug::DebugMenu;
 use config::Config;
+use audio_stream::AudioStream;
 
 use winit::event::{ElementState, Event, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -67,6 +70,10 @@ pub fn run() {
     let controllers = Rc::new(RefCell::new(Controllers::default()));
     let disc = Rc::new(RefCell::new(Disc::default()));
 
+    // TODO: Show and error in the settings menu, but still allow the emulator to run without audio.
+    let audio_stream = AudioStream::new().unwrap();
+    let audio_stream = Rc::new(RefCell::new(audio_stream));
+
     config.controller.update_controllers(&mut controllers.borrow_mut());
 
     let mut gui_ctx = GuiCtx::new(window.scale_factor() as f32, &renderer.borrow());
@@ -103,7 +110,7 @@ pub fn run() {
                                 redraw();
                             }
                         }
-                    },
+                    }
                     Stage::StartMenu { .. } => {
                         if dt >= frame_time {
                             redraw();
@@ -241,6 +248,7 @@ pub fn run() {
                             system: System::new(
                                 bios,
                                 renderer.clone(),
+                                audio_stream.clone(),
                                 disc.clone(),
                                 controllers.clone(),
                             ),
@@ -263,11 +271,11 @@ pub fn run() {
                     match mode {
                         RunMode::Debug => app_menu.update_tick(last_update.elapsed(), system),
                         RunMode::Emulation => {
-                            let run_time = Duration::from_millis(4);
+                            let run_time = Duration::from_millis(1);
                             let before = Instant::now();
 
                             system.run(run_time);
-
+                            
                             if let Some(ahead) = run_time.checked_sub(before.elapsed()) {
                                 *ctrl_flow = ControlFlow::WaitUntil(Instant::now() + ahead); 
                             }

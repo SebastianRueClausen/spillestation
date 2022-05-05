@@ -4,7 +4,7 @@
 //!   doesn't seem to work, likely because the CDROM executes the command immediately, which the
 //!   BIOS isn't expecting.
 
-mod fifo;
+mod xa_buffer;
 
 use splst_cdimg::{CdImage, Sector};
 use splst_util::Bit;
@@ -13,8 +13,9 @@ use crate::bus::{dma, BusMap, AddrUnit};
 use crate::cpu::Irq;
 use crate::schedule::{Event, Schedule};
 use crate::SysTime;
+use crate::fifo::Fifo;
 
-use fifo::Fifo;
+use xa_buffer::XaBuffer;
 
 use std::cell::RefCell;
 use std::fmt;
@@ -34,14 +35,24 @@ pub struct CdRom {
     /// The CDROM may or may not have a command waiting to be executed.
     cmd: Option<u8>,
     /// Responses from commands.
-    response_fifo: Fifo,
+    response_fifo: Fifo<u8, 16>,
     /// Arguments to commands.
-    arg_fifo: Fifo,
+    arg_fifo: Fifo<u8, 16>,
     position: Msf,
     pending_seek: Option<Msf>,
     mode: ModeReg,
     sector: Sector,
     data_buffer: DataBuffer,
+
+    audio_buffer: Vec<(i16, i16)>,
+    audio_freq: AudioFreq,
+    audio_index: u32,
+    audio_phase: u8,
+
+    volume_matrix: VolMatrix,
+    next_volume_matrix: VolMatrix,
+
+    xa_buffer: XaBuffer,
 }
 
 impl CdRom {
@@ -66,6 +77,15 @@ impl CdRom {
             data_buffer: DataBuffer::new(),
             position,
             mode,
+            audio_buffer: Vec::with_capacity(4096),
+            audio_freq: AudioFreq::Da1x,
+            audio_index: 0,
+            audio_phase: 0,
+
+            volume_matrix: VolMatrix::default(),
+            next_volume_matrix: VolMatrix::default(),
+
+            xa_buffer: XaBuffer::default(),
         }
     }
 
@@ -177,6 +197,41 @@ impl CdRom {
         self.set_interrupt(schedule, irq);
     }
 
+    pub fn run_audio_cycle(&mut self, resample: bool) -> (i16, i16) {
+        let idx = self.audio_index as usize;
+
+        let Some((raw_left, raw_right)) = self.audio_buffer.get(idx) else {
+            return (0, 0);
+        };
+
+        let mut left = *raw_left;
+        let mut right = *raw_right;
+        
+        match self.audio_freq {
+            AudioFreq::Da1x => self.audio_index += 1,
+            AudioFreq::Da2x => self.audio_index += 2,
+            AudioFreq::Xa37k8 | AudioFreq::Xa18k9 => {
+                if resample {
+                    let (ls, rs) = self.xa_buffer.resample(self.audio_phase);
+                    left += ls;
+                    right += rs;
+                }
+
+                let step = self.audio_freq as u8;
+                self.audio_phase += step;
+
+                if let Some(phase) = self.audio_phase.checked_sub(7) {
+                    self.audio_phase = phase;
+                    self.xa_buffer.push((*raw_left, *raw_right));
+                }
+
+                self.audio_index += 1;
+            }
+        }
+
+        self.volume_matrix.apply(left.into(), right.into())
+    }
+
     pub fn run(&mut self, schedule: &mut Schedule) {
         self.exec_cmd(schedule);
     }
@@ -185,7 +240,7 @@ impl CdRom {
         let target = match self.pending_seek.take() {
             Some(msf) => msf,
             None => {
-                warn!("Seeking without setting a location");
+                warn!("seeking without setting a location");
                 Msf::ZERO
             }
         };
@@ -509,6 +564,14 @@ enum AfterSeek {
     Play,
 }
 
+#[derive(Clone, Copy)]
+enum AudioFreq {
+    Da1x = 7,
+    Da2x = 14,
+    Xa18k9 = 3,
+    Xa37k8 = 6,
+}
+
 /// Represents the state of the CDROM drive.
 #[derive(Clone, Copy)]
 enum DriveState {
@@ -646,6 +709,19 @@ impl DataBuffer {
         }
 
         byte
+    }
+}
+
+#[derive(Default)]
+struct VolMatrix([[u8; 2]; 2]);
+
+impl VolMatrix {
+    fn apply(&self, left: i32, right: i32) -> (i16, i16) {
+        let mul = |vec: &[u8; 2]| -> i16 {
+            let val = vec[0] as i32 * left + vec[1] as i32 * right;
+            (val >> 7).clamp(i16::MIN.into(), u16::MAX.into()) as i16
+        };
+        (mul(&self.0[0]), mul(&self.0[1]))
     }
 }
 

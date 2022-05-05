@@ -15,7 +15,7 @@ pub mod scratchpad;
 mod raw;
 
 use splst_util::Bit;
-use crate::{VideoOutput, SysTime};
+use crate::{VideoOutput, AudioOutput, SysTime};
 use crate::schedule::{Event, Schedule};
 use crate::gpu::Gpu;
 use crate::cdrom::{CdRom, Disc};
@@ -43,7 +43,7 @@ pub struct Bus {
     pub(super) gpu: Gpu,
     pub(super) cdrom: CdRom,
     pub(super) timers: Timers,
-    spu: Spu,
+    pub(super) spu: Spu,
     mem_ctrl: MemCtrl,
     ram_size: RamSize,
     pub(super) io_port: IoPort,
@@ -52,14 +52,16 @@ pub struct Bus {
 impl Bus {
     pub fn new(
         bios: Bios,
-        renderer: Rc<RefCell<dyn VideoOutput>>,
+        video_output: Rc<RefCell<dyn VideoOutput>>,
+        audio_output: Rc<RefCell<dyn AudioOutput>>,
         disc: Rc<RefCell<Disc>>,
         controllers: Rc<RefCell<Controllers>>,
     ) -> Self {
         let mut schedule = Schedule::new();
 
-        let gpu = Gpu::new(&mut schedule, renderer);
+        let gpu = Gpu::new(&mut schedule, video_output);
         let cdrom = CdRom::new(&mut schedule, disc);
+        let spu = Spu::new(&mut schedule, audio_output);
 
         Self {
             bios,
@@ -71,7 +73,7 @@ impl Bus {
             ram: Ram::new(),
             dma: Dma::new(),
             timers: Timers::new(),
-            spu: Spu::new(),
+            spu,
             io_port: IoPort::new(controllers),
             mem_ctrl: MemCtrl::new(),
             cache_ctrl: CacheCtrl(0),
