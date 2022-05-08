@@ -61,7 +61,7 @@ impl StartMenu {
         controllers: &mut Controllers,
         disc: &mut Disc,
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
-        ctx: &egui::CtxRef
+        ctx: &egui::Context,
     ) -> Option<Bios> {
         egui::CentralPanel::default().show(ctx, |ui| {
             let space = ui.available_size() / 32.0;

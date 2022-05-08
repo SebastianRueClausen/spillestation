@@ -13,6 +13,7 @@ mod rasterize;
 mod gp0;
 mod gp1;
 mod vram;
+mod clut_cache;
 
 use splst_util::{Bit, BitSet};
 use crate::cpu::Irq;
@@ -25,6 +26,7 @@ use crate::{VideoOutput, SysTime, Timestamp};
 use fifo::{Fifo, PushAction};
 use primitive::Color;
 use gp0::draw_mode;
+use clut_cache::ClutCache;
 
 use std::fmt;
 use std::ops::Range;
@@ -37,6 +39,7 @@ pub struct Gpu {
     pub(super) renderer: Rc<RefCell<dyn VideoOutput>>,
     /// The current state of the GPU.
     state: State,
+    clut_cache: ClutCache,
     /// The GPU FIFO. Used to recieve commands and some kinds of data.
     fifo: Fifo,
     /// The Video Memory used to store texture data and the image buffer(s).
@@ -111,6 +114,7 @@ impl Gpu {
         Self {
             renderer,
             state: State::Idle,
+            clut_cache: ClutCache::default(),
             fifo: Fifo::new(),
             vram: Vram::new(),
             timing,
@@ -686,6 +690,7 @@ impl fmt::Display for ColorDepth {
 }
 
 /// Number of bits used to represent a single texel.
+#[derive(Clone, Copy)]
 pub enum TexelDepth {
     B4 = 4,
     B8 = 8,

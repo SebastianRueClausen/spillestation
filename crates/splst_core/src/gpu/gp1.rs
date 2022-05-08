@@ -6,6 +6,7 @@ impl Gpu {
     /// GP1(0) - Resets the state of the GPU.
     pub fn gp1_reset(&mut self) {
         self.fifo.clear();
+        self.clut_cache.clear();
 
         self.status.0 = 0x14802000;
 

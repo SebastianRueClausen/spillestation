@@ -81,7 +81,7 @@ impl DebugApp for GpuStatus {
             });
     }
 
-    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("GPU Status")
             .open(open)
             .resizable(true)

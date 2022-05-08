@@ -9,9 +9,9 @@ splst_core = { path = "../splst_core" }
 splst_cdimg = { path = "../splst_cdimg" }
 splst_render = { path = "../splst_render" }
 
-egui = "0.16"
-egui_wgpu_backend = "0.16"
-egui-winit = { version = "0.16", default-features = false, features = ["links"] }
+egui = "0.17.0"
+egui_wgpu_backend = "0.17.0"
+egui-winit = { version = "0.17.0", default-features = false, features = ["links"] }
 winit = { version = "0.26.0", features = ["serde"] }
 wgpu = { version = "0.12", features = [ "spirv" ] }
 pollster = "0.2.4"

@@ -14,8 +14,7 @@ impl Gpu {
     /// GP0(01) - Clear texture cache.
     pub fn gp0_clear_texture_cache(&mut self) {
         self.fifo.pop();
-
-        // TODO: Clear texture cache.
+        self.clut_cache.clear();
     }
 
     /// GP0(02) - Fill rectanlge in VRAM.

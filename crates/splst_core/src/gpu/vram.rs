@@ -1,3 +1,5 @@
+use super::primitive::Color;
+
 /// VRAM consists of 512 lines of 2048 bytes each, which equals 1 megabyte.
 pub struct Vram {
     pub data: Box<[u8; Self::SIZE]>,
@@ -41,6 +43,20 @@ impl Vram {
 
     pub fn clear(&mut self) {
         self.data = Box::new([0x0; Self::SIZE]);
+    }
+    
+    pub fn to_rgba(&self) -> Vec<u8> {
+        let mut img = Vec::with_capacity(1024 * 512 * 4);
+        for y in 0..512 {
+            for x in 0..1024 {
+                let color = Color::from_u16(self.load_16(x, y));
+                img.push(color.r << 3);
+                img.push(color.g << 3);
+                img.push(color.b << 3);
+                img.push(255);
+            }
+        }
+        img
     }
 }
 

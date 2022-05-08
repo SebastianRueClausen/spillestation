@@ -19,6 +19,10 @@ pub struct VramView {
     y: i32,
     /// Value matrix starting at 'x' and 'y'.
     matrix: [[Cell; COLUMNS]; ROWS],
+    dump: bool,
+    new_image: Option<egui::ColorImage>,
+    image: Option<egui::TextureHandle>,
+    image_scale: f32,
 }
 
 impl DebugApp for VramView {
@@ -38,6 +42,13 @@ impl DebugApp for VramView {
                 }
             }
         }
+        
+        if self.dump {
+            self.dump = false;
+            self.new_image = Some(egui::ColorImage::from_rgba_unmultiplied(
+                [1024, 512], &system.gpu().vram().to_rgba(),
+            ));
+        }
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
@@ -45,7 +56,9 @@ impl DebugApp for VramView {
             ui.add(egui::DragValue::new(&mut self.x).speed(1.0));
             ui.add(egui::DragValue::new(&mut self.y).speed(1.0));
         });
+
         ui.separator();
+
         egui::Grid::new("vram_value_grid").striped(true).show(ui, |ui| {
             ui.label("");
             for i in 0..COLUMNS {
@@ -60,17 +73,32 @@ impl DebugApp for VramView {
                 ui.end_row();
             }
         });
+
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            self.dump |= ui.button("Dump VRAM").clicked();
+            if self.image.is_some() {
+                ui.add(egui::Slider::new(&mut self.image_scale, 0.1..=1.0).text("Scale"));
+            }
+        });
+
+        if let Some(image) = self.new_image.take() {
+            self.image = Some(ui.ctx().load_texture("vram", image));
+        }
+        
+        if let Some(image) = &self.image {
+            ui.image(image, egui::Vec2::new(1024.0 * self.image_scale, 512.0 * self.image_scale));
+        }
     }
 
-    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("VRAM View")
             .open(open)
             .resizable(true)
             .default_width(240.0)
             .default_height(480.0)
-            .show(ctx, |ui| {
-                self.show(ui);
-            });
+            .show(ctx, |ui| self.show(ui));
     }
 }
 

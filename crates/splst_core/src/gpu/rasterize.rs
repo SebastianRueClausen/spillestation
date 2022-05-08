@@ -33,7 +33,6 @@ impl Gpu {
     /// Load a texel at a given texture coordinate.
     fn load_texel(
         &self,
-        clut: Point,
         coord: TexCoord,
         tex_param_cache: TexParamCache
     ) -> Texel {
@@ -43,23 +42,23 @@ impl Gpu {
         match self.status.texture_depth() {
             TexelDepth::B4 => {
                 let val = self.vram.load_16(
-                    self.status.tex_page_x() + (u / 4),
+                    self.status.tex_page_x() + u / 4,
                     self.status.tex_page_y() + v,
                 );
 
                 let offset = (val >> ((u & 3) * 4)) as i32 & 0xf;
 
-                Texel::new(self.vram.load_16(clut.x + offset, clut.y))
+                self.clut_cache.get(offset)
             }
             TexelDepth::B8 => {
                 let val = self.vram.load_16(
-                    self.status.tex_page_x() + (u / 2),
+                    self.status.tex_page_x() + u / 2,
                     self.status.tex_page_y() + v,
                 );
 
                 let offset = (val >> ((u & 1) * 8)) as i32 & 0xff;
 
-                Texel::new(self.vram.load_16(clut.x + offset, clut.y))
+                self.clut_cache.get(offset)
             }
             TexelDepth::B15 => {
                 let val = self.vram.load_16(
@@ -214,6 +213,10 @@ impl Gpu {
             self.tex_win_x,
             self.tex_win_y,
         );
+        
+        if let TexelDepth::B4 | TexelDepth::B8 = self.status.texture_depth() {
+            self.clut_cache.maybe_fetch(clut, self.status.texture_depth(), &self.vram);
+        }
 
         // The determinant of a 3x3 matrix of where arranged as:
         //
@@ -623,7 +626,7 @@ impl Gpu {
                         u += u_delta.x;
                         v += v_delta.x;
 
-                        let texel = self.load_texel(clut, uv, tex_param_cache);
+                        let texel = self.load_texel(uv, tex_param_cache);
 
                         if texel.is_invisible() {
                             continue;
@@ -801,6 +804,10 @@ impl Gpu {
             self.tex_win_x,
             self.tex_win_y,
         );
+        
+        if let TexelDepth::B4 | TexelDepth::B8 = self.status.texture_depth() {
+            self.clut_cache.maybe_fetch(clut, self.status.texture_depth(), &self.vram);
+        }
 
         // Calculate the uv delta for each step in x and y direction. Nocash specifies that the
         // texture flipping for rectangles doesn't work on older Playstation models, but older
@@ -848,7 +855,7 @@ impl Gpu {
 
             for x in start_x..end_x {
                 let (color, masked) = if Tex::IS_TEXTURED {
-                    let texel = self.load_texel(clut, tc, tex_param_cache);
+                    let texel = self.load_texel(tc, tex_param_cache);
 
                     if texel.is_invisible() {
                         tc.u = tc.u.wrapping_add(u_delta as u8);

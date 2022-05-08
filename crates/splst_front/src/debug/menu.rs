@@ -69,7 +69,7 @@ impl DebugMenu {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::CtxRef, mode: &mut RunMode) {
+    pub fn show(&mut self, ctx: &egui::Context, mode: &mut RunMode) {
         if *mode == RunMode::Debug {
             for (app, open) in &mut self.apps {
                 if *open {

@@ -48,7 +48,7 @@ impl DebugApp for FrameCounter {
         });
     }
 
-    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("Frame Rate")
             .open(open)
             .show(ctx, |ui| self.show(ui));

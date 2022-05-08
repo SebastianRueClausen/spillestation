@@ -64,7 +64,7 @@ impl DebugApp for TimerView {
         });
     }
 
-    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("Timer View")
             .open(open)
             .resizable(true)

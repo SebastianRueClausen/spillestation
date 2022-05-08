@@ -77,7 +77,7 @@ impl DebugApp for CpuStatus {
             });
     }
 
-    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("CPU Status")
             .open(open)
             .resizable(true)
@@ -279,8 +279,9 @@ impl CpuCtrl {
                     });
 
                 ui.checkbox(&mut self.bp_add.retain, "Retain");
-
-                if ui.input().key_pressed(egui::Key::Enter) || ui.button("Add").clicked() {
+                
+                let enter = ui.input().key_pressed(egui::Key::Enter);
+                if enter || ui.button("Add").clicked() {
                     // Parse the string as address in hex.
                     if let Ok(addr) = u32::from_str_radix(&self.bp_add.addr, 16) {
                         let vec = match self.bp_add.kind {
@@ -425,7 +426,7 @@ impl DebugApp for CpuCtrl {
         });
     }
 
-    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool) {
+    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("CPU Control")
             .open(open)
             .resizable(true)

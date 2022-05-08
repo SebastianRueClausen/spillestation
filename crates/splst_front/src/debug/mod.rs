@@ -19,10 +19,9 @@ pub use menu::DebugMenu;
 /// Egui Debug App/Window.
 pub trait DebugApp {
     /// Show the app as a window.
-    fn show_window(&mut self, ctx: &egui::CtxRef, open: &mut bool);
+    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool);
 
-    /// Show the app on any given ['egui::Ui']. This can be used to display the app inline in
-    /// another GUI. This is most likely called by 'show' onto an empty window.
+    // Show the app inside a UI.
     fn show(&mut self, ui: &mut egui::Ui);
 
     /// Called every frame.

@@ -204,7 +204,7 @@ impl Config {
         controllers: &mut Controllers,
         disc: &mut Disc,
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
-        ctx: &egui::CtxRef,
+        ctx: &egui::Context,
     ) {
         egui::SidePanel::left("settings").show(ctx, |ui| {
             self.show_inside(used_bios, controllers, disc, key_map, ui)
