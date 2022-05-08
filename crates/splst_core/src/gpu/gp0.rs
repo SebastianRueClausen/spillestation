@@ -3,7 +3,7 @@ use splst_util::{Bit, BitSet};
 use crate::SysTime;
 
 use super::{Gpu, State, MemTransfer};
-use super::primitive::{PolyVertex, LineVertex, Point, Color, TexCoord};
+use super::primitive::{Point, Color, TexCoord};
 
 impl Gpu {
     /// GP0 commands which does nothing but aren't immediate.
@@ -177,6 +177,72 @@ impl Gpu {
 
         self.state = State::VramLoad(MemTransfer::new(x, y, w, h));
     }
+    
+    /// Get data and interpret data from FIFO for polygon commands.
+    fn interp_poly<Shade, Tex, Trans, const N: usize>(
+        &mut self
+    ) -> (Color, Point, [Point; N], [Color; N], [TexCoord; N])
+    where
+        Shade: draw_mode::Shading,
+        Tex: draw_mode::Textureing,
+        Trans: draw_mode::Transparency,
+    {
+        let mut clut = Point::default();
+        
+        let mut points = [Point::default(); N];
+        let mut colors = [Color::default(); N];
+        let mut coords = [TexCoord::default(); N];
+        
+        let flat_shade = match Shade::IS_SHADED {
+            true => Color::from_rgb(0, 0, 0),
+            false => Color::from_cmd(self.fifo.pop()),
+        };
+        
+        let verts = points
+            .iter_mut()
+            .zip(colors.iter_mut())
+            .zip(coords.iter_mut())
+            .map(|((point, color), coord)| (point, color, coord))
+            .enumerate();
+
+        for (i, (point, color, coord)) in verts {
+            if Shade::IS_SHADED {
+                *color = Color::from_cmd(self.fifo.pop());
+            }
+
+            let pos = self.fifo.pop();
+
+            *point = Point::from_cmd(pos).with_offset(
+                self.x_offset as i32,
+                self.y_offset as i32,
+            );
+
+            if Tex::IS_TEXTURED {
+                let val = self.fifo.pop();
+                match i {
+                    0 => {
+                        clut.x = val.bit_range(16, 21) as i32 * 16;
+                        clut.y = val.bit_range(22, 30) as i32;
+                    }
+                    1 => {
+                        let val = val >> 16;
+
+                        self.status.0 = self.status.0
+                            .set_bit_range(0, 8, val.bit_range(0, 8))
+                            .set_bit(11, val.bit(11));
+                    }
+                    _ => {}
+                }
+
+                *coord = TexCoord {
+                    u: val.bit_range(0, 7) as u8,
+                    v: val.bit_range(8, 15) as u8,
+                };
+            }
+        }
+        
+        (flat_shade, clut, points, colors, coords)
+    }
 
     /// Handle GP0 triangle polygon commands.
     pub fn gp0_tri_poly<Shade, Tex, Trans>(&mut self) -> SysTime
@@ -185,115 +251,37 @@ impl Gpu {
         Tex: draw_mode::Textureing,
         Trans: draw_mode::Transparency,
     {
-        let mut verts = [PolyVertex::default(); 3];
-        let mut clut = Point::default();
-
-        let color = match Shade::IS_SHADED {
-            true => Color::from_rgb(0, 0, 0),
-            false => Color::from_cmd(self.fifo.pop()),
-        };
-
-        for (i, vertex) in verts.iter_mut().enumerate() {
-            if Shade::IS_SHADED {
-                vertex.color = Color::from_cmd(self.fifo.pop());
-            }
-
-            let pos = self.fifo.pop();
-
-            vertex.point = Point::from_cmd(pos).with_offset(
-                self.x_offset as i32,
-                self.y_offset as i32,
-            );
-
-            if Tex::IS_TEXTURED {
-                let val = self.fifo.pop();
-                match i {
-                    0 => {
-                        clut.x = val.bit_range(16, 21) as i32 * 16;
-                        clut.y = val.bit_range(22, 30) as i32;
-                    }
-                    1 => {
-                        let val = val >> 16;
-
-                        self.status.0 = self.status.0
-                            .set_bit_range(0, 8, val.bit_range(0, 8))
-                            .set_bit(11, val.bit(11));
-                    }
-                    _ => {}
-                }
-
-                vertex.texcoord = TexCoord {
-                    u: val.bit_range(0, 7) as u8,
-                    v: val.bit_range(8, 15) as u8,
-                };
-            }
-        }
-
+        let (flat_shade, clut, points, colors, coords) = self.interp_poly::<Shade, Tex, Trans, 3>();
         let cycles = self.draw_triangle::<Shade, Tex, Trans>(
-            color, clut, &verts[0], &verts[1], &verts[2]
+            flat_shade, clut, points, colors, coords,
         );
 
         cycles + SysTime::from_gpu_cycles(82)
     }
 
-    /// Handle GP0 quad(Four point) polygon command.
+    /// Handle GP0 quad (four point) polygon command.
     pub fn gp0_quad_poly<Shade, Tex, Trans>(&mut self) -> SysTime
     where
         Shade: draw_mode::Shading,
         Tex: draw_mode::Textureing,
         Trans: draw_mode::Transparency,
     {
-        let mut verts = [PolyVertex::default(); 4];
-        let mut clut = Point::default();
-
-        let color = match Shade::IS_SHADED {
-            true => Color::from_rgb(0, 0, 0),
-            false => Color::from_cmd(self.fifo.pop()),
-        };
-
-        for (i, vertex) in verts.iter_mut().enumerate() {
-            // If it's shaded the color is always the first attribute.
-            if Shade::IS_SHADED {
-                vertex.color = Color::from_cmd(self.fifo.pop());
-            }
-
-            let pos = self.fifo.pop();
-
-            vertex.point = Point::from_cmd(pos).with_offset(
-                self.x_offset as i32,
-                self.y_offset as i32,
-            );
-
-            if Tex::IS_TEXTURED {
-                let val = self.fifo.pop();
-                match i {
-                    0 => {
-                        clut.x = val.bit_range(16, 21) as i32 * 16;
-                        clut.y = val.bit_range(22, 30) as i32;
-                    }
-                    1 => {
-                        let val = val >> 16;
-
-                        self.status.0 = self.status.0
-                            .set_bit_range(0, 8, val.bit_range(0, 8))
-                            .set_bit(11, val.bit(11));
-                    }
-                    _ => {}
-                }
-
-                vertex.texcoord = TexCoord {
-                    u: val.bit_range(0, 7) as u8,
-                    v: val.bit_range(8, 15) as u8,
-                };
-            }
-        }
+        let (flat_shade, clut, points, colors, coords) = self.interp_poly::<Shade, Tex, Trans, 4>();
 
         let tri1 = self.draw_triangle::<Shade, Tex, Trans>(
-            color, clut, &verts[0], &verts[1], &verts[2],
+            flat_shade,
+            clut,
+            points[..3].try_into().unwrap(),
+            colors[..3].try_into().unwrap(),
+            coords[..3].try_into().unwrap(),
         );
 
         let tri2 = self.draw_triangle::<Shade, Tex, Trans>(
-            color, clut, &verts[1], &verts[2], &verts[3]
+            flat_shade,
+            clut,
+            points[1..].try_into().unwrap(),
+            colors[1..].try_into().unwrap(),
+            coords[1..].try_into().unwrap(),
         );
 
         tri1 + tri2 + SysTime::from_gpu_cycles(82 + 46)
@@ -309,34 +297,31 @@ impl Gpu {
             false => Color::from_cmd(self.fifo.pop()),
             true => Color::from_rgb(0, 0, 0),
         };
+        
+        let mut points = [Point::default(); 2];
+        let mut colors = [Color::default(); 2];
 
-        let start = LineVertex {
-            color: match Shade::IS_SHADED {
-                true => Color::from_cmd(self.fifo.pop()),
-                false => Color::from_rgb(0, 0, 0),
-            },
-            point: {
-                Point::from_cmd(self.fifo.pop()).with_offset(
-                    self.x_offset as i32,
-                    self.y_offset as i32,
-                )
-            },
+        colors[0] = if Shade::IS_SHADED {
+            Color::from_cmd(self.fifo.pop())
+        } else {
+            Color::default()
         };
+        points[0] = Point::from_cmd(self.fifo.pop()).with_offset(
+            self.x_offset as i32,
+            self.y_offset as i32,
+        );
 
-        let end = LineVertex {
-            color: match Shade::IS_SHADED {
-                true => Color::from_cmd(self.fifo.pop()),
-                false => Color::from_rgb(0, 0, 0),
-            },
-            point: {
-                Point::from_cmd(self.fifo.pop()).with_offset(
-                    self.x_offset as i32,
-                    self.y_offset as i32,
-                )
-            },
+        colors[1] = if Shade::IS_SHADED {
+            Color::from_cmd(self.fifo.pop())
+        } else {
+            Color::default()
         };
+        points[1] = Point::from_cmd(self.fifo.pop()).with_offset(
+            self.x_offset as i32,
+            self.y_offset as i32,
+        );
 
-        self.draw_line::<Shade, Trans>(start, end, color)
+        self.draw_line::<Shade, Trans>(points, colors, color)
     }
 
     /// GP0 rectangle commands.

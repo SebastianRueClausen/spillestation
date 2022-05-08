@@ -698,7 +698,7 @@ impl TexelDepth {
             0 => TexelDepth::B4,
             1 => TexelDepth::B8,
             2 | 3 => TexelDepth::B15,
-            _ => unreachable!("Invalid texture depth"),
+            _ => unreachable!("invalid texture depth"),
         }
     }
 }

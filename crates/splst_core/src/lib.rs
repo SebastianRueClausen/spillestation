@@ -1,4 +1,11 @@
-#![feature(let_else, binary_heap_retain, option_result_contains, duration_constants)]
+#![feature(
+    int_roundings,
+    portable_simd,
+    let_else,
+    binary_heap_retain,
+    option_result_contains,
+    duration_constants
+)]
 
 #[macro_use]
 extern crate log;

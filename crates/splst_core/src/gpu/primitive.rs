@@ -1,5 +1,7 @@
 use splst_util::Bit;
 
+use std::ops::Sub;
+
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
 pub struct Point {
     pub x: i32,
@@ -31,6 +33,17 @@ impl Point {
     }
 }
 
+impl Sub for Point {
+    type Output = Point;
+
+    fn sub(self, other: Point) -> Self::Output {
+        Self {
+            x: self.x - other.x,
+            y: self.y - other.y,
+        }
+    }
+}
+
 /// Texture coordinate.
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
 pub struct TexCoord {
@@ -39,7 +52,7 @@ pub struct TexCoord {
 }
 
 impl TexCoord {
-    fn new(u: u8, v: u8) -> Self {
+    pub fn new(u: u8, v: u8) -> Self {
         Self { u, v }
     }
 }
@@ -74,7 +87,7 @@ const DITHER_LUT: [[i32; 4]; 4] = [
 ];
 
 /// Depth of the color can be either 16 or 24 bits.
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
 pub struct Color {
     pub r: u8,
     pub g: u8,
@@ -170,36 +183,3 @@ impl Color {
         }
     }
 }
-
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
-pub struct PolyVertex {
-    pub point: Point,
-    pub color: Color,
-    pub texcoord: TexCoord,
-}
-
-impl Default for PolyVertex {
-    fn default() -> Self {
-        Self {
-            point: Point::new(0, 0),
-            color: Color::from_rgb(255, 0, 0),
-            texcoord: TexCoord::new(0, 0),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
-pub struct LineVertex {
-    pub point: Point,
-    pub color: Color,
-}
-
-impl Default for LineVertex {
-    fn default() -> Self {
-        Self {
-            point: Point::new(0, 0),
-            color: Color::from_rgb(255, 0, 0),
-        }
-    }
-}
-

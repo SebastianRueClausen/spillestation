@@ -83,8 +83,7 @@ struct WriteContext {
 impl WriteContext {
     fn write_sample<T: cpal::Sample>(&mut self, output: &mut [T]) {
         for frame in output.chunks_mut(self.channel_count as usize) {
-            let samples = self.receiver.recv().unwrap_or_else(|_| {
-                error!("failed to receive audio sample");
+            let samples = self.receiver.try_recv().unwrap_or_else(|_| {
                 self.last_samples
             });
 

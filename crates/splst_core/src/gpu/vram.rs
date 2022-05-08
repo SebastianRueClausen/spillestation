@@ -29,12 +29,12 @@ impl Vram {
         (hi << 16) | (mid << 8) | lo
     }
 
-    pub fn store_16(&mut self, x: i32, y: i32, value: u16) {
+    pub fn store_16(&mut self, x: i32, y: i32, val: u16) {
         let offset = offset_16(x, y);
-        self.data[offset] = value as u8;
-        self.data[offset + 1] = (value >> 8) as u8;
+        self.data[offset] = val as u8;
+        self.data[offset + 1] = (val >> 8) as u8;
     }
-
+    
     pub fn raw_data(&self) -> &[u8; Self::SIZE] {
         &self.data
     }
