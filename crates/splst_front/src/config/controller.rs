@@ -75,18 +75,11 @@ impl ControllerConfig {
         }
     }
 
-    fn show_buttons(
-        &mut self,
-        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
-        slot: IoSlot,
-        ui: &mut egui::Ui
-    ) {
+    fn show_buttons(&mut self, slot: IoSlot, ui: &mut egui::Ui) {
         let bindings = match slot {
             IoSlot::Slot1 => &mut self.slot1,
             IoSlot::Slot2 => &mut self.slot2,
         };
-
-        let mut generate_key_map = false;
 
         egui::Grid::new("button_grid").show(ui, |ui| {
             bindings
@@ -96,31 +89,19 @@ impl ControllerConfig {
                 .zip(BUTTONS.iter())
                 .for_each(|((binding, name), button)| {
                     ui.label(*name);
-                    match binding {
-                        Some(key) => {
-                            ui.label(keys::keycode_name(*key));
-                            if ui.button("Unbind").clicked() {
-                                generate_key_map = true;
-                                self.is_modified = true;
-                                binding.take();
-                            }
-                        }
-                        None => {
-                            ui.label("Not Bound");
-                            if ui.button("Bind").clicked() {
-                                self.recording = Some((slot, *button));
-                            }
-                        }
+
+                    let key_name = binding
+                        .map(|key| keys::keycode_name(key))
+                        .unwrap_or("Unbound");
+
+                    let rebind = egui::Button::new(key_name);
+                    if ui.add_sized([60.0, 8.0], rebind).clicked() {
+                        self.recording = Some((slot, *button));
                     }
+
                     ui.end_row();
                 });
         });
-
-        if generate_key_map {
-            self.error = gen_key_map(&self.slot1, &self.slot2)
-                .map(|map| *key_map = map)
-                .err();
-        }
     }
 
     /// Update ['Controllers'] from config. It should only be called when the configs could have
@@ -135,48 +116,41 @@ impl ControllerConfig {
         }
     }
 
-    pub fn show(
-        &mut self,
-        controllers: &mut Controllers,
-        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
-        ui: &mut egui::Ui,
-    ) {
+    pub fn show(&mut self, controllers: &mut Controllers, ui: &mut egui::Ui) {
         ui.add_enabled_ui(self.recording.is_none(), |ui| {
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.show_slot, IoSlot::Slot1, "Slot 1");
-                    ui.selectable_value(&mut self.show_slot, IoSlot::Slot2, "Slot 2");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.show_slot, IoSlot::Slot1, "Slot 1");
+                ui.selectable_value(&mut self.show_slot, IoSlot::Slot2, "Slot 2");
+            });
+            
+            ui.add_space(10.0);
+
+            let connection = match self.show_slot {
+                IoSlot::Slot1 => &mut self.connection1,
+                IoSlot::Slot2 => &mut self.connection2,
+            };
+
+            let before = *connection;
+
+            egui::ComboBox::from_label("Connection")
+                .selected_text(format!("{:?}", connection))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(connection, Connection::Unconnected, "Unconnected");
+                    ui.selectable_value(connection, Connection::Virtual, "Virtual");
                 });
 
-                ui.separator();
-
-                let connection = match self.show_slot {
-                    IoSlot::Slot1 => &mut self.connection1,
-                    IoSlot::Slot2 => &mut self.connection2,
+            if before != *connection {
+                self.is_modified = true;
+                controllers[self.show_slot] = match *connection {
+                    Connection::Unconnected => controller::Port::unconnected(),
+                    Connection::Virtual => controller::Port::digital(),
                 };
+            }
 
-                let before = *connection;
+            ui.add_space(10.0);
 
-                egui::ComboBox::from_label("Connection")
-                    .selected_text(format!("{:?}", connection))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(connection, Connection::Unconnected, "Unconnected");
-                        ui.selectable_value(connection, Connection::Virtual, "Virtual");
-                    });
-
-                if before != *connection {
-                    self.is_modified = true;
-                    controllers[self.show_slot] = match *connection {
-                        Connection::Unconnected => controller::Port::unconnected(),
-                        Connection::Virtual => controller::Port::digital(),
-                    };
-                }
-
-                ui.separator();
-
-                egui::ScrollArea::new([false, true]).show(ui, |ui| {
-                    self.show_buttons(key_map, self.show_slot, ui);
-                });
+            egui::ScrollArea::new([false, true]).show(ui, |ui| {
+                self.show_buttons(self.show_slot, ui);
             });
         });
     }

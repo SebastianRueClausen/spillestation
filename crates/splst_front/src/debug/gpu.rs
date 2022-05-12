@@ -2,129 +2,151 @@
 
 use super::DebugApp;
 
-use splst_core::gpu::Gpu;
 use splst_core::System;
 
-use std::fmt::Write;
-use std::time::Duration;
-
-/// ['App'] which shows the current status of the ['Gpu'].
+/// ['App'] for shows the current status of the ['Gpu'].
 #[derive(Default)]
-pub struct GpuStatus {
-    /// All the fields. They get updated each frame, so saving them just avoids allocating a lot
-    /// of strings each frame.
-    fields: [String; FIELD_COUNT],
-}
-
-impl GpuStatus {
-    /// Write information to all the fields.
-    fn update_fields(&mut self, gpu: &Gpu) -> Result<(), std::fmt::Error> {
-        write!(self.fields[0], "{:08x}", gpu.x_offset)?;
-        write!(self.fields[1], "{:08x}", gpu.y_offset)?;
-        write!(self.fields[2], "{:08x}", gpu.vram_x_start)?;
-        write!(self.fields[3], "{:08x}", gpu.vram_y_start)?;
-        write!(self.fields[4], "{:08x}", gpu.dis_x_start)?;
-        write!(self.fields[5], "{:08x}", gpu.dis_x_end)?;
-        write!(self.fields[6], "{:08x}", gpu.dis_y_start)?;
-        write!(self.fields[7], "{:08x}", gpu.dis_y_end)?;
-
-        let status = gpu.status();
-
-        write!(self.fields[8], "{:08x}", status.tex_page_x())?;
-        write!(self.fields[9], "{:08x}", status.tex_page_y())?;
-        write!(self.fields[10], "{}", status.blend_mode())?;
-        write!(self.fields[11], "{}", status.texture_depth())?;
-        write!(self.fields[12], "{}", status.dithering_enabled())?;
-        write!(self.fields[13], "{}", status.draw_to_display())?;
-        write!(self.fields[14], "{}", status.set_mask_bit())?;
-        write!(self.fields[15], "{}", status.draw_masked_pixels())?;
-        write!(self.fields[16], "{}", status.interlace_field())?;
-        write!(self.fields[17], "{}", status.texture_disabled())?;
-        write!(self.fields[18], "{}", status.horizontal_res())?;
-        write!(self.fields[19], "{}", status.vertical_res())?;
-        write!(self.fields[20], "{}", status.video_mode())?;
-        write!(self.fields[21], "{}", status.color_depth())?;
-        write!(self.fields[22], "{}", status.vertical_interlace())?;
-        write!(self.fields[23], "{}", status.display_enabled())?;
-        write!(self.fields[24], "{}", status.irq_enabled())?;
-        write!(self.fields[25], "{}", status.cmd_ready())?;
-        write!(self.fields[26], "{}", status.vram_to_cpu_ready())?;
-        write!(self.fields[27], "{}", status.dma_block_ready())?;
-        write!(self.fields[28], "{}", status.dma_direction())?;
-        Ok(())
-    }
-}
+pub struct GpuStatus;
 
 impl DebugApp for GpuStatus {
     fn name(&self) -> &'static str {
         "GPU Status"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
-        self.fields.iter_mut().for_each(|field| field.clear());
-        if let Err(err) = self.update_fields(system.gpu()) {
-            eprintln!("{}", err);
-        }
-    }
-
-    fn show(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, system: &mut System, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 egui::Grid::new("gpu_status_grid").show(ui, |ui| {
-                    for (field, label) in self.fields.iter().zip(FIELD_LABELS) {
-                        ui.label(label);
-                        ui.label(field);
-                        ui.end_row();
-                    }
+                    let gpu = system.gpu();
+                    
+                    ui.label("draw x offset");
+                    ui.label(format!("{:08x}", gpu.x_offset));
+                    ui.end_row();
+                    
+                    ui.label("draw y offset");
+                    ui.label(format!("{:08x}", gpu.y_offset));
+                    ui.end_row();
+
+                    ui.label("display vram x start");
+                    ui.label(format!("{:08x}", gpu.vram_x_start));
+                    ui.end_row();
+
+                    ui.label("display vram y start");
+                    ui.label(format!("{:08x}", gpu.vram_y_start));
+                    ui.end_row();
+
+                    ui.label("display column start");
+                    ui.label(format!("{:08x}", gpu.dis_x_start));
+                    ui.end_row();
+
+                    ui.label("display column end");
+                    ui.label(format!("{:08x}", gpu.dis_x_end));
+                    ui.end_row();
+
+                    ui.label("display line start");
+                    ui.label(format!("{:08x}", gpu.dis_y_start));
+                    ui.end_row();
+
+                    ui.label("display line end");
+                    ui.label(format!("{:08x}", gpu.dis_y_end));
+                    ui.end_row();
+                    
+                    let status = system.gpu().status();
+
+                    ui.label("texture page x base");
+                    ui.label(format!("{:08x}", status.tex_page_x()));
+                    ui.end_row();
+
+                    ui.label("texture page y base");
+                    ui.label(format!("{:08x}", status.tex_page_y()));
+                    ui.end_row();
+
+                    ui.label("transparency blending");
+                    ui.label(format!("{}", status.blend_mode()));
+                    ui.end_row();
+
+                    ui.label("texture depth");
+                    ui.label(format!("{}", status.texture_depth()));
+                    ui.end_row();
+
+                    ui.label("dithering enabled");
+                    ui.label(format!("{}", status.dithering_enabled()));
+                    ui.end_row();
+
+                    ui.label("draw to display");
+                    ui.label(format!("{}", status.draw_to_display()));
+                    ui.end_row();
+
+                    ui.label("set mask bit");
+                    ui.label(format!("{}", status.set_mask_bit()));
+                    ui.end_row();
+
+                    ui.label("draw masked pixels");
+                    ui.label(format!("{}", status.draw_masked_pixels()));
+                    ui.end_row();
+
+                    ui.label("interlace field");
+                    ui.label(format!("{}", status.interlace_field()));
+                    ui.end_row();
+
+                    ui.label("texture disabled");
+                    ui.label(format!("{}", status.texture_disabled()));
+                    ui.end_row();
+
+                    ui.label("horizontal resolution");
+                    ui.label(format!("{}", status.horizontal_res()));
+                    ui.end_row();
+
+                    ui.label("vertical resolution");
+                    ui.label(format!("{}", status.vertical_res()));
+                    ui.end_row();
+
+                    ui.label("video mode");
+                    ui.label(format!("{}", status.video_mode()));
+                    ui.end_row();
+
+                    ui.label("color depth");
+                    ui.label(format!("{}", status.color_depth()));
+                    ui.end_row();
+
+                    ui.label("vertical interlace enabled");
+                    ui.label(format!("{}", status.vertical_interlace()));
+                    ui.end_row();
+
+                    ui.label("display enabled");
+                    ui.label(format!("{}", status.display_enabled()));
+                    ui.end_row();
+
+                    ui.label("interrupt request enabled");
+                    ui.label(format!("{}", status.irq_enabled()));
+                    ui.end_row();
+
+                    ui.label("command ready");
+                    ui.label(format!("{}", status.cmd_ready()));
+                    ui.end_row();
+
+                    ui.label("VRAM to CPU ready");
+                    ui.label(format!("{}", status.vram_to_cpu_ready()));
+                    ui.end_row();
+
+                    ui.label("DMA block ready");
+                    ui.label(format!("{}", status.dma_block_ready()));
+                    ui.end_row();
+
+                    ui.label("DMA direction");
+                    ui.label(format!("{}", status.dma_direction()));
+                    ui.end_row();
                 });
             });
     }
 
-    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
+    fn show_window(&mut self, system: &mut System, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("GPU Status")
             .open(open)
             .resizable(true)
             .default_width(240.0)
             .default_height(480.0)
-            .show(ctx, |ui| {
-                self.show(ui);
-            });
+            .show(ctx, |ui| self.show(system, ui));
     }
 }
-
-/// The labels for all the fields. This must lign up with the order of which the fields in
-/// ['GpuStatus'] is written to.
-const FIELD_LABELS: [&str; FIELD_COUNT] = [
-    "draw x offset",
-    "draw y offset",
-    "display vram x start",
-    "display vram y start",
-    "display column start",
-    "display column end",
-    "display line start",
-    "display line end",
-    "texture page x base",
-    "texture page y base",
-    "transparency blending",
-    "texture depth",
-    "dithering enabled",
-    "draw to display",
-    "set mask bit",
-    "draw masked pixels",
-    "interlace field",
-    "texture disabled",
-    "horizontal resolution",
-    "vertical resolution",
-    "video mode",
-    "color depth",
-    "vertical interlace enabled",
-    "display enabled",
-    "interrupt request enabled",
-    "command ready",
-    "VRAM to CPU ready",
-    "DMA block ready",
-    "DMA direction",
-];
-
-const FIELD_COUNT: usize = 29;

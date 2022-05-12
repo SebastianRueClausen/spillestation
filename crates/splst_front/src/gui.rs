@@ -7,9 +7,17 @@ use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
 use egui_winit::State as WinState;
 use winit::window::Window;
 
-/// All the egui stuff required to draw gui to the screen.
-pub struct GuiCtx {
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct GuiContext {
     pub egui_ctx: egui::Context,
+    pub main_style: Arc<egui::Style>,
+}
+
+/// All the egui stuff required to draw gui to the screen.
+pub struct GuiRenderer {
+    ctx: GuiContext,
     win_state: WinState,
     screen_descriptor: ScreenDescriptor,
     render_pass: RenderPass,
@@ -17,10 +25,14 @@ pub struct GuiCtx {
     textures: egui::TexturesDelta,
 }
 
-impl GuiCtx {
+impl GuiRenderer {
     pub fn new(scale_factor: f32, renderer: &Renderer) -> Self {
-        let egui_ctx = egui::Context::default();
-        egui_ctx.set_visuals(visuals());
+        let ctx = GuiContext {
+            egui_ctx: egui::Context::default(),
+            main_style: Arc::new(egui::Style::default()),
+        };
+
+        ctx.egui_ctx.set_style(ctx.main_style.clone());
 
         let max_texture_dim = renderer.device.limits().max_texture_dimension_2d as usize;
         let win_state = WinState::from_pixels_per_point(max_texture_dim, scale_factor);
@@ -34,12 +46,12 @@ impl GuiCtx {
             physical_width,
             physical_height,
             scale_factor,
-        };
+       };
 
         let render_pass = RenderPass::new(&renderer.device, renderer.surface_format, 1);
 
         Self {
-            egui_ctx,
+            ctx,
             win_state,
             screen_descriptor,
             render_pass,
@@ -49,7 +61,7 @@ impl GuiCtx {
     }
 
     pub fn handle_window_event(&mut self, event: &winit::event::WindowEvent) {
-        self.win_state.on_event(&self.egui_ctx, event);
+        self.win_state.on_event(&self.ctx.egui_ctx, event);
     }
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
@@ -74,21 +86,19 @@ impl GuiCtx {
         func: F,
     ) -> Result<(), BackendError>
     where
-        F: FnOnce(&egui::Context),
+        F: FnOnce(&GuiContext),
     {
         let input = self.win_state.take_egui_input(window);
-        let output = self.egui_ctx.run(input, |ctx| {
-            func(ctx);
-        });
+        let output = self.ctx.egui_ctx.run(input, |_| func(&self.ctx));
 
         self.textures.append(output.textures_delta);
         self.win_state.handle_platform_output(
             window,
-            &self.egui_ctx,
+            &self.ctx.egui_ctx,
             output.platform_output,
         );
 
-        self.jobs = self.egui_ctx.tessellate(output.shapes);
+        self.jobs = self.ctx.egui_ctx.tessellate(output.shapes);
 
         self.render_pass.add_textures(
             &renderer.device,
@@ -116,88 +126,94 @@ impl GuiCtx {
     }
 }
 
-fn visuals() -> egui::Visuals {
+/*
+fn main_visuals() -> egui::Visuals {
     egui::Visuals {
-        widgets: widget_style(),
+        widgets: main_widget_style(),
         selection: egui::style::Selection {
-            bg_fill: PERSIAN_ACCENT,
+            bg_fill: BLUE_ACCENT,
             stroke: egui::Stroke {
-                color: egui::Color32::from_rgb(229, 229, 229),
+                color: FOREGROUND,
                 width: 1.0,
             },
         },
         button_frame: true,
         collapsing_header_frame: true,
-        faint_bg_color: egui::Color32::from_rgb(132, 132, 132),
-        extreme_bg_color: egui::Color32::from_rgb(132, 132, 132),
+        faint_bg_color: WHITE_ACCENT,
+        extreme_bg_color: WHITE_FOREGROUND,
+        window_rounding: egui::Rounding {
+            nw: 10.0,
+            ne: 10.0,
+            sw: 10.0,
+            se: 10.0
+        },
         ..Default::default()
     }
 }
 
-fn widget_style() -> egui::style::Widgets {
+fn main_widget_style() -> egui::style::Widgets {
     egui::style::Widgets {
         active: egui::style::WidgetVisuals {
-            bg_fill: egui::Color32::from_rgb(229, 229, 229),
+            bg_fill: BLUE_ACCENT,
             rounding: CORNER_ROUNDING,
             bg_stroke: egui::Stroke {
-                color: egui::Color32::BLACK,
-                // color: PERSIAN_ACCENT,
-                width: 2.0,
-            },
-            fg_stroke: egui::Stroke {
-                color: egui::Color32::from_rgb(132, 132, 132),
-                width: 2.0,
-            },
-            expansion: 1.0,
-        },
-        noninteractive: egui::style::WidgetVisuals {
-            bg_fill: egui::Color32::from_rgb(187, 187, 187),
-            rounding: CORNER_ROUNDING,
-            bg_stroke: egui::Stroke {
-                color: egui::Color32::from_rgb(132, 132, 132),
+                color: BACKGROUND,
                 width: 1.0,
             },
             fg_stroke: egui::Stroke {
-                color: egui::Color32::BLACK,
+                color: FOREGROUND,
+                width: 2.0,
+            },
+            expansion: 0.0,
+        },
+        noninteractive: egui::style::WidgetVisuals {
+            bg_fill: BACKGROUND,
+            rounding: CORNER_ROUNDING,
+            bg_stroke: egui::Stroke {
+                color: BACKGROUND,
+                width: 1.0,
+            },
+            fg_stroke: egui::Stroke {
+                color: FOREGROUND,
                 width: 1.0,
             },
             expansion: 0.0,
         },
         hovered: egui::style::WidgetVisuals {
-            bg_fill: egui::Color32::from_rgb(229, 229, 229),
+            bg_fill: WHITE_FOREGROUND,
             rounding: CORNER_ROUNDING,
             bg_stroke: egui::Stroke {
-                color: PERSIAN_ACCENT,
-                width: 2.0,
+                color: BACKGROUND,
+                width: 1.0,
             },
             fg_stroke: egui::Stroke {
-                color: egui::Color32::BLACK,
+                color: FOREGROUND,
                 width: 1.0,
             },
             expansion: 0.0,
         },
         inactive: egui::style::WidgetVisuals {
-            bg_fill: egui::Color32::from_rgb(229, 229, 229),
+            bg_fill: WHITE_FOREGROUND,
             rounding: CORNER_ROUNDING,
             bg_stroke: egui::Stroke {
-                color: egui::Color32::from_rgb(132, 132, 132),
+                color: BACKGROUND,
                 width: 1.0,
             },
             fg_stroke: egui::Stroke {
-                color: egui::Color32::BLACK,
+                color: FOREGROUND,
                 width: 1.0,
             },
             expansion: 0.0,
         },
         open: egui::style::WidgetVisuals {
-            bg_fill: PERSIAN_ACCENT,
+            bg_fill: BLUE_ACCENT,
             rounding: CORNER_ROUNDING,
             bg_stroke: egui::Stroke {
-                color: PERSIAN_ACCENT,
+                color: BACKGROUND,
                 width: 1.0,
             },
             fg_stroke: egui::Stroke {
-                color: egui::Color32::BLACK,
+                color: FOREGROUND,
                 width: 1.0,
             },
             expansion: 0.0,
@@ -212,7 +228,9 @@ const CORNER_ROUNDING: egui::Rounding = egui::Rounding {
     se: 6.0,  
 };
 
-pub const PERSIAN_ACCENT: egui::Color32 = egui::Color32::from_rgb(1, 172, 159);
-// pub const RED_ACCENT: egui::Color32 = egui::Color32::from_rgb(223, 0, 36);
-// const BLUE_ACCENT: egui::Color32 = egui::Color32::from_rgb(46, 109, 180);
-// const YELLOW_ACCENT: egui::Color32 = egui::Color32::from_rgb(243, 195, 0);
+const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(209, 207, 205);
+const FOREGROUND: egui::Color32 = egui::Color32::from_rgb(13, 22, 29);
+const WHITE_FOREGROUND: egui::Color32 = egui::Color32::from_rgb(240, 240, 240);
+const WHITE_ACCENT: egui::Color32 = egui::Color32::from_rgb(199, 199, 199);
+const BLUE_ACCENT: egui::Color32 = egui::Color32::from_rgb(73, 145, 163);
+*/

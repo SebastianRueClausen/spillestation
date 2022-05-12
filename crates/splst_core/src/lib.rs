@@ -232,8 +232,8 @@ impl System {
         &self.cpu.bus
     }
 
-    pub fn irq_state_mut(&mut self) -> &mut IrqState {
-        &mut self.cpu.bus.irq_state
+    pub fn irq_state(&mut self) -> &IrqState {
+        &self.cpu.bus.irq_state
     }
 
     pub fn gpu(&self) -> &Gpu {

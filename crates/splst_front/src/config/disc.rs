@@ -1,5 +1,9 @@
 //! # TODO
+//!
 //! - Maybe check that the paths exists when adding them.
+//!
+//! - Add support for whole folder which we listen to and add files as they are added to the
+//!   folder.
 
 use splst_core::Disc;
 
@@ -23,7 +27,7 @@ pub struct DiscConfig {
 }
 
 impl DiscConfig {
-    pub fn handle_dropped_file(&mut self, path: &Path) {
+    pub fn _handle_dropped_file(&mut self, path: &Path) {
         self.is_modified = true;
         self.paths.push(path.to_path_buf());
     }
@@ -46,7 +50,7 @@ impl DiscConfig {
             }
         }
 
-        ui.separator();
+        ui.add_space(10.0);
 
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.add_path).hint_text("CUE File"));
@@ -71,41 +75,39 @@ impl DiscConfig {
             }
         });
 
-        ui.separator();
+        ui.add_space(10.0);
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("game_grid").show(ui, |ui| {
-                let len_before = self.paths.len(); 
-                self.paths.retain(|path| {
-                    let short = path
-                        .as_path()
-                        .file_name()
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy();
+        egui::Grid::new("game_grid").show(ui, |ui| {
+            let len_before = self.paths.len(); 
+            self.paths.retain(|path| {
+                let short = path
+                    .as_path()
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy();
 
-                    let long = path
-                        .as_path()
-                        .to_string_lossy();
+                let long = path
+                    .as_path()
+                    .to_string_lossy();
 
-                    ui.label(&*short).on_hover_text(&*long);
+                ui.label(&*short).on_hover_text(&*long);
 
-                    let retain = !ui.button("Remove").clicked();
-                    if ui.button("Load").clicked() {
-                        match splst_cdimg::open_cd(path) {
-                            Err(err) => self.error = Some(err.to_string()),
-                            Ok(cd) => disc.load(cd),
-                        }
+                let retain = !ui.button("Remove").clicked();
+                if ui.button("Load").clicked() {
+                    match splst_cdimg::open_cd(path) {
+                        Err(err) => self.error = Some(err.to_string()),
+                        Ok(cd) => disc.load(cd),
                     }
-    
-                    ui.end_row();
-
-                    retain
-                });
-
-                if len_before != self.paths.len() {
-                    self.is_modified = true; 
                 }
+
+                ui.end_row();
+
+                retain
             });
+
+            if len_before != self.paths.len() {
+                self.is_modified = true; 
+            }
         });
     }
 }

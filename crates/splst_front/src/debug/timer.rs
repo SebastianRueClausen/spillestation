@@ -1,99 +1,85 @@
 use super::DebugApp;
 
-use splst_core::timer::{Timers, TimerId};
+use splst_core::timer::TimerId;
 use splst_core::System;
 
-use std::fmt::Write;
-use std::time::Duration;
-
 #[derive(Default)]
-pub struct TimerView {
-    fields: [[String; 13]; 3],  
-}
-
-impl TimerView {
-    pub fn write_fields(&mut self, timers: &Timers) -> Result<(), std::fmt::Error> {
-        let timer_ids = [TimerId::Tmr0, TimerId::Tmr1, TimerId::Tmr2];
-        for (id, fields) in timer_ids.iter().zip(self.fields.iter_mut()) {
-            let tmr = timers.timer(*id);
-            write!(fields[0], "{}", tmr.counter)?;
-            write!(fields[1], "{}", tmr.target)?;
-            write!(fields[2], "{}", tmr.mode.sync_enabled())?;
-            write!(fields[3], "{}", tmr.mode.sync_mode(*id))?;
-            write!(fields[4], "{}", tmr.mode.reset_on_target())?;
-            write!(fields[5], "{}", tmr.mode.irq_on_target())?;
-            write!(fields[6], "{}", tmr.mode.irq_on_overflow())?;
-            write!(fields[7], "{}", tmr.mode.irq_repeat())?;
-            write!(fields[8], "{}", tmr.mode.irq_toggle_mode())?;
-            write!(fields[9], "{}", tmr.mode.clock_source(*id))?;
-            write!(fields[10], "{}", tmr.mode.master_irq_flag())?;
-            write!(fields[11], "{}", tmr.mode.target_reached())?;
-            write!(fields[12], "{}", tmr.mode.overflow_reached())?;
-        }
-        Ok(())
-    }
-}
+pub struct TimerView;
 
 impl DebugApp for TimerView {
     fn name(&self) -> &'static str {
         "Timer View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
-        self.fields.iter_mut().for_each(|fields|
-            fields.iter_mut().for_each(|field| field.clear())
-        );
-        if let Err(err) = self.write_fields(system.timers()) {
-            eprintln!("{}", err);
-        }
-    }
-
-    fn show(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, system: &mut System, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (timer, (header, grid)) in self.fields.iter().zip(UI_IDS) {
-                egui::CollapsingHeader::new(header).show(ui, |ui| {
-                    egui::Grid::new(grid).show(ui, |ui| {
-                        for (field, label) in timer.iter().zip(FIELD_LABELS) {
-                            ui.label(label);
-                            ui.label(field);
-                            ui.end_row();
-                        }
+            for id in [TimerId::Tmr0, TimerId::Tmr1, TimerId::Tmr2].iter() {
+                egui::CollapsingHeader::new(format!("{id}")).show(ui, |ui| {
+                    let timer = system.timers().timer(*id);
+                    egui::Grid::new(format!("grid_{id}")).show(ui, |ui| {
+                        ui.label("counter");
+                        ui.label(format!("{}", timer.counter));
+                        ui.end_row();
+
+                        ui.label("target");
+                        ui.label(format!("{}", timer.target));
+                        ui.end_row();
+
+                        ui.label("sync enabled");
+                        ui.label(format!("{}", timer.mode.sync_enabled()));
+                        ui.end_row();
+
+                        ui.label("sync mode");
+                        ui.label(format!("{}", timer.mode.sync_mode(*id)));
+                        ui.end_row();
+
+                        ui.label("reset on target");
+                        ui.label(format!("{}", timer.mode.reset_on_target()));
+                        ui.end_row();
+
+                        ui.label("irq on target");
+                        ui.label(format!("{}", timer.mode.irq_on_target()));
+                        ui.end_row();
+
+                        ui.label("irq on overflow");
+                        ui.label(format!("{}", timer.mode.irq_on_overflow()));
+                        ui.end_row();
+
+                        ui.label("irq repeat");
+                        ui.label(format!("{}", timer.mode.irq_repeat()));
+                        ui.end_row();
+
+                        ui.label("irq toggle mode");
+                        ui.label(format!("{}", timer.mode.irq_toggle_mode()));
+                        ui.end_row();
+
+                        ui.label("clock source");
+                        ui.label(format!("{}", timer.mode.clock_source(*id)));
+                        ui.end_row();
+
+                        ui.label("master irq flag");
+                        ui.label(format!("{}", timer.mode.master_irq_flag()));
+                        ui.end_row();
+
+                        ui.label("target reached");
+                        ui.label(format!("{}", timer.mode.target_reached()));
+                        ui.end_row();
+
+                        ui.label("overflow reached");
+                        ui.label(format!("{}", timer.mode.overflow_reached()));
+                        ui.end_row();
                     });
                 });
             }
         });
     }
 
-    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
+    fn show_window(&mut self, system: &mut System, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("Timer View")
             .open(open)
             .resizable(true)
             .default_width(240.0)
             .default_height(480.0)
-            .show(ctx, |ui| {
-                self.show(ui);
-            });
+            .show(ctx, |ui| self.show(system, ui));
     }
 }
-
-const FIELD_LABELS: [&str; 13] = [
-    "counter",
-    "target",
-    "sync enabled",
-    "sync mode",
-    "reset on target",
-    "irq on target",
-    "irq on overflow",
-    "irq repeat",
-    "irq toggle mode",
-    "clock source",
-    "master irq flag",
-    "target reached",
-    "overflow reached",
-];
-
-const UI_IDS: [(&str, &str); 3] = [
-    ("TMR0", "tmr0_grid"),
-    ("TMR1", "tmr1_grid"),
-    ("TMR2", "tmr2_grid"),
-];

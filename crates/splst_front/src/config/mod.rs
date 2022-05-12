@@ -4,6 +4,7 @@ mod disc;
 
 use splst_core::{Bios, Button, IoSlot, Controllers, Disc};
 
+use crate::gui::GuiContext;
 use controller::ControllerConfig;
 use bios::BiosConfig;
 use disc::DiscConfig;
@@ -22,9 +23,9 @@ use std::fs;
 /// allow for saving the settings the a config file. It can also be rendered as GUI.
 #[derive(Default, Serialize, Deserialize)]
 pub struct Config {
-    /// Which menu to show.
     #[serde(skip)]
-    menu: Menu, 
+    show_bios: bool,
+
     /// If the config is saved to a config file. It dosn't represent if the config has been
     /// modified compared to the version the config file.
     #[serde(skip)]
@@ -49,7 +50,7 @@ impl Config {
 
     /// Show the BIOS menu. Used when trying to start the emulator without a loaded BIOS.
     pub fn show_bios_menu(&mut self) {
-        self.menu = Menu::Bios;
+        self.show_bios = true;
     }
 
     /// The default configs, but showing a message.
@@ -142,20 +143,11 @@ impl Config {
         key: VirtualKeyCode,
         state: ElementState,
     ) -> bool {
-        match self.menu {
-            Menu::Controller => {
-                self.controller.handle_key_event(key_map, key, state)
-            }
-            _ => false,
-        }
+        self.controller.handle_key_event(key_map, key, state)
     }
 
-    pub fn handle_dropped_file(&mut self, path: &Path) {
-        match self.menu {
-            Menu::Bios => self.bios.handle_dropped_file(path),
-            Menu::Disc => self.disc.handle_dropped_file(path),
-            _ => (),
-        }
+    pub fn handle_dropped_file(&mut self, _: &Path) {
+        // TODO.
     }
 
     /// Show inside config settings inside UI.
@@ -164,64 +156,61 @@ impl Config {
         used_bios: Option<&Bios>,
         controllers: &mut Controllers,
         disc: &mut Disc,
-        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
         ui: &mut egui::Ui,
     ) {
-        egui::SidePanel::left("menu_panel")
-            .max_width(32.0)
-            .show_inside(ui, |ui| {
-                ui.selectable_value(&mut self.menu, Menu::Controller, "Controller");
-                ui.selectable_value(&mut self.menu, Menu::Bios, "Bios");
-                ui.selectable_value(&mut self.menu, Menu::Disc, "Disc");
-
-                ui.separator();
-
-                if let Some(msg) = &self.message {
-                    ui.label(msg);
+        ui.horizontal(|ui| {
+            if !self.saved_to_file || self.is_modified() {
+                if ui.button("Save to config").clicked() {
+                    self.try_save_to_file();
                 }
-                if !self.saved_to_file || self.is_modified() {
-                    if ui.button("Save to config").clicked() {
-                        self.try_save_to_file();
-                    }
-                    if ui.button("Reload from Config").clicked() {
-                        *self = Self::from_file_or_default();
-                    }
-                } else {
-                    ui.label("Saved to Config");
+                if ui.button("Reload from Config").clicked() {
+                    *self = Self::from_file_or_default();
                 }
-            });
+            } else {
+                ui.label("Saved to Config");
+            }
 
-        match self.menu {
-            Menu::Controller => self.controller.show(controllers, key_map, ui),
-            Menu::Bios => self.bios.show(used_bios, ui),
-            Menu::Disc => self.disc.show(disc, ui),
+            if let Some(msg) = &self.message {
+                ui.label(msg);
+            }
+        });
+        
+        ui.collapsing("Controller", |ui| {
+            self.controller.show(controllers, ui);
+        });
+
+        let bios_open = if self.show_bios {
+            Some(true)
+        } else {
+            None  
+        };
+
+        let bios = egui::CollapsingHeader::new("Bios")
+            .open(bios_open)
+            .show(ui, |ui| self.bios.show(used_bios, ui));
+
+        ui.collapsing("Disc", |ui| {
+            self.disc.show(disc, ui);
+        });
+        
+        if self.show_bios {
+            self.show_bios = false;
+            ui.scroll_to_rect(bios.header_response.rect, Some(egui::Align::Center));
         }
     }
 
+    /// Show as side panel of the while window.
     pub fn show(
         &mut self,
         used_bios: Option<&Bios>,
         controllers: &mut Controllers,
         disc: &mut Disc,
-        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
-        ctx: &egui::Context,
+        ctx: &GuiContext,
     ) {
-        egui::SidePanel::left("settings").show(ctx, |ui| {
-            self.show_inside(used_bios, controllers, disc, key_map, ui)
+        egui::SidePanel::left("settings").show(&ctx.egui_ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                self.show_inside(used_bios, controllers, disc, ui)
+            });
         });
     }
 }
-
-#[derive(PartialEq)]
-enum Menu {
-    Controller,
-    Bios,
-    Disc,
-}
-
-impl Default for Menu {
-    fn default() -> Self {
-        Menu::Controller
-    }
-}
-

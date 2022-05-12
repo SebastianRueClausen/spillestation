@@ -12,6 +12,7 @@ use std::collections::BinaryHeap;
 use std::collections::binary_heap::Iter as BinaryHeapIter;
 use std::cmp::Ordering;
 use std::fmt;
+use std::time::Instant;
 
 /// This is reponsible to handling events and timing of the system in general.
 pub struct Schedule {

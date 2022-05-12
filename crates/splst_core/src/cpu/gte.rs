@@ -1,4 +1,11 @@
 #![allow(dead_code)]
+//! # TODO
+//! 
+//! - Change store and load to work like in the SPU, where a big struct with all the registers
+//!   are cast into a byte array and simply assigned to.
+//! 
+//! - SIMD optimize.
+
 
 use splst_util::{Bit, BitSet};
 

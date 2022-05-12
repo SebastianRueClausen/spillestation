@@ -1,79 +1,25 @@
 use super::DebugApp;
 
 use splst_core::System;
-use splst_core::io_port::{StatReg, CtrlReg, ModeReg};
-
-use std::fmt::Write;
-use std::time::Duration;
 
 #[derive(Default)]
-pub struct IoPortView {
-    active_device: String,
-    transfer: String,
-    baud: String,
-    stat_reg: [String; 5],
-    ctrl_reg: [String; 10],
-    mode_reg: [String; 2],
-}
-
-impl IoPortView {
-    pub fn update_stat_reg(&mut self, stat: StatReg) -> Result<(), std::fmt::Error> {
-        self.stat_reg.iter_mut().for_each(|field| field.clear());
-
-        write!(&mut self.stat_reg[0], "{}", stat.tx_ready())?;
-        write!(&mut self.stat_reg[1], "{}", stat.rx_fifo_not_empty())?;
-        write!(&mut self.stat_reg[2], "{}", stat.tx_done())?;
-        write!(&mut self.stat_reg[3], "{}", stat.ack_input_lvl())?;
-        write!(&mut self.stat_reg[4], "{}", stat.irq())?;
-
-        Ok(())
-    }
-
-    pub fn update_ctrl_reg(&mut self, ctrl: CtrlReg) -> Result<(), std::fmt::Error> {
-        self.ctrl_reg.iter_mut().for_each(|field| field.clear());
-
-        write!(&mut self.ctrl_reg[0], "{}", ctrl.tx_enabled())?;
-        write!(&mut self.ctrl_reg[1], "{}", ctrl.select())?;
-        write!(&mut self.ctrl_reg[2], "{}", ctrl.rx_enabled())?;
-        write!(&mut self.ctrl_reg[3], "{}", ctrl.ack())?;
-        write!(&mut self.ctrl_reg[4], "{}", ctrl.reset())?;
-        write!(&mut self.ctrl_reg[5], "{}", ctrl.rx_irq_mode())?;
-        write!(&mut self.ctrl_reg[6], "{}", ctrl.tx_irq_enabled())?;
-        write!(&mut self.ctrl_reg[7], "{}", ctrl.rx_irq_enabled())?;
-        write!(&mut self.ctrl_reg[8], "{}", ctrl.ack_irq_enabled())?;
-        write!(&mut self.ctrl_reg[9], "{}", ctrl.io_slot())?;
-
-        Ok(())
-    }
-
-    pub fn update_mode_reg(&mut self, mode: ModeReg) -> Result<(), std::fmt::Error> {
-        self.mode_reg.iter_mut().for_each(|field| field.clear());
-
-        write!(&mut self.mode_reg[0], "{}", mode.baud_reload_factor())?;
-        write!(&mut self.mode_reg[1], "{}", mode.char_width())?;
-
-        Ok(())
-    }
-    
-}
+pub struct IoPortView;
 
 impl DebugApp for IoPortView {
     fn name(&self) -> &'static str {
         "I/O View"
     }
 
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
-        let io_port = system.io_port();
+    fn show(&mut self, system: &mut System, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::Grid::new("grid").show(ui, |ui| {
+                let io_port = system.io_port();
+                
+                ui.label("baud reload factor");
+                ui.label(format!("{}", io_port.baud()));
+                ui.end_row();
 
-        let err = self.update_stat_reg(io_port.stat_reg())
-            .and(self.update_ctrl_reg(io_port.ctrl_reg()))
-            .and(self.update_mode_reg(io_port.mode_reg()))
-            .and({
-                self.baud.clear();
-                write!(&mut self.baud, "{}", io_port.baud())
-            })
-            .and({
-                self.transfer.clear();
+                ui.label("transfer");
 
                 let transfer = if io_port.waiting_for_ack() {
                     "waiting for acknowledgement"
@@ -85,101 +31,109 @@ impl DebugApp for IoPortView {
                     }
                 };
 
-                write!(&mut self.transfer, "{transfer}")
-            })
-            .and({
-                self.active_device.clear();
-                if let Some(device) = io_port.active_device() {
-                    write!(&mut self.active_device, "{device}")
-                } else {
-                    write!(&mut self.active_device, "none")
-                }
-            });
-
-        if let Err(err) = err {
-            eprintln!("{}", err);
-        }
-    }
-
-    fn show(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("grid").show(ui, |ui| {
-                ui.label("baud reload value");
-                ui.label(&self.baud);
-                ui.end_row();
-
-                ui.label("transfer");
-                ui.label(&self.transfer);
+                ui.label(transfer);
                 ui.end_row();
 
                 ui.label("active device");
-                ui.label(&self.active_device);
+                let active_device = io_port
+                    .active_device()
+                    .map(|dev| format!("{dev}"))
+                    .unwrap_or(String::from("none"));
+                ui.label(active_device);
                 ui.end_row();
             });
             egui::CollapsingHeader::new("Status Register").show(ui, |ui| {
                 egui::Grid::new("stat_grid").show(ui, |ui| {
-                    for (field, label) in self.stat_reg.iter().zip(STAT_REG_LABELS.iter()) {
-                        ui.label(*label);
-                        ui.label(field);
-                        ui.end_row();
-                    }
+                    let status = system.io_port().stat_reg();
+                    
+                    ui.label("tx ready");
+                    ui.label(format!("{}", status.tx_ready()));
+                    ui.end_row();
+                    
+                    ui.label("rx empty");
+                    ui.label(format!("{}", !status.rx_fifo_not_empty()));
+                    ui.end_row();
+                    
+                    ui.label("tx done");
+                    ui.label(format!("{}", status.tx_done()));
+                    ui.end_row();
+                    
+                    ui.label("acknowledge input level");
+                    ui.label(format!("{}", status.ack_input_lvl()));
+                    ui.end_row();
+
+                    ui.label("interrupt");
+                    ui.label(format!("{}", status.irq()));
+                    ui.end_row();
                 })
             });
             egui::CollapsingHeader::new("Control Register").show(ui, |ui| {
                 egui::Grid::new("ctrl_grid").show(ui, |ui| {
-                    for (field, label) in self.ctrl_reg.iter().zip(CTRL_REG_LABELS.iter()) {
-                        ui.label(*label);
-                        ui.label(field);
-                        ui.end_row();
-                    }
+                    let ctrl = system.io_port().ctrl_reg();
+                    
+                    ui.label("tx enabled");
+                    ui.label(format!("{}", ctrl.tx_enabled()));
+                    ui.end_row();
+                    
+                    ui.label("select");
+                    ui.label(format!("{}", ctrl.select()));
+                    ui.end_row();
+
+                    ui.label("rx enabled");
+                    ui.label(format!("{}", ctrl.rx_enabled()));
+                    ui.end_row();
+
+                    ui.label("acknowledge");
+                    ui.label(format!("{}", ctrl.ack()));
+                    ui.end_row();
+
+                    ui.label("reset");
+                    ui.label(format!("{}", ctrl.reset()));
+                    ui.end_row();
+
+                    ui.label("rx interrupt mode");
+                    ui.label(format!("{}", ctrl.rx_irq_mode()));
+                    ui.end_row();
+                    
+                    ui.label("tx interrupt enabled");
+                    ui.label(format!("{}", ctrl.tx_irq_enabled()));
+                    ui.end_row();
+
+                    ui.label("rx interrupt enabled");
+                    ui.label(format!("{}", ctrl.rx_irq_enabled()));
+                    ui.end_row();
+
+                    ui.label("acknowledge interrupt enabled");
+                    ui.label(format!("{}", ctrl.ack_irq_enabled()));
+                    ui.end_row();
+
+                    ui.label("I/O slot");
+                    ui.label(format!("{}", ctrl.io_slot()));
+                    ui.end_row();
                 })
             });
             egui::CollapsingHeader::new("Mode Register").show(ui, |ui| {
                 egui::Grid::new("mode_grid").show(ui, |ui| {
-                    for (field, label) in self.mode_reg.iter().zip(MODE_REG_LABELS.iter()) {
-                        ui.label(*label);
-                        ui.label(field);
-                        ui.end_row();
-                    }
+                    let mode = system.io_port().mode_reg();
+                    
+                    ui.label("baud reload factor");
+                    ui.label(format!("{}", mode.baud_reload_factor()));
+                    ui.end_row();
+
+                    ui.label("character width");
+                    ui.label(format!("{}", mode.char_width()));
+                    ui.end_row();
                 })
             });
         });
     }
 
-    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
+    fn show_window(&mut self, system: &mut System, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("I/O Port View")
             .open(open)
             .resizable(true)
             .default_width(240.0)
             .default_height(480.0)
-            .show(ctx, |ui| {
-                self.show(ui);
-            });
+            .show(ctx, |ui| self.show(system, ui));
     }
 }
-
-const STAT_REG_LABELS: [&str; 5] = [
-    "tx ready",
-    "rx fifo empty",
-    "tx done",
-    "acknowledge input level",
-    "interrupt",
-];
-
-const CTRL_REG_LABELS: [&str; 10] = [
-    "tx enabled",
-    "select",
-    "rx enabled",
-    "acknowledge",
-    "reset",
-    "rx interrupt mode",
-    "tx interrupt enabled",
-    "rx interrupt enabled",
-    "acknowledge interrupt",
-    "desired slot"
-];
-
-const MODE_REG_LABELS: [&str; 2] = [
-    "baud reload factor",
-    "character width",
-];

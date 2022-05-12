@@ -1,5 +1,6 @@
 //! Simple FPS counter GUI app.
 
+use splst_core::System;
 use super::DebugApp;
 
 use std::fmt::Write;
@@ -41,16 +42,16 @@ impl DebugApp for FrameCounter {
         }
     }
     
-    fn show(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, _: &mut System, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x /= 2.0;
             ui.label(&self.show);
         });
     }
 
-    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
+    fn show_window(&mut self, system: &mut System, ctx: &egui::Context, open: &mut bool) {
         egui::Window::new("Frame Rate")
             .open(open)
-            .show(ctx, |ui| self.show(ui));
+            .show(ctx, |ui| self.show(system, ui));
     }
 }

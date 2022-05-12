@@ -5,103 +5,24 @@
 
 use super::DebugApp;
 
-use splst_core::cpu::{Cpu, REGISTER_NAMES};
+use splst_core::cpu::REGISTER_NAMES;
 use splst_core::{System, StopReason, Debugger};
 use crate::timing::CPU_HZ;
 
-use std::fmt::{self, Write};
 use std::time::Duration;
-
-/// ['App'] to shows the status of the CPU. It shows the value of all the registers and PC and
-/// such.
-#[derive(Default)]
-pub struct CpuStatus {
-    registers: [String; 32],
-    /// Fields which aren't a registers, such as the PC and the disassembled instruction current being
-    /// run.
-    fields: [String; 5],
-}
-
-impl CpuStatus {
-    pub fn write_fields(&mut self, cpu: &mut Cpu) -> Result<(), fmt::Error> {
-        for (show, value) in self.registers.iter_mut().zip(cpu.registers.iter()) {
-            write!(show, "{}", value)?;
-        }
-
-        write!(&mut self.fields[0], "{:08x}", cpu.hi)?;
-        write!(&mut self.fields[1], "{:08x}", cpu.lo)?;
-        write!(&mut self.fields[2], "{:08x}", cpu.pc)?;
-        write!(&mut self.fields[3], "{}", cpu.curr_ins())?;
-        write!(&mut self.fields[4], "{}", cpu.icache_misses())?;
-
-        Ok(())
-    }
-}
-
-impl DebugApp for CpuStatus {
-    fn name(&self) -> &'static str {
-        "CPU Status"
-    }
-
-    fn update_tick(&mut self, _: Duration, system: &mut System) {
-        self.fields.iter_mut()
-            .chain(self.registers.iter_mut())
-            .for_each(|f| f.clear());
-        if let Err(err) = self.write_fields(&mut system.cpu) {
-            eprintln!("{}", err);
-        }
-    }
-
-    fn show(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                ui.collapsing("Status", |ui| {
-                    egui::Grid::new("cpu_status_grid").show(ui, |ui| {
-                        for (field, label) in self.fields.iter().zip(FIELD_LABELS) {
-                            ui.label(label);
-                            ui.label(field);
-                            ui.end_row();
-                        }
-                    });
-                });
-                ui.collapsing("Registers", |ui| {
-                    egui::Grid::new("cpu_register_grid").show(ui, |ui| {
-                        for (value, name) in self.registers.iter().zip(REGISTER_NAMES) {
-                            ui.label(name);
-                            ui.label(value);
-                            ui.end_row();
-                        }
-                    });
-                });
-            });
-    }
-
-    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
-        egui::Window::new("CPU Status")
-            .open(open)
-            .resizable(true)
-            .min_width(120.0)
-            .default_width(240.0)
-            .default_height(240.0)
-            .show(ctx, |ui| {
-                self.show(ui);
-            });
-    }
-}
 
 #[derive(PartialEq, Eq)]
 enum RunMode {
     Step {
-        /// The amount of cycles each step.
+        /// The amount of instruction for each step.
         amount: u64,
         /// If the step button has been pressed.
         stepped: bool,
     },
     Run {
-        /// The speed of which the run the system, in CPU cycles per second.
+        /// CPU Hz the system runs at.
         speed: u64,
-        /// This is used to run at a more precise HZ. It's also required to run the
+        /// This is used to run at a more precise Hz. It's also required to run the
         /// CPU at a lower Hz than the update rate, since there may be multiple
         /// updates between each CPU cycle.
         remainder: Duration,
@@ -109,14 +30,14 @@ enum RunMode {
 }
 
 impl RunMode {
-    fn default_step() -> Self {
+    fn step() -> Self {
         RunMode::Step {
             amount: 1,
             stepped: false
         }
     }
 
-    fn default_run() -> Self {
+    fn run() -> Self {
         RunMode::Run {
             speed: 1,
             remainder: Duration::ZERO
@@ -126,7 +47,7 @@ impl RunMode {
 
 impl Default for RunMode {
     fn default() -> Self {
-        Self::default_step()
+        Self::step()
     }
 }
 
@@ -237,11 +158,8 @@ impl Default for BreakPointAdd {
     }
 }
 
-/// ['App'] for controlling the ['System'] when it's in debug mode. It has two differnent modes.
-///  - Run: Automatically runs the CPU at a given speed.
-///  - Step: Manually step through each cycle.
 #[derive(Default)]
-pub struct CpuCtrl {
+pub struct CpuApp {
     mode: RunMode,
     /// Message shown when a break point has been hit.
     bp_msg: Option<String>,
@@ -249,7 +167,7 @@ pub struct CpuCtrl {
     bp_add: BreakPointAdd,
 }
 
-impl CpuCtrl {
+impl CpuApp {
     /// Show the breakpoints section.
     fn show_breakpoints(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -321,12 +239,13 @@ impl CpuCtrl {
                     show_bps(ui, &mut self.bps.stores, BreakPointTy::Store.name());
                 });
         });
+
     }
 }
 
-impl DebugApp for CpuCtrl {
+impl DebugApp for CpuApp {
     fn name(&self) -> &'static str {
-        "CPU Control"
+        "CPU"
     }
 
     fn update_tick(&mut self, dt: Duration, sys: &mut System) {
@@ -352,7 +271,7 @@ impl DebugApp for CpuCtrl {
         };
 
         if stop == StopReason::Break {
-            self.mode = RunMode::default_step();
+            self.mode = RunMode::step();
 
             let message: String = self.bps.breaks
                 .drain(..)
@@ -370,7 +289,7 @@ impl DebugApp for CpuCtrl {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, system: &mut System, ui: &mut egui::Ui) {
         let was_step = matches!(self.mode, RunMode::Step { .. });
         let mut is_step = was_step;
 
@@ -381,13 +300,13 @@ impl DebugApp for CpuCtrl {
 
         if was_step != is_step {
             if is_step {
-                self.mode = RunMode::default_step();
+                self.mode = RunMode::step();
             } else {
-                self.mode = RunMode::default_run();
+                self.mode = RunMode::run();
             }
         }
 
-        ui.separator();
+        ui.add_space(6.0);
 
         match self.mode {
             RunMode::Step { ref mut amount, ref mut stepped } => {
@@ -395,46 +314,84 @@ impl DebugApp for CpuCtrl {
                     0 | 2.. => " cycles",
                     1 => " cycle",
                 };
-                ui.add(egui::Slider::new(amount, 1..=CPU_HZ)
-                    .suffix(suffix)
-                    .logarithmic(true)
-                    .clamp_to_range(true)
-                    .smart_aim(true)
-                    .text("Step Amount")
-                );
-                *stepped = ui.button("Step").clicked();
+                ui.horizontal(|ui| {
+                    let slider = egui::Slider::new(amount, 1..=CPU_HZ)
+                        .suffix(suffix)
+                        .logarithmic(true)
+                        .clamp_to_range(true)
+                        .smart_aim(true)
+                        .text("Step Amount");
+
+                    ui.add(slider);
+
+                    *stepped = ui.button("Step").clicked();
+                });
             }
             RunMode::Run { ref mut speed, ..  } => {
-                ui.add(egui::Slider::new(speed, 1..=CPU_HZ)
+                let slider = egui::Slider::new(speed, 1..=CPU_HZ)
                     .suffix("Hz")
                     .logarithmic(true)
                     .clamp_to_range(true)
                     .smart_aim(true)
-                    .text("CPU Speed")
-                );
+                    .text("CPU Speed");
+                
+                ui.add(slider);
             }
         }
 
-        ui.separator();
+        ui.add_space(6.0);
+        
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            if let Some(ref msg) = self.bp_msg {
+                ui.label(msg);
+            }
 
-        if let Some(ref msg) = self.bp_msg {
-            ui.label(msg);
-        }
+            ui.collapsing("Breakpoints", |ui| {
+                self.show_breakpoints(ui);
+            });
 
-        ui.collapsing("Breakpoints", |ui| {
-            self.show_breakpoints(ui);
+            ui.collapsing("Status", |ui| {
+                egui::Grid::new("cpu_status_grid").show(ui, |ui| {
+                    ui.label("hi");
+                    ui.label(format!("{}", system.cpu.hi));
+                    ui.end_row();
+
+                    ui.label("lo");
+                    ui.label(format!("{}", system.cpu.lo));
+                    ui.end_row();
+
+                    ui.label("pc");
+                    ui.label(format!("{:08x}", system.cpu.pc));
+                    ui.end_row();
+
+                    ui.label("instruction");
+                    ui.label(format!("{}", system.cpu.curr_ins()));
+                    ui.end_row();
+                    
+                    ui.label("icache misses");
+                    ui.label(format!("{}", system.cpu.icache_misses()));
+                    ui.end_row();
+                    
+                    // Show registers.
+                    ui.end_row();
+
+                    for (val, name) in system.cpu.registers.iter().zip(REGISTER_NAMES) {
+                        ui.label(format!("${name}"));
+                        ui.label(format!("{val:08x}"));
+                        ui.end_row();
+                    }
+                });
+            });
         });
     }
 
-    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool) {
-        egui::Window::new("CPU Control")
+    fn show_window(&mut self, system: &mut System, ctx: &egui::Context, open: &mut bool) {
+        egui::Window::new("CPU")
             .open(open)
             .resizable(true)
             .default_width(100.0)
             .default_height(300.0)
-            .show(ctx, |ui| {
-                self.show(ui);
-            });
+            .show(ctx, |ui| self.show(system, ui));
     }
 }
 
@@ -448,5 +405,3 @@ fn show_bps(ui: &mut egui::Ui, bps: &mut Vec<BreakPoint>, kind: &str) {
         retain
     });
 }
-
-const FIELD_LABELS: [&str; 5] = ["hi", "lo", "pc", "ins", "icache misses"];

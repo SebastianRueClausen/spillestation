@@ -19,10 +19,10 @@ pub use menu::DebugMenu;
 /// Egui Debug App/Window.
 pub trait DebugApp {
     /// Show the app as a window.
-    fn show_window(&mut self, ctx: &egui::Context, open: &mut bool);
+    fn show_window(&mut self, system: &mut System, ctx: &egui::Context, open: &mut bool);
 
     // Show the app inside a UI.
-    fn show(&mut self, ui: &mut egui::Ui);
+    fn show(&mut self, system: &mut System, ui: &mut egui::Ui);
 
     /// Called every frame.
     fn frame_tick(&mut self, _: Duration) {}

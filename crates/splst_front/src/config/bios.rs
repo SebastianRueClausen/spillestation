@@ -36,7 +36,7 @@ impl BiosConfig {
         })
     }
 
-    pub fn handle_dropped_file(&mut self, path: &Path) {
+    pub fn _handle_dropped_file(&mut self, path: &Path) {
         self.is_modified = true;
         self.paths.push(path.to_path_buf()); 
     }
@@ -66,7 +66,7 @@ impl BiosConfig {
             }
         }
 
-        ui.separator();
+        ui.add_space(10.0);
 
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.add_path).hint_text("Path"));
@@ -91,41 +91,39 @@ impl BiosConfig {
             }
         });
 
-        ui.separator();
+        ui.add_space(10.0);
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("bios_grid").show(ui, |ui| {
-                let len_before = self.paths.len();
-                self.paths.retain(|path| {
-                    let short = path
-                        .as_path()
-                        .file_name()
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy();
+        egui::Grid::new("bios_grid").show(ui, |ui| {
+            let len_before = self.paths.len();
+            self.paths.retain(|path| {
+                let short = path
+                    .as_path()
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy();
 
-                    let long = path
-                        .as_path()
-                        .to_string_lossy();
+                let long = path
+                    .as_path()
+                    .to_string_lossy();
 
-                    ui.label(&*short).on_hover_text(&*long);
+                ui.label(&*short).on_hover_text(&*long);
 
-                    let retain = !ui.button("Remove").clicked();
-                    if used.is_none() && ui.button("Load").clicked() {
-                        match Bios::from_file(path) {
-                            Err(err) => self.error = Some(err.to_string()),
-                            Ok(bios) => self.loaded = Some(bios),
-                        }
+                let retain = !ui.button("Remove").clicked();
+                if used.is_none() && ui.button("Load").clicked() {
+                    match Bios::from_file(path) {
+                        Err(err) => self.error = Some(err.to_string()),
+                        Ok(bios) => self.loaded = Some(bios),
                     }
-    
-                    ui.end_row();
-
-                    retain
-                });
-
-                if len_before != self.paths.len() {
-                    self.is_modified = true;
                 }
+
+                ui.end_row();
+
+                retain
             });
+
+            if len_before != self.paths.len() {
+                self.is_modified = true;
+            }
         });
     }
 }

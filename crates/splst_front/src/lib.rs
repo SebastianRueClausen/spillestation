@@ -20,7 +20,7 @@ mod audio_stream;
 
 use splst_core::{System, timing, Controllers, Disc};
 use splst_render::{Renderer, SurfaceSize};
-use gui::GuiCtx;
+use gui::GuiRenderer;
 use start_menu::StartMenu;
 use debug::DebugMenu;
 use config::Config;
@@ -76,7 +76,7 @@ pub fn run() {
 
     config.controller.update_controllers(&mut controllers.borrow_mut());
 
-    let mut gui_ctx = GuiCtx::new(window.scale_factor() as f32, &renderer.borrow());
+    let mut gui_renderer = GuiRenderer::new(window.scale_factor() as f32, &renderer.borrow());
     let mut stage = Stage::StartMenu(StartMenu::new());
 
     // The instant the last frame was drawn.
@@ -130,14 +130,14 @@ pub fn run() {
                             height: physical_size.height,
                         };
                         renderer.borrow_mut().resize(size);
-                        gui_ctx.resize(size);
+                        gui_renderer.resize(size);
                     }
                     WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                         renderer.borrow_mut().resize(SurfaceSize {
                             width: new_inner_size.width,
                             height: new_inner_size.height,
                         }); 
-                        gui_ctx.set_scale_factor(window.scale_factor() as f32);
+                        gui_renderer.set_scale_factor(window.scale_factor() as f32);
                     }
                     WindowEvent::DroppedFile(path) => match stage {
                         Stage::Running { show_settings, .. } => {
@@ -164,7 +164,7 @@ pub fn run() {
                                 }
                                 (Some(key), state) if *show_settings => {
                                     if !config.handle_key_event(&mut key_map, key, state) {
-                                        gui_ctx.handle_window_event(event);
+                                        gui_renderer.handle_window_event(event);
                                     }
                                 }
                                 (Some(key), state) if !*show_settings => {
@@ -178,24 +178,24 @@ pub fn run() {
                                         .is_some();
 
                                     if !consumed {
-                                        gui_ctx.handle_window_event(event);
+                                        gui_renderer.handle_window_event(event);
                                     }
                                 }
                                 _ => {
-                                    gui_ctx.handle_window_event(event);
+                                    gui_renderer.handle_window_event(event);
                                 }
                             }
                         }
                         Stage::StartMenu { .. } => {
                             if let Some(key) = key_event.virtual_keycode {
                                 if !config.handle_key_event(&mut key_map, key, key_event.state) {
-                                    gui_ctx.handle_window_event(event);
+                                    gui_renderer.handle_window_event(event);
                                 }
                             }
                         }
                     }
                     _ => {
-                        gui_ctx.handle_window_event(event);
+                        gui_renderer.handle_window_event(event);
                     }
                 }
             }
@@ -208,15 +208,15 @@ pub fn run() {
                     ..
                 } => {
                     renderer.borrow_mut().render(|encoder, view, renderer| {
-                        let res = gui_ctx.render(renderer, encoder, view, &window, |gui| {
-                            app_menu.show(gui, mode);
+                        let res = gui_renderer.render(renderer, encoder, view, &window, |ctx| {
+                            app_menu.show(ctx, system, mode);
+
                             if show_settings {
                                 config.show(
                                     Some(system.bios()),
                                     &mut controllers.borrow_mut(),
                                     &mut disc.borrow_mut(),
-                                    &mut key_map,
-                                    gui,
+                                    ctx,
                                 );
                             }
                         });
@@ -229,13 +229,12 @@ pub fn run() {
                 Stage::StartMenu(ref mut menu) => {
                     let mut bios = None;
                     renderer.borrow_mut().render(|encoder, view, renderer| {
-                        let res = gui_ctx.render(renderer, encoder, view, &window, |gui| {
+                        let res = gui_renderer.render(renderer, encoder, view, &window, |ctx| {
                             bios = menu.show_area(
                                 &mut config,
                                 &mut controllers.borrow_mut(),
                                 &mut disc.borrow_mut(),
-                                &mut key_map,
-                                gui
+                                ctx,
                             );
                         });
                         if let Err(err) = res {
@@ -277,7 +276,10 @@ pub fn run() {
                             system.run(run_time);
                             
                             if let Some(ahead) = run_time.checked_sub(before.elapsed()) {
-                                *ctrl_flow = ControlFlow::WaitUntil(Instant::now() + ahead); 
+                                if ahead > Duration::from_micros(10) {
+                                    trace!("sleeping for {} micros", ahead.as_millis());
+                                    *ctrl_flow = ControlFlow::WaitUntil(Instant::now() + ahead); 
+                                }
                             }
                         }
                     }

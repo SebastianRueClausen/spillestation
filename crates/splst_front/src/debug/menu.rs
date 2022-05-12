@@ -2,9 +2,10 @@
 
 use splst_core::System;
 use crate::RunMode;
+use crate::gui::GuiContext;
 
 use super::DebugApp;
-use super::cpu::{CpuCtrl, CpuStatus};
+use super::cpu::CpuApp;
 use super::fps::FrameCounter;
 use super::gpu::GpuStatus;
 use super::mem::MemView;
@@ -26,8 +27,7 @@ impl DebugMenu {
         Self {
             open: false,
             apps: vec![
-                (Box::new(CpuCtrl::default()), false),
-                (Box::new(CpuStatus::default()), false),
+                (Box::new(CpuApp::default()), false),
                 (Box::new(MemView::default()), false),
                 (Box::new(FrameCounter::default()), false),
                 (Box::new(GpuStatus::default()), false),
@@ -69,11 +69,11 @@ impl DebugMenu {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, mode: &mut RunMode) {
+    pub fn show(&mut self, ctx: &GuiContext, system: &mut System, mode: &mut RunMode) {
         if *mode == RunMode::Debug {
             for (app, open) in &mut self.apps {
                 if *open {
-                    app.show_window(ctx, open);
+                    app.show_window(system, &ctx.egui_ctx, open);
                 }
             }
         }
@@ -81,18 +81,23 @@ impl DebugMenu {
             egui::SidePanel::right("App Menu")
                 .min_width(4.0)
                 .default_width(150.0)
-                .show(ctx, |ui| {
+                .show(&ctx.egui_ctx, |ui| {
+                    ui.set_style(ctx.main_style.clone());
+                    
                     ui.horizontal(|ui| {
                         ui.selectable_value(mode, RunMode::Debug, "Debug");
                         ui.selectable_value(mode, RunMode::Emulation, "Emulation");
                     });
+
                     ui.separator();
+
                     ui.add_enabled_ui(*mode == RunMode::Debug, |ui| {
                         egui::ScrollArea::vertical()
                             .max_height(400.0)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 for (app, open) in &mut self.apps {
+                                    // TODO: Change to toggle_value in egui 18.1.
                                     ui.checkbox(open, app.name());
                                 }
                             });
