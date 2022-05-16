@@ -32,9 +32,10 @@ pub fn run_code(input: &str) -> Box<Cpu> {
     let controllers = Rc::new(RefCell::new(Controllers::default()));
     let disc = Rc::new(RefCell::new(Disc::default()));
     let renderer = Rc::new(RefCell::new(()));
+    let sound = Rc::new(RefCell::new(()));
 
     let bios = Bios::from_code(base, &code);
-    let mut cpu = Cpu::new(bios, renderer, disc, controllers);
+    let mut cpu = Cpu::new(bios, sound, renderer, disc, controllers);
 
     cpu.pc = main;
     cpu.next_pc = main + 4;

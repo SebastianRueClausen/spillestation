@@ -7,7 +7,6 @@ use super::DebugApp;
 
 use splst_core::cpu::REGISTER_NAMES;
 use splst_core::{System, StopReason, Debugger};
-use crate::timing::CPU_HZ;
 
 use std::time::Duration;
 
@@ -315,7 +314,7 @@ impl DebugApp for CpuApp {
                     1 => " cycle",
                 };
                 ui.horizontal(|ui| {
-                    let slider = egui::Slider::new(amount, 1..=CPU_HZ)
+                    let slider = egui::Slider::new(amount, 1..=40_000_000)
                         .suffix(suffix)
                         .logarithmic(true)
                         .clamp_to_range(true)
@@ -328,7 +327,7 @@ impl DebugApp for CpuApp {
                 });
             }
             RunMode::Run { ref mut speed, ..  } => {
-                let slider = egui::Slider::new(speed, 1..=CPU_HZ)
+                let slider = egui::Slider::new(speed, 1..=40_000_000)
                     .suffix("Hz")
                     .logarithmic(true)
                     .clamp_to_range(true)

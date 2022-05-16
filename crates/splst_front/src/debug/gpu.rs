@@ -3,6 +3,7 @@
 use super::DebugApp;
 
 use splst_core::System;
+use splst_core::gpu;
 
 /// ['App'] for shows the current status of the ['Gpu'].
 #[derive(Default)]
@@ -10,15 +11,37 @@ pub struct GpuStatus;
 
 impl DebugApp for GpuStatus {
     fn name(&self) -> &'static str {
-        "GPU Status"
+        "GPU"
     }
 
     fn show(&mut self, system: &mut System, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .show(ui, |ui| {
+                let gpu = system.gpu();
+
                 egui::Grid::new("gpu_status_grid").show(ui, |ui| {
-                    let gpu = system.gpu();
+                    ui.label("FIFO");
+                    let full = gpu.fifo().len() as f32 / gpu::Fifo::SIZE as f32;
+                    let fifo = egui::widgets::ProgressBar::new(full)
+                        .text(format!("{} / {} words", gpu.fifo().len(), gpu::Fifo::SIZE));
+                    ui.add(fifo);
+                    ui.end_row();
+                    
+                    ui.label("scanline");
+                    let full = gpu.scanline as f32 / gpu.scanline_count as f32;
+                    let scanline = egui::widgets::ProgressBar::new(full)
+                        .text(format!("{} / {} words", gpu.scanline, gpu.scanline_count));
+                    ui.add(scanline);
+                    ui.end_row();
+                    
+                    ui.label("in vblank");
+                    ui.label(format!("{}", gpu.in_vblank));
+                    ui.end_row();
+
+                    ui.label("state");
+                    ui.label(format!("{}", gpu.state()));
+                    ui.end_row();
                     
                     ui.label("draw x offset");
                     ui.label(format!("{:08x}", gpu.x_offset));

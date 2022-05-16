@@ -87,6 +87,8 @@ impl fmt::Display for SyncMode {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ClockSource {
     SystemClock,
+    // Since the dot clock runs at different speed depending in video mode, i'm not quite sure which
+    // one this is. TODO: Test this.
     DotClock,
     Hblank,
     SystemClockDiv8,
@@ -97,7 +99,7 @@ impl ClockSource {
         match self {
             ClockSource::SystemClock => time.as_cpu_cycles(),
             ClockSource::SystemClockDiv8 => time.as_cpu_cycles() / 8,
-            ClockSource::DotClock => time.as_gpu_cycles(),
+            ClockSource::DotClock => time.as_gpu_ntsc_cycles(),
             ClockSource::Hblank => 0,
         }
     }
@@ -106,7 +108,7 @@ impl ClockSource {
         match self {
             ClockSource::SystemClock => SysTime::new(ticks),
             ClockSource::SystemClockDiv8 => SysTime::new(ticks * 8),
-            ClockSource::DotClock => SysTime::from_gpu_cycles(ticks),
+            ClockSource::DotClock => SysTime::from_gpu_ntsc_cycles(ticks),
             ClockSource::Hblank => SysTime::ZERO,
         }
     }

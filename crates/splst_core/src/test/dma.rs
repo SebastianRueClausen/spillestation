@@ -1,9 +1,8 @@
 use super::run_code;
-use crate::bus::Word;
 
 #[test]
 fn otc_clear() {
-    let mut cpu = run_code(r#"
+    let cpu = run_code(r#"
         main:
             la  $t1, 0x1f8010e0
 
@@ -22,8 +21,8 @@ fn otc_clear() {
             break 0
     "#);
 
-    assert_eq!(cpu.bus.peek::<Word>(16), Some(12));
-    assert_eq!(cpu.bus.peek::<Word>(12), Some(8));
-    assert_eq!(cpu.bus.peek::<Word>(8), Some(4));
-    assert_eq!(cpu.bus.peek::<Word>(4), Some(0));
+    assert_eq!(cpu.bus.peek::<u32>(16), Some(12));
+    assert_eq!(cpu.bus.peek::<u32>(12), Some(8));
+    assert_eq!(cpu.bus.peek::<u32>(8), Some(4));
+    assert_eq!(cpu.bus.peek::<u32>(4), Some(0));
 }

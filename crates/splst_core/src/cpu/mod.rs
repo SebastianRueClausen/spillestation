@@ -3,7 +3,7 @@
 //! # TODO
 //!
 //! - Perhaps checking for active interrupts isn't good enough, since writes to the COP0 cause and
-//!   active registers can change 'irq_active' status. Checking every cycle doesn't seem to do
+//!   active registers can change `irq_active` status. Checking every cycle doesn't seem to do
 //!   anything for now, but herhaps there could be a problem.
 //!
 //! - More testing of edge cases.
@@ -58,7 +58,7 @@ pub struct Cpu {
     /// This points to the opcode about to be executed at the start of each
     /// instruction. During the instruction it points at the next opcode.
     pub pc: u32,
-    /// Always one step ahead of 'pc'. This is used to emulate CPU pipelineing and more
+    /// Always one step ahead of `pc`. This is used to emulate CPU pipelineing and more
     /// specifically branch delay.
     ///
     /// The MIPS R3000 pipelines one instruction ahead, meaning it loads the next
@@ -68,14 +68,14 @@ pub struct Cpu {
     /// over from the taken branch. This means that the processor always will execute the
     /// instruction right after a branch, no matter if the branch was taken or not.
     ///
-    /// To emulate this, 'next_pc' is get's changed when branching instead of 'pc', which works
+    /// To emulate this, `next_pc` is get's changed when branching instead of `pc`, which works
     /// well besides when entering and expception.
     pub next_pc: u32,
     /// Set to true if the current instruction is executed in the branch delay slot, ie.
     /// if the previous instruction branched.
     ///
     /// It's used when entering an exception. If the CPU is in a delay slot, it has to return one
-    /// instruction behind 'last_pc'.
+    /// instruction behind `last_pc`.
     in_branch_delay: bool,
     /// Set when a branch occours. Used to set 'in_branch_delay'.
     branched: bool,
@@ -125,7 +125,7 @@ pub struct Cpu {
     /// instruction. If there is any pending load, it writes the data to the register, if there
     /// isn't any load, it writes to the $r0 register which does nothing.
     ///
-    /// The 'ready' field contains the cycle when the delayed load is ready to be read. Loads can
+    /// The `ready` field contains the cycle when the delayed load is ready to be read. Loads can
     /// execute in the background while the processor is doing calculations or loading instructions
     /// from memory. However, if an instruction is reading from or writing to the register in the
     /// pipeline or starting a new load from memory, then the processor will sync and pause until
@@ -231,9 +231,7 @@ impl Cpu {
         let addr = bus::regioned_addr(addr);
 
         if !self.cop0.cache_isolated() {
-            self.bus
-                .store(addr, val)
-                .ok_or(Exception::BusDataError)
+            self.bus.store(addr, val).ok_or(Exception::BusDataError)
         } else if self.bus.cache_ctrl.icache_enabled() {
             let line_idx = addr.bit_range(4, 11) as usize;
             let mut line = self.icache[line_idx];
@@ -333,7 +331,7 @@ impl Cpu {
 
     /// Start handeling an exception, and jumps to exception handling code in bios.
     fn throw_exception(&mut self, ex: Exception) {
-        trace!("Exception thrown: {:?}", ex);
+        trace!("exception thrown: {:?}", ex);
 
         let pc = self.cop0.enter_exception(
             &mut self.bus.schedule,
@@ -475,7 +473,7 @@ impl Cpu {
     }
     
     /// Run the CPU for a given amount of time. If the debugger 'dbg' hits any breakpoints while
-    /// running, the remaining amount of 'time' will be returned.
+    /// running, the remaining amount of `time` will be returned.
     pub fn run(&mut self, dbg: &mut impl Debugger, time: SysTime) -> Option<SysTime> {
         let timeout = self.bus.schedule.schedule(time, Event::ExecutionTimeout);
         

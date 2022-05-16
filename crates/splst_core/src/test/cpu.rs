@@ -1,4 +1,3 @@
-use crate::bus::Word;
 use crate::cpu::opcode::RegIdx;
 use super::run_code;
 
@@ -427,7 +426,7 @@ fn lwl_lwr_1() {
 
 #[test]
 fn swl_swr() {
-    let mut cpu = run_code(r#"
+    let cpu = run_code(r#"
         main:
             li      $1, 0
             li      $2, 0x76543210
@@ -460,12 +459,12 @@ fn swl_swr() {
             break   0
     "#);
 
-    assert_eq!(cpu.bus.peek::<Word>(0), Some(0x765432fe));
-    assert_eq!(cpu.bus.peek::<Word>(4), Some(0x7654fedc));
-    assert_eq!(cpu.bus.peek::<Word>(8), Some(0x76fedcba));
-    assert_eq!(cpu.bus.peek::<Word>(12), Some(0xfedcba98));
-    assert_eq!(cpu.bus.peek::<Word>(16), Some(0xfedcba98));
-    assert_eq!(cpu.bus.peek::<Word>(20), Some(0xdcba9810));
-    assert_eq!(cpu.bus.peek::<Word>(24), Some(0xba983210));
-    assert_eq!(cpu.bus.peek::<Word>(28), Some(0x98543210));
+    assert_eq!(cpu.bus.peek::<u32>(0), Some(0x765432fe));
+    assert_eq!(cpu.bus.peek::<u32>(4), Some(0x7654fedc));
+    assert_eq!(cpu.bus.peek::<u32>(8), Some(0x76fedcba));
+    assert_eq!(cpu.bus.peek::<u32>(12), Some(0xfedcba98));
+    assert_eq!(cpu.bus.peek::<u32>(16), Some(0xfedcba98));
+    assert_eq!(cpu.bus.peek::<u32>(20), Some(0xdcba9810));
+    assert_eq!(cpu.bus.peek::<u32>(24), Some(0xba983210));
+    assert_eq!(cpu.bus.peek::<u32>(28), Some(0x98543210));
 }

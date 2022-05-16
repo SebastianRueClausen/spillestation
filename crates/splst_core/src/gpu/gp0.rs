@@ -20,7 +20,7 @@ impl Gpu {
     /// GP0(02) - Fill rectanlge in VRAM.
     ///
     /// Fill rectangle in VRAM with a solid color. The position isn't affected by draw offset
-    /// or clipped to the draw area (As far as i know). The size and start are given in halfword
+    /// or clipped to the draw area (as far as i know). The size and start are given in halfword
     /// steps but are rounded to the nearest multiple of 0x10. It's not affected by mask settings.
     pub fn gp0_fill_rect(&mut self) -> SysTime {
         let color = Color::from_cmd(self.fifo.pop());
@@ -41,7 +41,7 @@ impl Gpu {
     
         let line_time = (dim.x / 8) + 9;
 
-        SysTime::from_gpu_cycles((46 + line_time * dim.y) as u64)
+        self.dot_cycles_to_systime((46 + line_time * dim.y) as u64)
     }
 
     /// GP0(e1) - Draw Mode Setting.
@@ -64,7 +64,7 @@ impl Gpu {
          
     }
 
-    /// GP0(e2) - Texture window setting.
+    /// GP0(e2) - Texture window settings.
     ///
     /// - 0..4 - Texture window mask x.
     /// - 5..9 - Texture window mask y.
@@ -135,19 +135,11 @@ impl Gpu {
         let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
 
         let (x, y, w, h) = (
-            pos.bit_range(00, 15) as i32,
-            pos.bit_range(16, 31) as i32,
-            dim.bit_range(00, 15) as i32,
-            dim.bit_range(16, 31) as i32,
+            pos.bit_range(00, 09) as i32,
+            pos.bit_range(16, 25) as i32,
+            dim.bit_range(00, 09) as i32,
+            dim.bit_range(16, 24) as i32,
         );
-
-        // From Nocash.
-
-        let x = x & 0x3ff;
-        let y = y & 0x1ff;
-
-        let w = ((w - 1) & 0x3ff) + 1;
-        let h = ((h - 1) & 0x1ff) + 1;
 
         self.state = State::VramStore(MemTransfer::new(x, y, w, h));
     }
@@ -160,19 +152,11 @@ impl Gpu {
         let (pos, dim) = (self.fifo.pop(), self.fifo.pop());
 
         let (x, y, w, h) = (
-            pos.bit_range(00, 15) as i32,
-            pos.bit_range(16, 31) as i32,
-            dim.bit_range(00, 15) as i32,
-            dim.bit_range(16, 31) as i32,
+            pos.bit_range(00, 09) as i32,
+            pos.bit_range(16, 25) as i32,
+            dim.bit_range(00, 09) as i32,
+            dim.bit_range(16, 25) as i32,
         );
-
-        // From Nocash.
-
-        let x = x & 0x3ff;
-        let y = y & 0x1ff;
-
-        let w = ((w - 1) & 0x3ff) + 1;
-        let h = ((h - 1) & 0x1ff) + 1;
 
         self.state = State::VramLoad(MemTransfer::new(x, y, w, h));
     }
@@ -254,8 +238,8 @@ impl Gpu {
         let cycles = self.draw_triangle::<Shade, Tex, Trans>(
             flat_shade, clut, points, colors, coords,
         );
-
-        cycles + SysTime::from_gpu_cycles(82)
+        
+        self.dot_cycles_to_systime(cycles + 82)
     }
 
     /// Handle GP0 quad (four point) polygon command.
@@ -266,7 +250,7 @@ impl Gpu {
         Trans: draw_mode::Transparency,
     {
         let (flat_shade, clut, points, colors, coords) = self.interp_poly::<Shade, Tex, Trans, 4>();
-
+        
         let tri1 = self.draw_triangle::<Shade, Tex, Trans>(
             flat_shade,
             clut,
@@ -283,7 +267,7 @@ impl Gpu {
             coords[1..].try_into().unwrap(),
         );
 
-        tri1 + tri2 + SysTime::from_gpu_cycles(82 + 46)
+        self.dot_cycles_to_systime(tri1 + tri2 + 82 + 46)
     }
 
     /// Handle GP0 line commands.
@@ -292,7 +276,7 @@ impl Gpu {
         Shade: draw_mode::Shading,
         Trans: draw_mode::Transparency
     {
-        let color = match Shade::IS_SHADED {
+        let flat_shade = match Shade::IS_SHADED {
             false => Color::from_cmd(self.fifo.pop()),
             true => Color::from_rgb(0, 0, 0),
         };
@@ -305,6 +289,7 @@ impl Gpu {
         } else {
             Color::default()
         };
+
         points[0] = Point::from_cmd(self.fifo.pop()).with_offset(
             self.x_offset as i32,
             self.y_offset as i32,
@@ -315,12 +300,14 @@ impl Gpu {
         } else {
             Color::default()
         };
+
         points[1] = Point::from_cmd(self.fifo.pop()).with_offset(
             self.x_offset as i32,
             self.y_offset as i32,
         );
 
-        self.draw_line::<Shade, Trans>(points, colors, color)
+        let cycles = self.draw_line::<Shade, Trans>(points, colors, flat_shade);
+        self.dot_cycles_to_systime(cycles)
     }
 
     /// GP0 rectangle commands.
@@ -354,7 +341,8 @@ impl Gpu {
             None => Point::from_cmd(self.fifo.pop()),
         };
 
-        self.draw_rect::<Tex, Trans>(start, dim, color, uv, clut)
+        let cycles = self.draw_rect::<Tex, Trans>(start, dim, color, uv, clut);
+        self.dot_cycles_to_systime(cycles)
     }
 }
 

@@ -1,4 +1,4 @@
-//! This module emulates the Playstations GPU command buffer.
+//! This emulates the Playstations GPU command buffer.
 
 use splst_util::Bit;
 use super::gp0;
@@ -13,7 +13,7 @@ pub struct Fifo {
 }
 
 impl Fifo {
-    const SIZE: usize = 16;
+    pub const SIZE: usize = 16;
 
     pub fn new() -> Self {
         Self {

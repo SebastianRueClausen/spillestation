@@ -18,7 +18,7 @@ mod config;
 mod keys;
 mod audio_stream;
 
-use splst_core::{System, timing, Controllers, Disc};
+use splst_core::{System, Controllers, Disc};
 use splst_render::{Renderer, SurfaceSize};
 use gui::GuiRenderer;
 use start_menu::StartMenu;
@@ -82,9 +82,8 @@ pub fn run() {
     // The instant the last frame was drawn.
     let mut last_draw = Instant::now();
 
-    // The amonut of time between each frame.
-    // TODO: Change frame rate to handle both PAL and NTSC.
-    let frame_time = Duration::from_secs_f32(1.0 / timing::NTSC_FPS as f32);
+    // The amonut of time between each frame. Only used in debug mode.
+    let frame_time = Duration::from_secs_f32(1.0 / 60.0);
 
     event_loop.run(move |event, _, ctrl_flow| {
         *ctrl_flow = ControlFlow::Poll;

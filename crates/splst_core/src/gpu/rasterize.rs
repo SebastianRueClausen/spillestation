@@ -1,4 +1,3 @@
-use crate::SysTime;
 use super::primitive::{Color, Point, TexCoord, Texel};
 use super::{Gpu, TexelDepth};
 use super::gp0::draw_mode;
@@ -17,13 +16,9 @@ impl Gpu {
             true => {
                 let bg = Color::from_u16(self.vram.load_16(x, y));
                 match Tex::IS_TEXTURED {
-                    true if masked => {
-                        self.status.blend_mode().blend(color, bg)
-                    }
+                    true if masked => self.status.blend_mode().blend(color, bg),
                     true => color,
-                    false => {
-                        self.status.blend_mode().blend(color, bg)
-                    }
+                    false => self.status.blend_mode().blend(color, bg),
                 }
             }
         };
@@ -72,7 +67,7 @@ impl Gpu {
     }
 
     /// Calculate the amount of GPU cycles to draw a triangle.
-    fn triangle_draw_time<Shade, Tex, Trans>(&self, mut pixels: u64) -> SysTime
+    fn triangle_draw_time<Shade, Tex, Trans>(&self, mut pixels: u64) -> u64
     where
         Shade: draw_mode::Shading,
         Tex: draw_mode::Textureing,
@@ -105,11 +100,11 @@ impl Gpu {
             pixels /= 2;
         }
 
-        SysTime::from_gpu_cycles(cycles + (pixels as f64 * pixel_cost) as u64)
+        cycles + (pixels as f64 * pixel_cost) as u64
     }
 
     /// Timings from mednafen.
-    fn _triangle_draw_time_mdnf<Shade, Tex, Trans>(&self, pixels: u64) -> SysTime
+    fn _triangle_draw_time_mdnf<Shade, Tex, Trans>(&self, pixels: u64) -> u64
     where
         Shade: draw_mode::Shading,
         Tex: draw_mode::Textureing,
@@ -141,11 +136,11 @@ impl Gpu {
             draw_time /= 2;
         }
 
-        SysTime::from_gpu_cycles(draw_time)
+        draw_time
     }
 
     /// The amount of GPU cycles to draw a rectangle.
-    fn rect_draw_time<Tex, Trans>(&self, mut pixels: u64) -> SysTime
+    fn rect_draw_time<Tex, Trans>(&self, mut pixels: u64) -> u64
     where
         Tex: draw_mode::Textureing,
         Trans: draw_mode::Transparency,
@@ -166,11 +161,11 @@ impl Gpu {
             pixels /= 2;
         }
 
-        SysTime::from_gpu_cycles(cycles + (pixels as f64 * pixel_cost) as u64)
+        cycles + (pixels as f64 * pixel_cost) as u64
     }
 
     /// Amount of GPU cycles to draw a line.
-    fn line_draw_time<Shade, Trans>(&self, mut pixels: u64) -> SysTime
+    fn line_draw_time<Shade, Trans>(&self, mut pixels: u64) -> u64
     where
         Shade: draw_mode::Shading,
         Trans: draw_mode::Transparency,
@@ -190,10 +185,10 @@ impl Gpu {
             pixels /= 2;
         }
 
-        SysTime::from_gpu_cycles(cycles + (pixels as f64 * pixel_cost) as u64)
+        cycles + (pixels as f64 * pixel_cost) as u64
     }
 
-
+    /// FIXME: This may draw outside the draw area.
     pub fn draw_triangle<Shade, Tex, Trans>(
         &mut self,
         flat_shade: Color,
@@ -201,7 +196,7 @@ impl Gpu {
         mut points: [Point; 3],
         mut colors: [Color; 3],
         mut coords: [TexCoord; 3],
-    ) -> SysTime
+    ) -> u64
     where
         Shade: draw_mode::Shading,
         Tex: draw_mode::Textureing,
@@ -626,6 +621,7 @@ impl Gpu {
                         u += u_delta.x;
                         v += v_delta.x;
 
+                        // let texel = self.load_texel(uv, tex_param_cache);
                         let texel = self.load_texel(uv, tex_param_cache);
 
                         if texel.is_invisible() {
@@ -674,7 +670,7 @@ impl Gpu {
         mut points: [Point; 2],
         colors: [Color; 2],
         flat_shade: Color
-    ) -> SysTime
+    ) -> u64
     where
         Shade: draw_mode::Shading,
         Trans: draw_mode::Transparency,
@@ -793,7 +789,7 @@ impl Gpu {
         shade: Color,
         mut tc_start: TexCoord,
         clut: Point,
-    ) -> SysTime
+    ) -> u64
     where
         Tex: draw_mode::Textureing,
         Trans: draw_mode::Transparency,

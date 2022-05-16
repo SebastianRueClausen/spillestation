@@ -2,38 +2,38 @@
 //!
 //! # TODO
 //!
-//! - Maybe switch to integer fixed point for rasterization instead of floats.
+//! - Maybe switch to integer fixed point for vertex attributes instead of floats in the
+//!   rasterizer.
 //!
 //! - DMA chopping wouldn't work correctly with the GPU, since the GPU updates it's DMA channel
 //!   after each GP0 write, which isn't handeled by the DMA.
 
-mod fifo;
+pub mod fifo;
 mod primitive;
 mod rasterize;
 mod gp0;
 mod gp1;
 mod vram;
-mod clut_cache;
+mod texture;
 
 use splst_util::{Bit, BitSet};
 use crate::cpu::Irq;
 use crate::bus::{self, dma, Bus, BusMap, AddrUnit};
-use crate::schedule::{Event, Schedule};
-use crate::timing;
+use crate::schedule::{Event, EventId, Schedule};
 use crate::timer::Timers;
-use crate::{VideoOutput, SysTime, Timestamp};
+use crate::{VideoOutput, SysTime};
 
-use fifo::{Fifo, PushAction};
+use fifo::PushAction;
 use primitive::Color;
 use gp0::draw_mode;
-use clut_cache::ClutCache;
+use texture::ClutCache;
 
 use std::fmt;
-use std::ops::Range;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 pub use vram::Vram;
+pub use fifo::Fifo;
 
 pub struct Gpu {
     pub(super) renderer: Rc<RefCell<dyn VideoOutput>>,
@@ -43,10 +43,7 @@ pub struct Gpu {
     /// The GPU FIFO. Used to recieve commands and some kinds of data.
     fifo: Fifo,
     /// The Video Memory used to store texture data and the image buffer(s).
-    vram: Vram,
-    /// State used to emulate the timing of the GPU such as if it's in HBlank or VBlank. Also
-    /// handles the timing differences between PAL and NTSC video modes.
-    timing: Timing,
+    vram: Box<Vram>,
     /// The status register.
     status: Status,
     /// The GPUREAD register. This contains various info about the GPU, and is generated after each
@@ -88,12 +85,20 @@ pub struct Gpu {
     pub dis_y_start: u16,
     /// Which row the the display area ends on the screen.
     pub dis_y_end: u16,
+    /// The current scanline, between 0 and `scanline_count`.
+    pub scanline: u16,
+    /// The total number of scanlines.
+    pub scanline_count: u16,
+    /// The amount of time it takes to display a single scanline including the time in Hblank.
+    scanline_time: SysTime,
+    /// If the GPU is in VBlank. This is when 'scanline' is outside the display area, defined by
+    /// `dis_y_start` and `dis_y_end`.
+    pub in_vblank: bool,
+    scanline_event: EventId,
 }
 
 impl Gpu {
     pub fn new(schedule: &mut Schedule, renderer: Rc<RefCell<dyn VideoOutput>>) -> Self {
-        schedule.schedule_repeat(SysTime::new(5_000), Event::Gpu(Gpu::run));
-
         let dis_x_start = 0x200;
         let dis_y_start = 0x0;
 
@@ -102,22 +107,18 @@ impl Gpu {
 
         let status = Status(0x14802000);
 
-        let timing = Timing::new(
-            status.video_mode(),
-            status.horizontal_res(),
-            dis_x_start,
-            dis_y_start,
-            dis_x_end,
-            dis_y_end,
-        );
-
+        let scanline_time = scanline_time(status);
+        let scanline_count = scanline_count(status);
+        
+        let scanline_event =
+            schedule.schedule_repeat(scanline_time, Event::Gpu(Self::end_of_scanline));
+        
         Self {
             renderer,
             state: State::Idle,
             clut_cache: ClutCache::default(),
             fifo: Fifo::new(),
-            vram: Vram::new(),
-            timing,
+            vram: Box::new(Vram::new()),
             status,
             gpu_read: 0x0,
             tex_x_flip: false,
@@ -138,6 +139,11 @@ impl Gpu {
             dis_x_end,
             dis_y_start,
             dis_y_end,
+            scanline: 0,
+            scanline_count,
+            scanline_time,
+            in_vblank: false,
+            scanline_event,
         }
     }
 
@@ -156,11 +162,11 @@ impl Gpu {
 
         match bus::align_as::<u32>(offset) {
             0 => self.gp0_store(schedule, val),
-            4 => self.gp1_store(val),
+            4 => self.gp1_store(schedule, val),
             offset => unreachable!("invalid GPU store at offset {offset:08x}"),
         }
 
-        // 'dma_ready' can have changed here, which means that the GPU DMA should be updated.
+        // `dma_ready` can have changed here, which means that the GPU DMA should be updated.
         // Maybe only check if something has changed which could change 'dma_ready', but that
         // could be sketchy. Running a DMA channel is pretty fast anyway, but maybe just running
         // the GPU channel every 1500 cycles or something could be faster?
@@ -171,18 +177,10 @@ impl Gpu {
         schedule.trigger(Event::Dma(dma::Port::Gpu, Bus::run_dma_chan));
     }
 
-    pub fn load<T: AddrUnit>(
-        &mut self,
-        offset: u32,
-        schedule: &mut Schedule,
-        timers: &mut Timers
-    ) -> T {
+    pub fn load<T: AddrUnit>(&mut self, offset: u32) -> T {
         if !T::WIDTH.is_word() {
             warn!("load of {} from GPU", T::WIDTH);
         }
-
-        // Run mainly to update the status register.
-        self.run(schedule, timers);
 
         let val = match bus::align_as::<u32>(offset) {
             0 => self.gpu_read(),
@@ -275,136 +273,98 @@ impl Gpu {
             State::VramLoad(_) => (),
         }
     }
+    
+    /// Transform dot cycles into [`SysTime`], which depend on the [`VideoMode`].
+    pub(super) fn dot_cycles_to_systime(&self, cycles: u64) -> SysTime {
+        match self.status.video_mode() {
+            VideoMode::Ntsc => SysTime::from_gpu_ntsc_cycles(cycles),
+            VideoMode::Pal => SysTime::from_gpu_pal_cycles(cycles),
+        }
+    }
 
     pub fn vram(&self) -> &Vram {
         &self.vram
     }
+    
+    pub fn fifo(&self) -> &Fifo {
+        &self.fifo
+    }
+    
+    pub fn state(&self) -> &State {
+        &self.state
+    }
 
+    /// If the GPU is currently in VRAM.
     pub fn in_vblank(&self) -> bool {
-        self.timing.in_vblank
+        self.in_vblank
     }
 
-    pub fn frame_count(&self) -> u64 {
-        self.timing.frame_count
-    }
+    /// Handle that the GPU is at the end of the current scanline. This is used as an event
+    /// callback.
+    fn end_of_scanline(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
+        timers.hblank(schedule, 1);
+        
+        self.scanline += 1;
 
-    pub fn cmd_done(&mut self, schedule: &mut Schedule) {
-        self.state = State::Idle;
-        self.try_gp0_exec(schedule);
-    }
+        if self.scanline == self.scanline_count {
+            self.scanline = 0;
+        } 
+        
+        // We are on the last line.
+        if self.scanline == self.scanline_count - 1 {
+            let top_field = if self.status.vertical_interlace() {
+                !self.status.0.bit(13)
+            } else {
+                false  
+            };
 
-    /// Emulate the period since the last time the GPU ran.
-    pub fn run(&mut self, schedule: &mut Schedule, timers: &mut Timers) {
-        self.try_gp0_exec(schedule);
-
-        let elapsed = schedule.now().time_since(&self.timing.last_update);
-
-        self.timing.scln_prog += elapsed.as_gpu_cycles();
-        self.timing.last_update = schedule.now();
-
-        // If the progress is less than a single scanline. This is just to have a fast path to
-        // allow running the GPU often without a big performance loss.
-        if self.timing.scln_prog < self.timing.cycles_per_scln {
-            let in_hblank = self.timing.scln_prog >= timing::HSYNC_CYCLES;
-
-            // If we have entered Hblank.
-            if in_hblank && !self.timing.in_hblank {
-                timers.hblank(schedule, 1);
-            }
-
-            self.timing.in_hblank = in_hblank;
-
-            return;
+            self.status.0.set_bit(13, top_field);
         }
-
-        // Calculate the number of lines to be drawn.
-        let mut lines = self.timing.scln_prog / self.timing.cycles_per_scln;
-        self.timing.scln_prog %= self.timing.cycles_per_scln;
-
-        // At there must have been atleast a single Hblank, this calculates the amount.
-        // If the GPU wasn't in Hblank, it must have entered since then, which adds one to the
-        // count. We know it's going to enter into Hblank on each scanline, except the current
-        // one it's on, which is represented by 'in_hblank'.
-        let in_hblank = self.timing.scln_prog >= timing::HSYNC_CYCLES;
-        let hblank_count = u64::from(!self.timing.in_hblank)
-            + u64::from(in_hblank)
-            + lines - 1;
-
-        timers.hblank(schedule, hblank_count);
-        self.timing.in_hblank = in_hblank;
-
-        while lines > 0 {
-            // Can't move past the last line.
-            let max_lines = u64::from(self.timing.scln_count - self.timing.scln);
-
-            let line_count = lines.min(max_lines);
-            lines -= line_count;
-
-            let line_count = line_count as u16;
-            let scln = self.timing.scln + line_count;
-
-            let vstart = self.timing.vertical_range.start;
-            let vend = self.timing.vertical_range.end;
-
-            // Calculate if the scanlines being drawn enters the display area, and clear the
-            // Vblank flag if not.
-            if self.timing.scln < vstart && scln >= vend {
-                self.timing.in_vblank = false;
-
-                // TODO: Timer sync.
+        
+        // If we are entering leaving display area and thus entering Vblank.
+        if self.scanline == self.dis_y_end {
+            schedule.trigger(Event::Irq(Irq::VBlank));
+            
+            if self.status.interlaced_480() {
+                self.status.0 ^= 1 << 13;
             }
+            
+            self.renderer.borrow_mut().send_frame(
+                (self.vram_x_start as u32, self.vram_y_start as u32),
+                &self.vram.raw_data(),
+            );
 
-            self.timing.scln = scln;
+            self.in_vblank = true;
 
-            let in_vblank = !self.timing.vertical_range.contains(&(scln.into()));
+            // TODO: Timer sync. Enter vblank.
+        } else if self.scanline == self.dis_y_start {
+            self.in_vblank = false;
 
-            // If we are either leaving or entering Vblank.
-            if self.timing.in_vblank != in_vblank {
-                if in_vblank {
-                    self.renderer.borrow_mut().send_frame(
-                        (self.vram_x_start as u32, self.vram_y_start as u32),
-                        &self.vram.raw_data(),
-                    );
-
-                    self.timing.frame_count += 1;
-
-                    schedule.trigger(Event::Irq(Irq::VBlank));
-                }
-
-                self.timing.in_vblank = in_vblank;
-
-                // TODO: Timer sync.
-            }
-
-            if self.timing.scln >= self.timing.scln_count {
-                self.timing.scln = 0;
-
-                // Bit 13 of the status register toggle just before each new frame in interlaced
-                // 480 bit mode
-                match self.status.interlaced_480() {
-                    true => self.status.0 ^= 1 << 13,
-                    false => self.status.0 &= !(1 << 13),
-                }
-            }
+            // TODO: Timer sync. No longer in vblank.
         }
-
-        // The the current line being displayed in VRAM. It's used here to determine
-        // the value of bit 31 of status.
-        let line_offset = self.timing.display_line(
-            self.status.interlaced_480(),
-            self.status.interlace_field(),
-        );
-
-        let even = (self.vram_y_start + line_offset).bit(0);
-
-        self.status.0 = self.status.0.set_bit(31, even);
+        
+        let vram_offset = {
+            // Calculate offset from the first line in VRAM.
+            let offset = if self.status.interlaced_480() {
+                let bottom = self.in_vblank
+                    && self.status.interlace_field() == InterlaceField::Bottom;
+                (self.scanline  << 1) | bottom as u16
+            } else {
+                self.scanline
+            };
+            
+            self.vram_y_start + offset
+        };
+        
+        // Set bit 31 of the status register to indicite wether the current line being displayed
+        // in VRAM is even.
+        self.status.0 = self.status.0.set_bit(31, vram_offset.bit(0));
     }
 
     /// Store value in GP0 register.
-    fn gp1_store(&mut self, val: u32) {
-        let cmd = val.bit_range(24, 31);
-        match cmd {
-            0x0 => self.gp1_reset(),
+    fn gp1_store(&mut self, schedule: &mut Schedule, val: u32) {
+        match val.bit_range(24, 31) {
+            0x0 => self.gp1_reset(schedule),
             0x1 => self.gp1_reset_fifo(),
             0x2 => self.gp1_ack_gpu_irq(),
             0x3 => self.gp1_display_enable(val),
@@ -412,19 +372,15 @@ impl Gpu {
             0x5 => self.gp1_display_start(val),
             0x6 => self.gp1_horizontal_display_range(val),
             0x7 => self.gp1_vertical_display_range(val),
-            0x8 => self.gp1_display_mode(val),
-            0xff => {
-                warn!("Weird GP1 command: GP1(ff)");
-            }
-            _ => {
-                unimplemented!("Invalid GP1 command {:08x}.", cmd)
-            }
+            0x8 => self.gp1_display_mode(schedule, val),
+            0xff => warn!("weird GP1 command: GP1(ff)"),
+            cmd => unimplemented!("invalid GP1 command {cmd:08x}"),
         }
     }
 
     /// Transfer data from the FIFO into VRAM until there either isn't any data left in the FIFO or
     /// or the transfer is done. Should only be called when the state of the GPU is
-    /// ['State::VramStore'], otherwise nothing will happen.
+    /// [`State::VramStore`], otherwise nothing will happen.
     fn fifo_to_vram_store(&mut self) {
         if let State::VramStore(ref mut tran) = self.state {
             while !self.fifo.is_empty() {
@@ -452,11 +408,13 @@ impl Gpu {
             0xe4 => self.gp0_draw_area_bottom_right(val),
             0xe5 => self.gp0_draw_offset(val),
             cmd => {
-                unreachable!("Invalid immediate GP0 command GP0({:08x})", cmd);
+                unreachable!("invalid immediate GP0 command GP0({cmd:08x})");
             }
         }
     }
 
+    /// Try to execute the next command in the command buffer. It will only execute if the state
+    /// of the GPU is [`State::Idle`].
     fn try_gp0_exec(&mut self, schedule: &mut Schedule) {
         if let State::Idle = self.state {
             if self.fifo.has_full_cmd() {
@@ -532,8 +490,12 @@ impl Gpu {
                 draw_mode::Shaded,
                 draw_mode::Opaque,
             >()),
-            0x65 => Some(self.gp0_rect::<
+            0x64 => Some(self.gp0_rect::<
                 draw_mode::Textured,
+                draw_mode::Opaque,
+            >(None)),
+            0x65 => Some(self.gp0_rect::<
+                draw_mode::TexturedRaw,
                 draw_mode::Opaque,
             >(None)),
             0xa0 => {
@@ -558,6 +520,8 @@ impl Gpu {
 
         if let Some(cycles) = cycles {
             self.state = State::Drawing;
+            
+            // Schedule when the command is done drawing.
             schedule.schedule(cycles, Event::Gpu(|gpu, schedule, _| {
                 gpu.state = State::Idle;
                 gpu.try_gp0_exec(schedule);
@@ -566,8 +530,8 @@ impl Gpu {
     }
 }
 
-/// How to blend two colors. Used mainly for blending the color of a shape being drawn with the color
-/// behind it.
+/// How to blend two colors. Used only for blending with background color, not blending texture
+/// and shading.
 #[derive(Clone, Copy)]
 pub enum TransBlend {
     Avg = 0,
@@ -583,7 +547,7 @@ impl TransBlend {
             1 => TransBlend::Add,
             2 => TransBlend::Sub,
             3 => TransBlend::AddDiv,
-            _ => unreachable!("Invalid transparency blending"),
+            _ => unreachable!("invalid transparency blending"),
         }
     }
 
@@ -610,24 +574,13 @@ impl fmt::Display for TransBlend {
 
 /// Video mode mainly determines the output framerate. It depends on the region of the console,
 /// North American consoles uses NTSC for instance, while European consoles uses PAL. Every console
-/// can output both modes, so it purely determined by bios.
-#[derive(Clone, Copy)]
+/// can output both modes, so it purely determined by bios and game.
+#[derive(Clone, Copy, PartialEq)]
 pub enum VideoMode {
     /// ~ 60 Hz.
     Ntsc = 60,
     /// ~ 50 Hz.
     Pal = 50,
-}
-
-impl VideoMode {
-    fn scln_count(self) -> u16 {
-        let val = match self {
-            VideoMode::Ntsc => timing::NTSC_SCLN_COUNT,
-            VideoMode::Pal => timing::PAL_SCLN_COUNT,
-        };
-
-        val as u16
-    }
 }
 
 impl fmt::Display for VideoMode {
@@ -658,7 +611,7 @@ impl fmt::Display for DmaDir {
     }
 }
 
-/// Which lines to show.
+/// Which lines being displayed.
 #[derive(PartialEq, Eq)]
 pub enum InterlaceField {
     Bottom = 0,
@@ -674,9 +627,15 @@ impl fmt::Display for InterlaceField {
     }
 }
 
-/// Number of bits used to represent a single pixel.
+/// Number of bits used to represent a single pixel shown to the screen.
 pub enum ColorDepth {
+    /// The main mode used the majority of the time. This is the only resolution the GPU can
+    /// rasterize to.
+    ///
+    /// Each pixel actually takes up 16 bits, however bit 15 is used as a mask pixel / 1 bit alpha channel.
     B15 = 15,
+    /// This can only be used through direct writes to the framebuffer. It's used mainly for 
+    /// MDEC cinematics.
     B24 = 24,
 }
 
@@ -692,8 +651,16 @@ impl fmt::Display for ColorDepth {
 /// Number of bits used to represent a single texel.
 #[derive(Clone, Copy)]
 pub enum TexelDepth {
+    /// This can output textures with 32 different colors. It contains an index into the color
+    /// lookup table.
     B4 = 4,
+    /// This can output textures with 256 different colors. It contains an index into the color
+    /// lookup table.
     B8 = 8,
+    /// Unlike `B4` and `B8`, this contains the full rgb values, which means it doesn't have to
+    /// do a lookup in the color lookup table, and can therefore show full the 16.7 million
+    /// different colors. Because VRAM and the texture cache is so limited in size, this format
+    /// is rarely used.
     B15 = 15,
 }
 
@@ -718,6 +685,7 @@ impl fmt::Display for TexelDepth {
     }
 }
 
+/// Horizontal resolution.
 #[derive(Clone, Copy)]
 pub enum HorizontalRes {
     P256 = 256,
@@ -733,6 +701,7 @@ impl fmt::Display for HorizontalRes {
     }
 }
 
+/// Vertical resolution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VerticalRes {
     P240 = 240,
@@ -747,7 +716,7 @@ impl fmt::Display for VerticalRes {
 
 /// An ongoing memory transfer between Bus and VRAM.
 #[derive(Clone, Copy, Debug)]
-struct MemTransfer {
+pub struct MemTransfer {
     /// The current x coordinate.
     x: i32,
     /// The current y coordinate.
@@ -785,6 +754,11 @@ impl MemTransfer {
     }
 }
 
+impl fmt::Display for MemTransfer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({} / {}, {} / {})", self.x, self.x_end, self.y, self.y_end)
+    }
+}
 
 /// Status register of the GPU.
 #[derive(Clone, Copy)]
@@ -835,7 +809,7 @@ impl Status {
     }
 
     /// The interlace field currently being displayed. If interlace is disabled and/or vertical
-    /// resolution 240, this will always be ['InterlaceField::Top'], otherwise it changes each
+    /// resolution 240, this will always be [`InterlaceField::Top`], otherwise it changes each
     /// frame.
     pub fn interlace_field(self) -> InterlaceField {
         match self.0.bit(13) {
@@ -877,7 +851,7 @@ impl Status {
         }
     }
 
-    /// See ['VideoMode'].
+    /// See [`VideoMode`].
     pub fn video_mode(self) -> VideoMode {
         match self.0.bit(20) {
             false => VideoMode::Ntsc,
@@ -945,7 +919,7 @@ impl Status {
         }
     }
 
-    /// If 'vertical_interlace' is enabled for when 'vertical_res' is 240 bits, it switches between
+    /// If `vertical_interlace` is enabled for when `vertical_res` is 240 bits, it switches between
     /// each between the same line each frame, so this tells if the GPU actually uses two fields in
     /// VRAM.
     fn interlaced_480(self) -> bool {
@@ -953,142 +927,42 @@ impl Status {
     }
 }
 
-#[derive(Debug)]
-struct Timing {
-    /// The current scanline.
-    scln: u16,
-    /// The current progress into the scanline in GPU cycles.
-    scln_prog: u64,
-    /// When the GPU was last update / refreshed.
-    last_update: Timestamp,
-    /// The absolute number of the previous frame.
-    frame_count: u64,
-    /// How many GPU cycles it takes to draw a scanline which depend on ['VideoMode'] and
-    /// ['HorizontalRes'].
-    cycles_per_scln: u64,
-    /// How many scanlines there are which depend on ['VideoMode'].
-    scln_count: u16,
-    /// The range of displayed lines.
-    vertical_range: Range<u16>,
-    /// The range of dot cycles into lines that are displayed.
-    horizontal_range: Range<u16>,
-    in_hblank: bool,
-    in_vblank: bool,
-}
-
-impl Timing {
-    fn new(
-        mode: VideoMode,
-        hres: HorizontalRes,
-        dis_x_start: u16,
-        dis_x_end: u16,
-        dis_y_start: u16,
-        dis_y_end: u16,
-    ) -> Self {
-        let mut timing = Self {
-            scln: 0,
-            scln_prog: 0,
-            in_hblank: false,
-            in_vblank: false,
-            last_update: Timestamp::STARTUP,
-            frame_count: 0,
-            cycles_per_scln: 0,
-            scln_count: 0,
-            horizontal_range: 0..0,
-            vertical_range: 0..0,
-        };
-
-        timing.update(
-            mode,
-            hres,
-            dis_x_start,
-            dis_y_start,
-            dis_x_end,
-            dis_y_end
-        );
-
-        timing
-    }
-
-    fn update(
-        &mut self,
-        mode: VideoMode,
-        hres: HorizontalRes,
-        dis_x_start: u16,
-        dis_y_start: u16,
-        dis_x_end: u16,
-        dis_y_end: u16,
-    ) {
-        // Update constants.
-        self.cycles_per_scln = gpu_cycles_per_scln(mode, hres);
-        self.scln_count = mode.scln_count();
-
-        // Make sure the current scanline is in range.
-        self.scln %= self.scln_count;
-        self.scln_prog %= self.cycles_per_scln;
-  
-        // Hblank status could have changed.
-        self.in_hblank = self.scln_prog >= timing::HSYNC_CYCLES;
-
-        self.vertical_range = {
-            let (start, end) = (
-                u16::min(dis_y_start as u16, self.scln_count),
-                u16::min(dis_y_end as u16, self.scln_count),
-            );
-            start..end
-        };
-
-        self.horizontal_range = {
-            let (start, end) = (
-                u16::min(dis_x_start as u16, self.cycles_per_scln as u16),
-                u16::min(dis_x_end as u16, self.cycles_per_scln as u16),
-            );
-            start..end
-        };
-    }
-
-    /// The current displayed line in VRAM. The absolute line depend on the first line displayed.
-    fn display_line(&self, i480: bool, field: InterlaceField) -> u16 {
-        let offset = match i480 {
-            false => self.scln,
-            true => {
-                let bottom = match self.in_vblank {
-                    true => (field == InterlaceField::Bottom) as u16,
-                    false => 0,
-                };
-                (self.scln << 1) | bottom
-            }
-        };
-
-        self.scln + offset
+pub(super) fn scanline_time(status: Status) -> SysTime {
+    match status.video_mode() {
+        VideoMode::Ntsc => SysTime::from_gpu_ntsc_cycles(3413),
+        VideoMode::Pal => SysTime::from_gpu_pal_cycles(3405),
     }
 }
 
-/// Get number of dot cycles per scanline dependent in video mode and horizontal resolution. It's
-/// not exact as it's represented as integers.
-fn gpu_cycles_per_scln(vmode: VideoMode, hres: HorizontalRes) -> u64 {
-    let num = match vmode {
-        VideoMode::Pal => 3406,
-        VideoMode::Ntsc => 3413,
-    };
-
-    let den = match hres {
-        HorizontalRes::P256 => 10,
-        HorizontalRes::P320 => 8,
-        HorizontalRes::P368 => 7,
-        HorizontalRes::P512 => 5,
-        HorizontalRes::P640 => 4,
-    };
-
-    num / den
+pub(super) fn scanline_count(status: Status) -> u16 {
+    if status.vertical_interlace() {
+        let mut count = match status.video_mode() {
+            VideoMode::Ntsc => 263,
+            VideoMode::Pal => 313,
+        };
+        if status.interlace_field() == InterlaceField::Bottom {
+            count -= 1;
+        }
+        count
+    } else {
+        match status.video_mode() {
+            VideoMode::Ntsc => 263,
+            VideoMode::Pal => 314,
+        }
+    }
 }
 
 /// The current state of the GPU.
 #[derive(Debug)]
-enum State {
+pub enum State {
+    /// The GPU is not doing anything, and is simply waiting for the next command to come in.
     Idle,
+    /// The GPU is currently drawing and can therefore not execute the majority if commands until
+    /// it's done drawing.
     Drawing,
+    /// The GPU is doing a transfer from DRAM to VRAM.
     VramStore(MemTransfer),
+    /// The GPU is doing a transfer from VRAM to DRAM.
     VramLoad(MemTransfer),
 }
 
@@ -1102,6 +976,17 @@ impl State {
     }
 }
 
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            State::Idle => f.write_str("idle"),
+            State::Drawing => f.write_str("drawing"),
+            State::VramStore(tran) => write!(f, "vram store - {tran}"),
+            State::VramLoad(tran) => write!(f, "vram load - {tran}"),
+        }
+    }
+}
+
 impl dma::Channel for Gpu {
     fn dma_store(&mut self, schedule: &mut Schedule, val: u32) {
         self.gp0_store(schedule, val);
@@ -1109,7 +994,7 @@ impl dma::Channel for Gpu {
 
     fn dma_load(&mut self, _: &mut Schedule, _: (u16, u32)) -> u32 {
         if self.status.dma_direction() != DmaDir::VramToCpu {
-            warn!("Invalid DMA load from GPU");
+            warn!("invalid DMA load from GPU");
             u32::MAX
         } else {
             self.gpu_read()

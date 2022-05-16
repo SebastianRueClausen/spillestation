@@ -190,7 +190,7 @@ impl Renderer {
 }
 
 impl VideoOutput for Renderer { 
-    fn send_frame(&mut self, vram_start: (u32, u32), vram_data: &[u8; 1024 * 1024]) {
+    fn send_frame(&mut self, vram_start: (u32, u32), vram_data: &[u16; 512 * 1024]) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {

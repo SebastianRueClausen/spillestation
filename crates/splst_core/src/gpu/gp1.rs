@@ -1,14 +1,24 @@
 use splst_util::{Bit, BitSet};
+use crate::schedule::Schedule;
 
-use super::Gpu;
+use super::{Gpu, scanline_time, scanline_count};
 
 impl Gpu {
     /// GP1(0) - Resets the state of the GPU.
-    pub fn gp1_reset(&mut self) {
+    pub fn gp1_reset(&mut self, schedule: &mut Schedule) {
         self.fifo.clear();
         self.clut_cache.clear();
 
+        let prev_video_mode = self.status.video_mode();        
+
         self.status.0 = 0x14802000;
+
+        self.scanline_count = scanline_count(self.status);
+        self.scanline_time = scanline_time(self.status);
+        
+        if prev_video_mode != self.status.video_mode() {
+            schedule.repeat_every(self.scanline_time, self.scanline_event);
+        }
 
         self.vram_x_start = 0;
         self.vram_y_start = 0;
@@ -36,15 +46,6 @@ impl Gpu {
 
         self.x_offset = 0;
         self.y_offset = 0;
-
-        self.timing.update(
-            self.status.video_mode(),
-            self.status.horizontal_res(),
-            self.dis_x_start,
-            self.dis_y_start,
-            self.dis_x_end,
-            self.dis_y_end,
-        );
     }
 
     /// GP1(1) - Reset command buffer.
@@ -108,19 +109,19 @@ impl Gpu {
     /// - 5 - Vertical interlace.
     /// - 6 - Horizontal resolution 2.
     /// - 7 - Reverseflag.
-    pub fn gp1_display_mode(&mut self, val: u32) {
+    pub fn gp1_display_mode(&mut self, schedule: &mut Schedule, val: u32) {
+        let prev_video_mode = self.status.video_mode();        
+
         self.status.0 = self.status.0
             .set_bit_range(17, 22, val.bit_range(0, 5))
             .set_bit(16, val.bit(6))
             .set_bit(14, val.bit(7));
 
-        self.timing.update(
-            self.status.video_mode(),
-            self.status.horizontal_res(),
-            self.dis_x_start,
-            self.dis_y_start,
-            self.dis_x_end,
-            self.dis_y_end,
-        );
+        self.scanline_count = scanline_count(self.status);
+        self.scanline_time = scanline_time(self.status);
+
+        if prev_video_mode != self.status.video_mode() {
+            schedule.repeat_every(self.scanline_time, self.scanline_event);
+        }
     }
 }

@@ -110,12 +110,17 @@ impl ComputeStage {
     /// to the shdader, then it dispatches the compute shader for each pixel in ['Canvas'].
     pub(super) fn compute_canvas(
         &self,
-        vram_data: &[u8; 1024 * 1024],
+        vram_data: &[u16; 512 * 1024],
         draw_info: &DrawInfo,
         encoder: &mut wgpu::CommandEncoder,
         queue: &wgpu::Queue,
         canvas: &Canvas,
     ) {
+        let vram_data = unsafe {
+            let data = vram_data as *const u16 as *const u8;
+            std::slice::from_raw_parts(data, 1024 * 1024)
+        };
+        
         // Transfer the entire ['Vram']. This could be done with a staging belt, which should be faster
         // in theory. However in the testing i have done, that didn't seem to be the case, which
         // means that either write_buffer does the same under the hood, or it just isn't a

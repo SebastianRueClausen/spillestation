@@ -181,11 +181,7 @@ impl Bus {
                 (val, SysTime::new(3))
             }
             Gpu::BUS_BEGIN..=Gpu::BUS_END => {
-                let val: T = self.gpu.load::<T>(
-                    addr - Gpu::BUS_BEGIN,
-                    &mut self.schedule,
-                    &mut self.timers,
-                );
+                let val: T = self.gpu.load::<T>(addr - Gpu::BUS_BEGIN);
                 (val, SysTime::new(3))
             }
             IoPort::BUS_BEGIN..=IoPort::BUS_END => {
