@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-pub mod controller;
+pub mod pad;
 mod memcard;
 
 use splst_util::{Bit, BitSet};
@@ -15,8 +15,6 @@ use memcard::MemCard;
 use std::fmt;
 use std::rc::Rc;
 use std::cell::RefCell;
-
-pub use controller::{Button, ButtonState, Controllers};
 
 /// Controller and Memory Card I/O ports.
 pub struct IoPort {
@@ -35,11 +33,11 @@ pub struct IoPort {
     /// device per second. The transfer size is usually 8 bits, although it can also be either 5, 6
     /// or 7, which is determined by the mode register.
     ///
-    /// 'baud' is the reload value for the baud timer stored in bit 11..31 of 'stat'. The baud timer
+    /// `baud` is the reload value for the baud timer stored in bit 11..31 of 'stat'. The baud timer
     /// is always running and decreases at ~33MHz (CPU clock rate) and it ellapses twice for each
     /// bit.
     ///
-    /// The timer reloads when writing to the 'baud' register or when the timer reaches zero. The timer
+    /// The timer reloads when writing to the `baud` register or when the timer reaches zero. The timer
     /// is set to 'baud' multiplied by the baudrate factor, mode register bits 0..1 (almost always 1),
     /// and then divided by 2.
     baud: u16,
@@ -50,15 +48,15 @@ pub struct IoPort {
     /// Transmit buffer. This is the data that get's send to the peripherals. The buffer is filled
     /// by writing to the register and cleared when send to the either a controller or memory card.
     tx_fifo: Option<u8>,
-    /// Intermidate buffer to store the content of 'tx_fifo' starting a transfer and actually
+    /// Intermidate buffer to store the content of `tx_fifo` starting a transfer and actually
     /// sending the data to the devices.
     tx_val: u8,
     memcards: [Option<MemCard>; 2],
-    controllers: Rc<RefCell<Controllers>>,
+    controllers: Rc<RefCell<pad::Controllers>>,
 }
 
 impl IoPort {
-    pub fn new(controllers: Rc<RefCell<Controllers>>) -> Self {
+    pub fn new(controllers: Rc<RefCell<pad::Controllers>>) -> Self {
         Self {
             state: State::Idle,
             active_device: None,
@@ -173,7 +171,7 @@ impl IoPort {
         T::from_u32(val)
     }
 
-    /// The same as 'load' but without side effects.
+    /// The same as `load` but without side effects.
     pub fn peek<T: AddrUnit>(&self, addr: u32) -> T {
         let val: u32 = match bus::align_as::<u32>(addr) {
             0 => {
@@ -200,6 +198,10 @@ impl IoPort {
             });
 
         StatReg(status)
+    }
+    
+    pub fn pad_at(&self, slot: IoSlot) -> pad::Connection {
+        self.controllers.borrow()[slot].clone()
     }
 
     pub fn ctrl_reg(&self) -> CtrlReg {
@@ -281,15 +283,15 @@ impl IoPort {
                     None => {
                         // Select a new active device if there is no current active devices.
                         match (ctrl, memcard) {
-                            (controller::Port::Unconnected, None) => (0xff, false),
-                            (controller::Port::Digital(ctrl), _) => {
+                            (pad::Connection::Unconnected, None) => (0xff, false),
+                            (pad::Connection::Digital(ctrl), _) => {
                                 let (val, ack) = ctrl.transfer(self.tx_val);
                                 if ack {
                                     self.active_device = Some(Device::Controller);
                                 }
                                 (val, ack)
                             }
-                            (controller::Port::Unconnected, Some(memcard)) => {
+                            (pad::Connection::Unconnected, Some(memcard)) => {
                                 let (val, ack) = memcard.transfer(self.tx_val);
                                 if ack {
                                     self.active_device = Some(Device::MemCard);
@@ -299,11 +301,11 @@ impl IoPort {
                         }
                     }
                     Some(Device::Controller) => match ctrl {
-                        controller::Port::Digital(ctrl) => {
+                        pad::Connection::Digital(ctrl) => {
                             trace!("controller transfer");
                             ctrl.transfer(self.tx_val)
-                        },
-                        controller::Port::Unconnected => (0xff, false),
+                        }
+                        pad::Connection::Unconnected => (0xff, false),
                     }
                     Some(Device::MemCard) => match memcard {
                         Some(memcard) => memcard.transfer(self.tx_val),
@@ -358,7 +360,6 @@ impl IoPort {
         if self.ctrl.ack_irq_enabled() {
             // Set interrupt flag.
             self.stat.0 = self.stat.0.set_bit(9, true);
-
             schedule.trigger(Event::Irq(Irq::CtrlAndMemCard));
         }
     }

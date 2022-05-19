@@ -25,6 +25,7 @@ pub mod gpu;
 pub mod cpu;
 pub mod time;
 
+use io_port::pad;
 use schedule::Schedule;
 use cpu::irq::IrqState;
 
@@ -34,9 +35,9 @@ pub use timer::Timers;
 pub use gpu::Gpu;
 pub use cpu::Cpu;
 pub use gpu::Vram;
-pub use io_port::{IoPort, IoSlot, Button, ButtonState, Controllers, controller};
 pub use bus::bios::Bios;
 pub use cdrom::Disc;
+pub use io_port::IoPort;
 
 use std::time::Duration;
 use std::cell::RefCell;
@@ -52,7 +53,7 @@ impl System {
         video_output: Rc<RefCell<dyn VideoOutput>>,
         audio_output: Rc<RefCell<dyn AudioOutput>>,
         disc: Rc<RefCell<Disc>>,
-        controllers: Rc<RefCell<Controllers>>,
+        controllers: Rc<RefCell<pad::Controllers>>,
     ) -> Self {
         Self {
             cpu: Cpu::new(bios, video_output, audio_output, disc, controllers),

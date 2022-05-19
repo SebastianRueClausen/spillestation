@@ -1,14 +1,25 @@
-//! This emulates the Playstations GPU command buffer.
-
 use splst_util::Bit;
 use super::gp0;
 
 use std::ops::Index;
 
+/// The GPU FIFO is how the GPU receives commands and stores pending commands. It works as a
+/// circular buffer, so pushing data to it while full will overwrite data. It receives commands
+/// through either the GP0 register of DMA. 
+///
+/// It doesn't just work like a queue where it would just steps through each command in the buffer
+/// and execute them sequentially. Instead it does what i expect to be some kind of strange
+/// pipelining where it will avoids pushing certain commands to the FIFO and instead executes them
+/// immediately, which it seems to be able to even while drawing, even though some of these
+/// "immidiate" commands change parameters which effect drawing like draw offset.
+///
+/// To do that, it must keep track of which command it has recieved and is waiting for arguments
+/// for, which complicates the emulation a bit.
 pub struct Fifo {
     data: [u32; Self::SIZE],
     head: u32,
     tail: u32,
+    /// It has recived a non-immidiate command and is waiting for arguments.
     cmd_words_left: Option<u8>,
 }
 
@@ -45,13 +56,13 @@ impl Fifo {
         self.head = self.head.wrapping_add(1);
     }
 
-    /// Push data to the FIFO. Should never be called if 'val' could be a command or argument to a
+    /// Push data to the FIFO. Should never be called if `val` could be a command or argument to a
     /// command.
     pub fn push(&mut self, val: u32) {
         if !self.is_full() {
             self.push_internal(val);
         } else {
-            warn!("Push data to full GPU FIFO, value {}", val);
+            warn!("push data to full GPU FIFO, value {}", val);
         }
     }
 
@@ -64,10 +75,10 @@ impl Fifo {
                 return Some(PushAction::ImmCmd);
             }
 
-            warn!("Push command to full GPU FIFO, either argument or GP0({:0x})", cmd);
+            warn!("push command to full GPU FIFO, either argument or GP0({:0x})", cmd);
 
             if let Some(cmd) = self.next_cmd() {
-                warn!("The next command is GP0({:0x}), which has len {}", cmd, gp0::cmd_fifo_len(cmd));
+                warn!("the next command is GP0({:0x}), which has len {}", cmd, gp0::cmd_fifo_len(cmd));
             }
 
             return None;
@@ -99,7 +110,7 @@ impl Fifo {
 
     pub fn pop(&mut self) -> u32 {
         if self.is_empty() {
-            warn!("Poping from an empty GPU FIFO");
+            warn!("poping from an empty GPU FIFO");
         }
 
         let val = self[0];

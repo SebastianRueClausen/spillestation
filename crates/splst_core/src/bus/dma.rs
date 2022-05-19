@@ -288,19 +288,25 @@ impl Bus {
             Port::Gpu,
             &mut self.gpu,
             &mut self.schedule,
-            &mut self.ram
+            &mut self.ram,
         );
         self.dma.run_chan(
             Port::CdRom,
             &mut self.cdrom,
             &mut self.schedule,
-            &mut self.ram
+            &mut self.ram,
         );
         self.dma.run_chan(
             Port::Otc,
             &mut OrderingTable,
             &mut self.schedule,
-            &mut self.ram
+            &mut self.ram,
+        );
+        self.dma.run_chan(
+            Port::Spu,
+            &mut self.spu,
+            &mut self.schedule,
+            &mut self.ram,
         );
     }
 
@@ -328,6 +334,14 @@ impl Bus {
                     &mut OrderingTable,
                     &mut self.schedule,
                     &mut self.ram
+                );
+            }
+            Port::Spu => {
+                self.dma.run_chan(
+                    Port::Spu,
+                    &mut self.spu,
+                    &mut self.schedule,
+                    &mut self.ram,
                 );
             }
             _ => todo!(),
@@ -573,7 +587,7 @@ impl IrqReg {
         self.0.bit(channel as usize + 16)
     }
 
-    /// Master flag to enabled or disabled interrupts. ['force_irq'] has higher precedence.
+    /// Master flag to enabled or disabled interrupts. [`force_irq`] has higher precedence.
     fn master_irq_enabled(self) -> bool {
         self.0.bit(23)
     }
@@ -678,6 +692,8 @@ impl IndexMut<Port> for Dma {
 }
 
 pub trait Channel {
+    /// `stats` contains the number of words left in the transfer and the address where the value
+    /// is going to be stored. It's only really used by the depth ordering table.
     fn dma_load(&mut self, schedule: &mut Schedule, stats: (u16, u32)) -> u32;
     fn dma_store(&mut self, schedule: &mut Schedule, val: u32);
     fn dma_ready(&self, dir: Direction) -> bool;

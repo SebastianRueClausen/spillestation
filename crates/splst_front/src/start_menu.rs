@@ -1,4 +1,4 @@
-use splst_core::{Bios, Controllers, Disc};
+use splst_core::{Bios, io_port::pad, Disc};
 use crate::gui::GuiContext;
 use super::config::Config;
 
@@ -15,7 +15,7 @@ impl StartMenu {
     pub fn show_area(
         &mut self,
         config: &mut Config,
-        controllers: &mut Controllers,
+        controllers: &mut pad::Controllers,
         disc: &mut Disc,
         ctx: &GuiContext,
     ) -> Option<Bios> {

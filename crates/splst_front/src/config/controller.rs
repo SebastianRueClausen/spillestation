@@ -1,4 +1,4 @@
-use splst_core::{IoSlot, Button, Controllers, controller};
+use splst_core::io_port::{pad, IoSlot};
 use crate::keys;
 
 use serde::{Serialize, Deserialize};
@@ -19,7 +19,7 @@ pub struct ControllerConfig {
     show_slot: IoSlot,
 
     #[serde(skip)]
-    recording: Option<(IoSlot, Button)>,
+    recording: Option<(IoSlot, pad::Button)>,
 
     #[serde(skip)]
     error: Option<String>,
@@ -32,7 +32,7 @@ impl ControllerConfig {
     /// Get the key map corresponding to the controller settings. It will always generate a new key
     /// map. If generating the key map fails, an empty map will be returned and the menu will show
     /// and error.
-    pub fn get_key_map(&mut self) -> HashMap<VirtualKeyCode, (IoSlot, Button)> {
+    pub fn get_key_map(&mut self) -> HashMap<VirtualKeyCode, (IoSlot, pad::Button)> {
         gen_key_map(&self.slot1, &self.slot2)
             .map_err(|err| self.error = Some(err))
             .unwrap_or_default()
@@ -44,7 +44,7 @@ impl ControllerConfig {
     /// Returns true if the input is captured.
     pub fn handle_key_event(
         &mut self,
-        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
+        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, pad::Button)>,
         key: VirtualKeyCode,
         state: ElementState,
     ) -> bool {
@@ -85,10 +85,9 @@ impl ControllerConfig {
             bindings
                 .as_slice_mut()
                 .iter_mut()
-                .zip(Button::NAMES.iter())
-                .zip(BUTTONS.iter())
-                .for_each(|((binding, name), button)| {
-                    ui.label(*name);
+                .zip(pad::Button::ALL.iter())
+                .for_each(|(binding, button)| {
+                    ui.label(format!("{button}"));
 
                     let key_name = binding
                         .map(|key| keys::keycode_name(key))
@@ -106,17 +105,19 @@ impl ControllerConfig {
 
     /// Update ['Controllers'] from config. It should only be called when the configs could have
     /// changed since it will reset the internal state of the controllers.
-    pub fn update_controllers(&self, controllers: &mut Controllers) {
-        let connections = [self.connection1, self.connection2];
-        for (ctrl, conn) in controllers.iter_mut().zip(connections.iter()) {
+    pub fn update_controllers(&self, controllers: &mut pad::Controllers) {
+        for (ctrl, conn) in controllers
+            .iter_mut()
+            .zip([self.connection1, self.connection2].iter())
+        {
             *ctrl = match conn {
-                Connection::Unconnected => controller::Port::unconnected(),
-                Connection::Virtual => controller::Port::digital(),
+                Connection::Unconnected => pad::Connection::unconnected(),
+                Connection::Virtual => pad::Connection::digital(),
             };
         }
     }
 
-    pub fn show(&mut self, controllers: &mut Controllers, ui: &mut egui::Ui) {
+    pub fn show(&mut self, controllers: &mut pad::Controllers, ui: &mut egui::Ui) {
         ui.add_enabled_ui(self.recording.is_none(), |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.show_slot, IoSlot::Slot1, "Slot 1");
@@ -142,8 +143,8 @@ impl ControllerConfig {
             if before != *connection {
                 self.is_modified = true;
                 controllers[self.show_slot] = match *connection {
-                    Connection::Unconnected => controller::Port::unconnected(),
-                    Connection::Virtual => controller::Port::digital(),
+                    Connection::Unconnected => pad::Connection::unconnected(),
+                    Connection::Virtual => pad::Connection::digital(),
                 };
             }
 
@@ -159,22 +160,24 @@ impl ControllerConfig {
 fn gen_key_map(
     slot1: &ButtonBindings,
     slot2: &ButtonBindings,
-) -> Result<HashMap<VirtualKeyCode, (IoSlot, Button)>, String> {
+) -> Result<HashMap<VirtualKeyCode, (IoSlot, pad::Button)>, String> {
     let s1 = slot1
         .as_slice()
         .iter()
-        .zip(BUTTONS.iter())
+        .zip(pad::Button::ALL.iter())
         .filter_map(|(binding, button)| {
             binding.map(|key| (*button, IoSlot::Slot1, key))
         });
     let s2 = slot2
         .as_slice()
         .iter()
-        .zip(BUTTONS.iter())
+        .zip(pad::Button::ALL.iter())
         .filter_map(|(binding, button)| {
             binding.map(|key| (*button, IoSlot::Slot2, key))
         });
+
     let mut map = HashMap::new();
+
     for (button, slot, key) in s1.chain(s2) {
         if let Some((slot2, button2)) = map.insert(key, (slot, button)) {
             return Err(format!(
@@ -235,22 +238,3 @@ impl ButtonBindings {
         }
     }
 }
-
-const BUTTONS: [Button; Button::COUNT] = [
-    Button::Select,
-    Button::L3,
-    Button::R3,
-    Button::Start,
-    Button::JoyUp,
-    Button::JoyRight,
-    Button::JoyDown,
-    Button::JoyLeft,
-    Button::L2,
-    Button::R2,
-    Button::L1,
-    Button::R1,
-    Button::Triangle,
-    Button::Circle,
-    Button::Cross,
-    Button::Square,
-];

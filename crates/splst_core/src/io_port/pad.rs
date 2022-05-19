@@ -7,54 +7,55 @@ use std::fmt;
 use std::slice::IterMut;
 use std::ops::{Index, IndexMut};
 
-/// Controller connection.
-pub enum Port {
+/// Game pad connection.
+#[derive(Clone)]
+pub enum Connection {
     Unconnected,
     Digital(DigitalController),
 }
 
-impl Port {
+impl Connection {
     pub fn reset(&mut self) {
         match self {
-            Port::Digital(ctrl) => ctrl.reset_state(),
-            Port::Unconnected => (),
+            Connection::Digital(ctrl) => ctrl.reset_state(),
+            Connection::Unconnected => (),
         }
     }
 
     pub fn set_button(&mut self, button: Button, pressed: bool) {
         trace!("{button} {}", if pressed { "pressed" } else { "released" });
         match self {
-            Port::Digital(ctrl) => ctrl.buttons.set_button(button, pressed),
-            Port::Unconnected => (),
+            Connection::Digital(ctrl) => ctrl.buttons.set_button(button, pressed),
+            Connection::Unconnected => (),
         }
     }
 
-    pub fn unconnected() -> Port {
-        Port::Unconnected
+    pub fn unconnected() -> Self {
+        Connection::Unconnected
     }
 
-    pub fn digital() -> Port {
-        Port::Digital(DigitalController::new())
+    pub fn digital() -> Self {
+        Connection::Digital(DigitalController::default())
     }
 }
 
-impl Default for Port {
+impl Default for Connection {
     fn default() -> Self {
-        Port::Unconnected
+        Connection::Unconnected
     }
 }
 
 #[derive(Default)]
-pub struct Controllers(pub(super) [Port; 2]);
+pub struct Controllers(pub(super) [Connection; 2]);
 
 impl Controllers {
-    pub fn iter_mut(&mut self) -> IterMut<Port> {
+    pub fn iter_mut(&mut self) -> IterMut<Connection> {
         self.0.iter_mut()
     }
 }
 
 impl Index<IoSlot> for Controllers {
-    type Output = Port;
+    type Output = Connection;
 
     fn index(&self, idx: IoSlot) -> &Self::Output {
         &self.0[idx as usize]
@@ -82,24 +83,15 @@ impl IndexMut<IoSlot> for Controllers {
 /// The original controller sold with the playstation from 1994 to 1997 when the analog controller
 /// and dualschock controller became the standard. It's the same layout as the dualschock but
 /// without the joypads.
+#[derive(Clone, Default)]
 pub struct DigitalController {
     pub(super) buttons: ButtonState, 
     pub(super) state: TransferState,
 }
 
 impl DigitalController {
-    pub fn new() -> Self {
-        Self {
-            buttons: ButtonState::new(),
-            state: TransferState::Idle,
-        }
-    }
-
-    pub fn with_button_state(buttons: ButtonState) -> Self {
-        Self {
-            buttons,
-            state: TransferState::Idle,
-        }
+    pub fn button_state(&self) -> ButtonState {
+        self.buttons.clone()
     }
 
     pub(super) fn reset_state(&mut self) {
@@ -151,13 +143,21 @@ impl DigitalController {
 #[derive(Clone, Copy)]
 pub struct ButtonState(u16);
 
-impl ButtonState {
-    pub fn new() -> Self {
+impl Default for ButtonState {
+    fn default() -> Self {
         Self(u16::MAX)
     }
+}
 
+impl ButtonState {
+    /// Set the state of a button.
     pub fn set_button(&mut self, button: Button, pressed: bool) {
         self.0 = self.0.set_bit(button as usize, !pressed);
+    }
+    
+    /// Check that button is pressed, meaning that the corresponding bit is set low.
+    pub fn is_pressed(self, button: Button) -> bool {
+        !self.0.bit(button as usize)
     }
 }
 
@@ -182,31 +182,50 @@ pub enum Button {
 }
 
 impl Button {
+    /// The number of buttons.
     pub const COUNT: usize = 16;
 
-    pub const NAMES: [&'static str; Self::COUNT] = [
-        "Select",
-        "L3",
-        "R3",
-        "Start",
-        "Up",
-        "Right",
-        "Down",
-        "Left",
-        "L2",
-        "R2",
-        "L1",
-        "R1",
-        "Triangle",
-        "Circle",
-        "Cross",
-        "Square",
+    /// All of the buttons in order of the corresponding bits in [`ButtonState`].
+    pub const ALL: [Button; Self::COUNT] = [
+        Button::Select,
+        Button::L3,
+        Button::R3,
+        Button::Start,
+        Button::JoyUp,
+        Button::JoyRight,
+        Button::JoyDown,
+        Button::JoyLeft,
+        Button::L2,
+        Button::R2,
+        Button::L1,
+        Button::R1,
+        Button::Triangle,
+        Button::Circle,
+        Button::Cross,
+        Button::Square,
     ];
 }
 
 impl fmt::Display for Button {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", Button::NAMES[*self as usize])
+        f.write_str(match self {
+            Button::Select => "Select",
+            Button::L3 => "L3",
+            Button::R3 => "R3",
+            Button::Start => "Start",
+            Button::JoyUp => "Up",
+            Button::JoyRight => "Right",
+            Button::JoyDown => "Down",
+            Button::JoyLeft => "Left",
+            Button::L2 => "L2",
+            Button::R2 => "R2",
+            Button::L1 => "L1",
+            Button::R1 => "R1",
+            Button::Triangle => "Triangle",
+            Button::Circle => "Circle",
+            Button::Cross => "Cross",
+            Button::Square => "Square",
+        })
     }
 }
 
@@ -222,3 +241,8 @@ pub(super) enum TransferState {
     ButtonsHigh,
 }
 
+impl Default for TransferState {
+    fn default() -> Self {
+        TransferState::Idle
+    }
+}

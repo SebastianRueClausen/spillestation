@@ -7,6 +7,7 @@ use crate::cpu::Irq;
 use crate::cdrom::CdRom;
 use crate::{SysTime, AudioOutput};
 use crate::fifo::Fifo;
+use crate::bus::dma;
 
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -64,6 +65,23 @@ impl Spu {
         };
 
         T::from_u32(val)
+    }
+    
+    /// Store `val` at [`Regs::trans_addr`].
+    fn transfer_store(&mut self, schedule: &mut Schedule, val: u16) {
+        self.maybe_trigger_irq(schedule, self.regs.trans_addr);
+
+        self.ram.store(self.regs.trans_addr, val);
+        self.regs.trans_addr = self.regs.trans_addr.wrapping_add(1);
+    }
+    
+    fn transfer_load(&mut self, schedule: &mut Schedule) -> u16 {
+        self.maybe_trigger_irq(schedule, self.regs.trans_addr);
+
+        let val = self.ram.load(self.regs.trans_addr);
+        self.regs.trans_addr = self.regs.trans_addr.wrapping_add(1);
+
+        val
     }
 
     /// Store to register.
@@ -198,6 +216,27 @@ impl Spu {
 
     fn run_noise_cycle(&mut self) {
         // TODO
+    }
+}
+
+impl dma::Channel for Spu {
+    fn dma_load(&mut self, schedule: &mut Schedule, _: (u16, u32)) -> u32 {
+        let lo: u32 = self.transfer_load(schedule).into();
+        let hi: u32 = self.transfer_load(schedule).into();
+
+        (hi << 16) | lo
+    }
+
+    fn dma_store(&mut self, schedule: &mut Schedule, val: u32) {
+        let lo = val.bit_range(00, 15) as u16;
+        let hi = val.bit_range(16, 31) as u16;
+        
+        self.transfer_store(schedule, lo);
+        self.transfer_store(schedule, hi);
+    }
+
+    fn dma_ready(&self, dir: dma::Direction) -> bool {
+        true
     }
 }
 

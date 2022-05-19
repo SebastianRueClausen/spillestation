@@ -18,7 +18,7 @@ mod config;
 mod keys;
 mod audio_stream;
 
-use splst_core::{System, Controllers, Disc};
+use splst_core::{System, io_port::pad, Disc};
 use splst_render::{Renderer, SurfaceSize};
 use gui::GuiRenderer;
 use start_menu::StartMenu;
@@ -67,7 +67,7 @@ pub fn run() {
     let mut key_map = config.controller.get_key_map();
 
     let renderer = Rc::new(RefCell::new(Renderer::new(&window)));
-    let controllers = Rc::new(RefCell::new(Controllers::default()));
+    let controllers = Rc::new(RefCell::new(pad::Controllers::default()));
     let disc = Rc::new(RefCell::new(Disc::default()));
 
     // TODO: Show and error in the settings menu, but still allow the emulator to run without audio.

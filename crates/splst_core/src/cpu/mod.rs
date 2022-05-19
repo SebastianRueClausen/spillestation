@@ -17,7 +17,7 @@ pub mod irq;
 pub mod opcode;
 
 use splst_util::Bit;
-use crate::io_port::Controllers;
+use crate::io_port::pad;
 use crate::cdrom::Disc;
 use crate::bus::bios::Bios;
 use crate::bus::scratchpad::ScratchPad;
@@ -148,7 +148,7 @@ impl Cpu {
         video_output: Rc<RefCell<dyn VideoOutput>>,
         audio_output: Rc<RefCell<dyn AudioOutput>>,
         disc: Rc<RefCell<Disc>>,
-        controllers: Rc<RefCell<Controllers>>,
+        controllers: Rc<RefCell<pad::Controllers>>,
     ) -> Box<Self> {
         let bus = Bus::new(
             bios,

@@ -2,7 +2,7 @@ mod controller;
 mod bios;
 mod disc;
 
-use splst_core::{Bios, Button, IoSlot, Controllers, Disc};
+use splst_core::{Bios, io_port::{IoSlot, pad}, Disc};
 
 use crate::gui::GuiContext;
 use controller::ControllerConfig;
@@ -139,7 +139,7 @@ impl Config {
     /// Handle a window key event. It should only be called when the config window is open.
     pub fn handle_key_event(
         &mut self,
-        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, Button)>,
+        key_map: &mut HashMap<VirtualKeyCode, (IoSlot, pad::Button)>,
         key: VirtualKeyCode,
         state: ElementState,
     ) -> bool {
@@ -154,7 +154,7 @@ impl Config {
     pub fn show_inside(
         &mut self,
         used_bios: Option<&Bios>,
-        controllers: &mut Controllers,
+        controllers: &mut pad::Controllers,
         disc: &mut Disc,
         ui: &mut egui::Ui,
     ) {
@@ -203,7 +203,7 @@ impl Config {
     pub fn show(
         &mut self,
         used_bios: Option<&Bios>,
-        controllers: &mut Controllers,
+        controllers: &mut pad::Controllers,
         disc: &mut Disc,
         ctx: &GuiContext,
     ) {

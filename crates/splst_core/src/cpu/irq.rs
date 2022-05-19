@@ -92,7 +92,7 @@ impl IrqState {
 
     /// Store to interrupt registers.
     ///
-    /// Writing to the status register will bitwise and 'val' with the current value of the
+    /// Writing to the status register will bitwise and `val` with the current value of the
     /// register. Writing to the mask register will set the register.
     pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
         if !bus::is_aligned_to::<u32>(offset) {
