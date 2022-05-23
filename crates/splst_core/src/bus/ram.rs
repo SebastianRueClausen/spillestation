@@ -12,6 +12,18 @@ impl Ram {
     }
 
     #[inline]
+    pub unsafe fn load_unchecked<T: AddrUnit>(&self, offset: u32) -> T {
+        let offset = offset.bit_range(0, 20);
+        self.0.load_unchecked(offset)
+    }
+
+    #[inline]
+    pub unsafe fn store_unchecked<T: AddrUnit>(&mut self, offset: u32, val: T) {
+        let offset = offset.bit_range(0, 20);
+        self.0.store_unchecked(offset, val)
+    }
+
+    #[inline]
     pub fn load<T: AddrUnit>(&self, offset: u32) -> T {
         let offset = offset.bit_range(0, 20);
         self.0.load(offset)

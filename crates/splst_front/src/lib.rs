@@ -233,10 +233,10 @@ pub fn run() {
                     });
                 }
                 Stage::StartMenu => {
-                    let mut bios = None;
+                    let mut out: Option<(splst_core::Bios, RunMode)> = None;
                     renderer.borrow_mut().render(|encoder, view, renderer| {
                         let res = gui_renderer.render(renderer, encoder, view, &window, |ctx| {
-                            bios = start_menu::show(
+                            out = start_menu::show(
                                 &mut config,
                                 &mut controllers.borrow_mut(),
                                 &mut disc.borrow_mut(),
@@ -248,7 +248,7 @@ pub fn run() {
                         }
                     });
 
-                    if let Some(bios) = bios {
+                    if let Some((bios, mode)) = out {
                         let mut system = System::new(
                             bios,
                             renderer.clone(),
@@ -265,7 +265,7 @@ pub fn run() {
                             system,
                             app_menu: Box::new(DebugMenu::default()),
                             last_update: Instant::now(),
-                            mode: RunMode::Emulation,
+                            mode,
                             show_settings: false,
                         }
                     }

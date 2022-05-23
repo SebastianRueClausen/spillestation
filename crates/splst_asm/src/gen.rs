@@ -399,33 +399,34 @@ impl<'a> CodeGen<'a> {
 
 /// Generate binary machine code from [`Ins`] instructions.
 pub fn gen_machine_code<'a>(
-    parsed: Vec<ParsedSource<'a>>,
+    parsed: ParsedSource<'a>,
     base: u32
 ) -> Result<(Vec<u8>, u32), Error> {
-    gen_ins(parsed.into_iter().flat_map(|s| s.text.into_iter().chain(s.data.into_iter())), base)
+    gen_ins(&parsed.text, &parsed.data, base)
 }
 
 pub fn gen_ins<'a>(
-    mut ins: impl Iterator<Item = Ins<'a>>,
+    text: &[Ins<'a>],
+    data: &[Ins<'a>],
     base: u32,
 ) -> Result<(Vec<u8>, u32), Error> {
     let mut gen = CodeGen::new();
     let mut addr = base;
 
-    for ins in ins.by_ref() {
-        if let InsTy::Label(id) = ins.ty {
+    for i in text.iter().chain(data.iter()) {
+        if let InsTy::Label(id) = i.ty {
             if gen.labels.insert(id, addr).is_some() {
                 return Err(Error::new(
-                    ins.line,
+                    i.line,
                     format!("Address '{}' redeclared", id),  
                 ));
             }
         } else {
-            addr += ins.ty.size();
+            addr += i.ty.size();
         }
     }
 
-    for ins in ins {
+    for ins in text.iter().chain(data.iter()) {
         gen.assemble_ins(&ins)?;
     }
 

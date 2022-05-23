@@ -79,9 +79,19 @@ impl Bios {
     }
 
     /// Load value from bios.
+    #[inline]
     pub fn load<T: AddrUnit>(&self, addr: u32) -> T {
         let val: u32 = (0..T::WIDTH as usize).fold(0, |val, byte| {
             val | (self.data[addr as usize + byte] as u32) << (8 * byte)
+        });
+        T::from_u32(val)
+    }
+
+    #[inline]
+    pub unsafe fn load_unchecked<T: AddrUnit>(&self, addr: u32) -> T {
+        let val: u32 = (0..T::WIDTH as usize).fold(0, |val, byte| {
+            let get = *self.data.get_unchecked(addr as usize + byte) as u32;
+            val | get << (8 * byte)
         });
         T::from_u32(val)
     }
@@ -110,7 +120,9 @@ impl Bios {
             ])
         };
 
-        let (code, base) = assemble_ins(0xbfc06ff0, ins.into_iter()).unwrap();
+        debug!("ins: {:?}", ins);
+
+        let (code, base) = assemble_ins(0xbfc06ff0, &ins).unwrap();
 
         self.patch(&code, base);
     }
@@ -122,6 +134,7 @@ impl Bios {
             .expect("trying to path at address outside BIOS") as usize;
 
         for (i, byte) in code.iter().enumerate() {
+            debug!("patching starting at {:0x}", base + i as u32);
             self.data[offset + i] = *byte;
         }
     }

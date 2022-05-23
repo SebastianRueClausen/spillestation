@@ -45,10 +45,15 @@ impl fmt::Display for Error {
 }
 
 /// Assemble the input string. `base` is the address of the first instruction in the text segment.
-pub fn assemble<'a>(input: &[&'a str], base: u32) -> Result<(Vec<u8>, u32), Error> {
+pub fn assemble<'a>(input: &'a str, base: u32) -> Result<(Vec<u8>, u32), Error> {
     gen::gen_machine_code(parse::parse(input)?, base)
 }
 
-pub fn assemble_ins<'a>(base: u32, ins: impl Iterator<Item = InsTy<'a>>) -> Result<(Vec<u8>, u32), Error> {
-    gen::gen_ins(ins.enumerate().map(|(line, ty)| Ins { line, ty }), base)
+pub fn assemble_ins<'a>(base: u32, ins: &[InsTy<'a>]) -> Result<(Vec<u8>, u32), Error> {
+    let text: Vec<_> = ins
+        .iter()
+        .enumerate()
+        .map(|(line, ty)| Ins { line, ty: ty.clone() })
+        .collect();
+    gen::gen_ins(&text, &[], base)
 }

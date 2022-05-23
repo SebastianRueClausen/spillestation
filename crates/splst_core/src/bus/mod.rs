@@ -77,6 +77,9 @@ impl Bus {
     pub fn peek<T: AddrUnit>(&self, addr: u32) -> Option<T> {
         let addr = regioned_addr(addr);
         let val: T = match addr {
+            ScratchPad::BUS_BEGIN..=ScratchPad::BUS_END => {
+                self.scratchpad.load(addr - ScratchPad::BUS_BEGIN)
+            }
             Ram::BUS_BEGIN..=Ram::BUS_END => {
                 self.ram.load(addr)
             }
@@ -121,14 +124,19 @@ impl Bus {
         Some(val)
     }
 
+    /// Load from BUS.
+    ///
+    /// This 
     pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Option<(T, SysTime)> {
         let (val, time) = match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
-                (self.ram.load(addr), SysTime::new(3))
+                let val = unsafe { self.ram.load_unchecked(addr) };
+                (val, SysTime::new(3))
             }
             Bios::BUS_BEGIN..=Bios::BUS_END => {
                 let time = SysTime::new(6 * T::WIDTH as u64);
-                (self.bios.load(addr - Bios::BUS_BEGIN), time)
+                let val = unsafe { self.bios.load_unchecked(addr - Bios::BUS_BEGIN) };
+                (val, time)
             }
             MemCtrl::BUS_BEGIN..=MemCtrl::BUS_END => {
                 let val = self.mem_ctrl.load(addr - MemCtrl::BUS_BEGIN);
@@ -193,11 +201,11 @@ impl Bus {
 
     pub fn store<T: AddrUnit>(&mut self, addr: u32, val: T) -> Option<()> {
         match addr {
-            Ram::BUS_BEGIN..=Ram::BUS_END => {
-                self.ram.store(addr, val)
-            }
             ScratchPad::BUS_BEGIN..=ScratchPad::BUS_END => {
-                self.scratchpad.store(addr - ScratchPad::BUS_BEGIN, val)
+                unsafe { self.scratchpad.store_unchecked(addr - ScratchPad::BUS_BEGIN, val) }
+            }
+            Ram::BUS_BEGIN..=Ram::BUS_END => {
+                unsafe { self.ram.store_unchecked(addr, val) }
             }
             RamSize::BUS_BEGIN..=RamSize::BUS_END => {
                 self.ram_size.0 = val.as_u32()
@@ -286,15 +294,15 @@ pub trait BusMap {
     const BUS_END: u32;
 
     /// Check that BUS offset (Not address) lies within the memory range.
-    fn contains(addr: u32) -> bool {
-        (Self::BUS_BEGIN..=Self::BUS_END).contains(&addr)
+    fn contains(offset: u32) -> bool {
+        (Self::BUS_BEGIN..=Self::BUS_END).contains(&offset)
     }
 
     /// Get the offset into the mapped range from BUS offset (Not address). Returns `None` if the
     /// address isn't in the mapped range.
-    fn offset(addr: u32) -> Option<u32> {
-        if Self::contains(addr) {
-            Some(addr - Self::BUS_BEGIN)
+    fn offset(offset: u32) -> Option<u32> {
+        if Self::contains(offset) {
+            Some(offset - Self::BUS_BEGIN)
         } else {
             None
         }

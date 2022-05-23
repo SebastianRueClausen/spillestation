@@ -24,7 +24,7 @@ fn run_cpu(cpu: &mut Cpu) {
 
 pub fn run_code(input: &str) -> Box<Cpu> {
     let base = 0x1fc00000;
-    let (code, main) = match splst_asm::assemble(&[input], base) {
+    let (code, main) = match splst_asm::assemble(input, base) {
         Ok(res) => res,
         Err(error) => panic!("{error}"),
     };

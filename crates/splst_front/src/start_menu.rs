@@ -1,5 +1,6 @@
 use splst_core::{Bios, io_port::pad, Disc};
 use crate::gui::GuiContext;
+use crate::RunMode;
 use super::config::Config;
 
 pub fn show(
@@ -7,7 +8,7 @@ pub fn show(
     controllers: &mut pad::Controllers,
     disc: &mut Disc,
     ctx: &mut GuiContext,
-) -> Option<Bios> {
+) -> Option<(Bios, RunMode)> {
     egui::CentralPanel::default().show(&ctx.egui_ctx.clone(), |ui| {
         let space = ui.available_size() / 16.0;
         ui.allocate_space(space);
@@ -16,24 +17,31 @@ pub fn show(
 
         ui.allocate_space(space);
 
-        let mut bios = None;
-        
-        // This should never really scroll at any time, it's only to limit it's height.
+        let mut out: Option<(Bios, RunMode)> = None;
+
         egui::ScrollArea::vertical()
             .max_width(ui.available_width())
             .show(ui, |ui| {
-                config.show_inside(None, controllers, disc, ctx, ui);
-                ui.horizontal(|ui| {
-                    if ui.button("Start").clicked() {
-                        bios = config.bios.take_bios(ctx).or_else(|| {
-                            config.show_bios_menu();
-                            ctx.error("No BIOS", "A BIOS must be loaded to start the emulator");
-                            None
-                        });
-                    }
+                ui.group(|ui| {
+                    config.show_inside(None, controllers, disc, ctx, ui);
+                    ui.horizontal(|ui| {
+                        let mut take_bios = || {
+                            config.bios.take_bios(ctx).or_else(|| {
+                                config.show_bios_menu();
+                                ctx.error("No BIOS", "A BIOS must be loaded to start the emulator");
+                                None
+                            })
+                        };
+                        if ui.button("Start").clicked() {
+                            out = take_bios().map(|bios| (bios, RunMode::Emulation));
+                        }
+                        if ui.button("Start in debug mode").clicked() {
+                            out = take_bios().map(|bios| (bios, RunMode::Debug));
+                        }
+                    });
                 });
             });
-        bios
+        out
     })
     .inner
 }

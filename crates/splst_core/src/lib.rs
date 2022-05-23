@@ -69,13 +69,13 @@ impl System {
         // Copy text data into RAM.
         let text_base = bus::regioned_addr(exe.text_base);
         for (i, byte) in (0..exe.text_size).zip(exe.text.iter()) {
-            self.cpu.bus.ram.store(text_base + i, *byte);
+            self.cpu.bus.store(text_base + i, *byte);
         }
 
-        // Fill bss section with 0 RAM.
+        // Fill bss section with 0.
         let bss_base = bus::regioned_addr(exe.bss_base);
         for i in 0..exe.bss_size {
-            self.cpu.bus.ram.store(bss_base + i, 0_u8);
+            self.cpu.bus.store(bss_base + i, 0_u8);
         }
 
         self.cpu.bus.bios.patch_for_exe(exe);
@@ -87,10 +87,6 @@ impl System {
     }
 
     /// Run at a given speed in debug mode.
-    ///
-    /// The time remainder is returned, this is for a couple of reasons if running at
-    /// very low speeds, then saving the remainder is required to be accurate. It's also
-    /// nice to have if the `System` exits early.
     ///
     /// Technically it doesn't run the system for `hz` cycles but `hz` instructions per second,
     /// meaning it will run faster than native speed even if `hz` is the same as the original hardware. 

@@ -75,13 +75,13 @@ pub enum Directive {
 
 /// Should maybe be called Address. It represents an address in memory,
 /// given by either an absolute address or a Address reference.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum Address<'a> {
     Label(&'a str),
     Abs(u32),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum InsTy<'a> {
     Sll(Register, Register, u32),
     Srl(Register, Register, u32),

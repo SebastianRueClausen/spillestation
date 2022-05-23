@@ -23,12 +23,8 @@ impl<'a> ParsedSource<'a> {
 }
 
 /// Scan and parse `input`. Returns Ir code for both text (first) and data (second) sections.
-pub fn parse<'a>(input: &[&'a str]) -> Result<Vec<ParsedSource<'a>>, Error> {
-    input.iter()
-        .map(|i| {
-            Parser::new(lex::tokenize(i)).parse()
-        })
-        .collect()
+pub fn parse<'a>(input: &'a str) -> Result<ParsedSource<'a>, Error> {
+    Parser::new(lex::tokenize(input)).parse()
 }
 
 struct Parser<'a, Iter: Iterator<Item = Result<Tok<'a>, Error>>> {
