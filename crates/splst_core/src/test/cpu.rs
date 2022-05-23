@@ -1,4 +1,4 @@
-use crate::cpu::opcode::RegIdx;
+use splst_asm::Register;
 use super::run_code;
 
 #[test]
@@ -8,7 +8,7 @@ fn zero_reg() {
             li $zero, 1
             break 0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::ZERO), 0);
+    assert_eq!(cpu.read_reg(Register::ZERO), 0);
 }
 
 #[test]
@@ -24,7 +24,7 @@ fn data() {
         .data
             num: .word 42
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::T2), 42);
+    assert_eq!(cpu.read_reg(Register::T2), 42);
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn branch_delay() {
         l1:
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::V0), 1);
+    assert_eq!(cpu.read_reg(Register::V0), 1);
 }
 
 #[test]
@@ -57,9 +57,9 @@ fn branch_delay_1() {
             nop
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::from(1_u8)), 1);
-    assert_eq!(cpu.read_reg(RegIdx::from(2_u8)), 0);
-    assert_eq!(cpu.read_reg(RegIdx::from(3_u8)), 0);
+    assert_eq!(cpu.read_reg(Register::from(1_u8)), 1);
+    assert_eq!(cpu.read_reg(Register::from(2_u8)), 0);
+    assert_eq!(cpu.read_reg(Register::from(3_u8)), 0);
 }
 
 #[test]
@@ -82,8 +82,8 @@ fn load_cancel() {
             addiu   $2, $1, 0
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::from(1_u8)), 1);
-    assert_eq!(cpu.read_reg(RegIdx::from(2_u8)), 2);
+    assert_eq!(cpu.read_reg(Register::from(1_u8)), 1);
+    assert_eq!(cpu.read_reg(Register::from(2_u8)), 2);
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn load_delay() {
             lw      $s1, 0($v1)
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::S1), 43);
+    assert_eq!(cpu.read_reg(Register::S1), 43);
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn simple_loop() {
 
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::V0), 1024);
+    assert_eq!(cpu.read_reg(Register::V0), 1024);
 }
 
 #[test]
@@ -131,10 +131,10 @@ fn sign_extension() {
 
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::from(1_u32)), 0xffff_8080);
-    assert_eq!(cpu.read_reg(RegIdx::from(2_u32)), 0x0000_8080);
-    assert_eq!(cpu.read_reg(RegIdx::from(3_u32)), 0xffff_ff80);
-    assert_eq!(cpu.read_reg(RegIdx::from(4_u32)), 0x0000_0080);
+    assert_eq!(cpu.read_reg(Register::from(1_u32)), 0xffff_8080);
+    assert_eq!(cpu.read_reg(Register::from(2_u32)), 0x0000_8080);
+    assert_eq!(cpu.read_reg(Register::from(3_u32)), 0xffff_ff80);
+    assert_eq!(cpu.read_reg(Register::from(4_u32)), 0x0000_0080);
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn sll() {
             sll     $v0, $v0, 2
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::V0), 8 << 2);
+    assert_eq!(cpu.read_reg(Register::V0), 8 << 2);
 }
 
 #[test]
@@ -156,7 +156,7 @@ fn srl() {
             srl     $v0, $v0, 2
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::V0), 8 >> 2);
+    assert_eq!(cpu.read_reg(Register::V0), 8 >> 2);
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn sra() {
             sra     $v0, $v0, 2
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::V0), (-8_i32 >> 2) as u32);
+    assert_eq!(cpu.read_reg(Register::V0), (-8_i32 >> 2) as u32);
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn sllv() {
             sllv    $v0, $v0, $v1
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::V0), 8 << 2);
+    assert_eq!(cpu.read_reg(Register::V0), 8 << 2);
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn srlv() {
             srlv    $v0, $v0, $v1
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::V0), 8 >> 2);
+    assert_eq!(cpu.read_reg(Register::V0), 8 >> 2);
 }
 
 #[test]
@@ -211,9 +211,9 @@ fn jalr() {
         l1:
             break   0
     "#);
-    assert_ne!(cpu.read_reg(RegIdx::RA), 0);
-    assert_eq!(cpu.read_reg(RegIdx::A0), 3);
-    assert_ne!(cpu.read_reg(RegIdx::A1), 4);
+    assert_ne!(cpu.read_reg(Register::RA), 0);
+    assert_eq!(cpu.read_reg(Register::A0), 3);
+    assert_ne!(cpu.read_reg(Register::A1), 4);
 }
 
 #[test]
@@ -227,8 +227,8 @@ fn bltzal() {
         l1:
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::T0), (-1_i32) as u32);
-    assert_ne!(cpu.read_reg(RegIdx::RA), 0);
+    assert_eq!(cpu.read_reg(Register::T0), (-1_i32) as u32);
+    assert_ne!(cpu.read_reg(Register::RA), 0);
 }
 
 #[test]
@@ -267,14 +267,14 @@ fn bgezal() {
 
             break   0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::from(1_u32)), 1);
-    assert_eq!(cpu.read_reg(RegIdx::from(2_u32)), 1);
-    assert_eq!(cpu.read_reg(RegIdx::from(3_u32)), 1);
-    assert_eq!(cpu.read_reg(RegIdx::from(4_u32)), 1);
-    assert_eq!(cpu.read_reg(RegIdx::from(5_u32)), (-1_i32) as u32);
-    assert_eq!(cpu.read_reg(RegIdx::from(6_u32)), 1);
-    assert_eq!(cpu.read_reg(RegIdx::from(7_u32)), 0);
-    assert_eq!(cpu.read_reg(RegIdx::from(8_u32)), 1);
+    assert_eq!(cpu.read_reg(Register::from(1_u32)), 1);
+    assert_eq!(cpu.read_reg(Register::from(2_u32)), 1);
+    assert_eq!(cpu.read_reg(Register::from(3_u32)), 1);
+    assert_eq!(cpu.read_reg(Register::from(4_u32)), 1);
+    assert_eq!(cpu.read_reg(Register::from(5_u32)), (-1_i32) as u32);
+    assert_eq!(cpu.read_reg(Register::from(6_u32)), 1);
+    assert_eq!(cpu.read_reg(Register::from(7_u32)), 0);
+    assert_eq!(cpu.read_reg(Register::from(8_u32)), 1);
 }
 
 #[test]
@@ -289,8 +289,8 @@ fn addiu() {
 
             break 0
     "#);
-    assert_eq!(cpu.read_reg(RegIdx::V0), (-1_i32) as u32);
-    assert_eq!(cpu.read_reg(RegIdx::V1), 0);
+    assert_eq!(cpu.read_reg(Register::V0), (-1_i32) as u32);
+    assert_eq!(cpu.read_reg(Register::V1), 0);
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn lwl_lwr() {
     ];
 
     for (i, val) in values.iter().enumerate() {
-        assert_eq!(cpu.read_reg(RegIdx::from(i as u32 + 1)), *val);
+        assert_eq!(cpu.read_reg(Register::from(i as u32 + 1)), *val);
     }
 }
 
@@ -420,7 +420,7 @@ fn lwl_lwr_1() {
     ];
 
     for (i, val) in values.iter().enumerate() {
-        assert_eq!(cpu.read_reg(RegIdx::from(i as u32 + 1)), *val);
+        assert_eq!(cpu.read_reg(Register::from(i as u32 + 1)), *val);
     }
 }
 

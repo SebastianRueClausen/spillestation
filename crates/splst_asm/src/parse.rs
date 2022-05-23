@@ -1,5 +1,5 @@
 use crate::Error;
-use crate::ir::{Label, Register, Directive, Ir, IrTy};
+use crate::ins::{Address, Register, Directive, Ins, InsTy};
 use crate::lex::{self, Tok, TokTy};
 
 #[derive(Clone, Copy)]
@@ -9,8 +9,8 @@ enum Section {
 }
 
 pub struct ParsedSource<'a> {
-    pub text: Vec<Ir<'a>>,
-    pub data: Vec<Ir<'a>>,
+    pub text: Vec<Ins<'a>>,
+    pub data: Vec<Ins<'a>>,
 }
 
 impl<'a> ParsedSource<'a> {
@@ -22,7 +22,7 @@ impl<'a> ParsedSource<'a> {
     }
 }
 
-/// Scan and parse 'input'. Returns Ir code for both text (first) and data (second) sections.
+/// Scan and parse `input`. Returns Ir code for both text (first) and data (second) sections.
 pub fn parse<'a>(input: &[&'a str]) -> Result<Vec<ParsedSource<'a>>, Error> {
     input.iter()
         .map(|i| {
@@ -65,7 +65,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
             })
     }
 
-    /// Parse a register. fx '$sp'.
+    /// Parse a register. fx `$sp`.
     fn reg(&mut self) -> Result<Register, Error> {
         let tok = self.expect_some()?;
         match tok.ty {
@@ -76,9 +76,9 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
 
     /// Parse a register and offset used as arguments for load and store instructions.
     ///
-    /// '''ignore
+    /// ```ignore
     /// lw  $t1, 4($sp)
-    /// '''
+    /// ```
     fn reg_offset(&mut self) -> Result<(Register, u32), Error> {
         let num = self.num()?;
         if !matches!(self.expect_some()?.ty, TokTy::LParan) {
@@ -100,12 +100,12 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
         }
     }
 
-    /// Parse an 'address'. Could be either a reference to a label or an absolute address.
-    fn addr(&mut self) -> Result<Label<'a>, Error> {
+    /// Parse an address. Could be either a reference to a label or an absolute address.
+    fn addr(&mut self) -> Result<Address<'a>, Error> {
         let tok = self.expect_some()?;
         match tok.ty {
-            TokTy::Id(id) => Ok(Label::Label(id)),
-            TokTy::Num(num) => Ok(Label::Abs(num)),
+            TokTy::Id(id) => Ok(Address::Label(id)),
+            TokTy::Num(num) => Ok(Address::Abs(num)),
             _ => Err(self.err("Expected label or address")),
         }
     }
@@ -121,7 +121,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
     pub fn parse(&mut self) -> Result<ParsedSource<'a>, Error> {
         let mut parsed_source = ParsedSource::new();
 
-        let mut push_ir = |sec, ir| {
+        let mut push_ins = |sec, ir| {
             match sec {
                 Section::Data => parsed_source.data.push(ir),
                 Section::Text => parsed_source.text.push(ir),
@@ -135,19 +135,19 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
                     Directive::Data => self.sec = Section::Data,
                     Directive::Text => self.sec = Section::Text,
                     Directive::Word => {
-                        push_ir(self.sec, Ir::new(tok.line, IrTy::Word(self.num()?)));
+                        push_ins(self.sec, Ins::new(tok.line, InsTy::Word(self.num()?)));
                     }
                     Directive::HalfWord => {
                         let num: u16 = self.num()?.try_into().map_err(|err| {
                             self.err(&format!("{err}"))
                         })?;
-                        push_ir(self.sec, Ir::new(tok.line, IrTy::HalfWord(num)))
+                        push_ins(self.sec, Ins::new(tok.line, InsTy::HalfWord(num)))
                     }
                     Directive::Byte => {
                         let num: u8 = self.num()?.try_into().map_err(|err| {
                             self.err(&format!("{err}"))
                         })?;
-                        push_ir(self.sec, Ir::new(tok.line, IrTy::Byte(num)))
+                        push_ins(self.sec, Ins::new(tok.line, InsTy::Byte(num)))
                     }
                     ty @ Directive::Ascii | ty @ Directive::Asciiz => {
                         let tok = self.expect_some()?;
@@ -155,7 +155,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
                             if let Directive::Asciiz = ty {
                                 string.push('\0');
                             }
-                            push_ir(self.sec, Ir::new(tok.line, IrTy::Ascii(string)))
+                            push_ins(self.sec, Ins::new(tok.line, InsTy::Ascii(string)))
                         } else {
                             return Err(self.err(
                                 &format!("Expected string literal")
@@ -164,7 +164,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
                     }
                 }
                 TokTy::Label(id) => {
-                    push_ir(self.sec, Ir::new(tok.line, IrTy::Label(id)));
+                    push_ins(self.sec, Ins::new(tok.line, InsTy::Label(id)));
                 }
                 TokTy::Num(..)
                 | TokTy::Str(..)
@@ -180,283 +180,283 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
                 TokTy::Eof => unreachable!(),
                 TokTy::Id(id) => {
                     let ins = match id {
-                        "sll" => IrTy::Sll(
+                        "sll" => InsTy::Sll(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?, 
                         ),
-                        "srl" => IrTy::Srl(
+                        "srl" => InsTy::Srl(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?, 
                         ),
-                        "sra" => IrTy::Sra(
+                        "sra" => InsTy::Sra(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?, 
                         ),
-                        "sllv" => IrTy::Sllv(
+                        "sllv" => InsTy::Sllv(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "srlv" => IrTy::Srlv(
+                        "srlv" => InsTy::Srlv(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "srav" => IrTy::Srav(
+                        "srav" => InsTy::Srav(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "jr" => IrTy::Jr(self.reg()?),
-                        "jalr" => IrTy::Jalr(
+                        "jr" => InsTy::Jr(self.reg()?),
+                        "jalr" => InsTy::Jalr(
                             self.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "syscall" => IrTy::Syscall(self.num()?),
-                        "break" => IrTy::Break(self.num()?),
-                        "mfhi" => IrTy::Mfhi(self.reg()?),
-                        "mthi" => IrTy::Mthi(self.reg()?),
-                        "mflo" => IrTy::Mflo(self.reg()?),
-                        "mtlo" => IrTy::Mtlo(self.reg()?),
-                        "mult" => IrTy::Mult(
-                            self.reg()?,
-                            self.comma()?.reg()?
-                        ),
-                        "multu" => IrTy::Multu(
+                        "syscall" => InsTy::Syscall(self.num()?),
+                        "break" => InsTy::Break(self.num()?),
+                        "mfhi" => InsTy::Mfhi(self.reg()?),
+                        "mthi" => InsTy::Mthi(self.reg()?),
+                        "mflo" => InsTy::Mflo(self.reg()?),
+                        "mtlo" => InsTy::Mtlo(self.reg()?),
+                        "mult" => InsTy::Mult(
                             self.reg()?,
                             self.comma()?.reg()?
                         ),
-                        "div" => IrTy::Div(
+                        "multu" => InsTy::Multu(
                             self.reg()?,
                             self.comma()?.reg()?
                         ),
-                        "divu" => IrTy::Divu(
+                        "div" => InsTy::Div(
                             self.reg()?,
                             self.comma()?.reg()?
                         ),
-                        "add" => IrTy::Add(
+                        "divu" => InsTy::Divu(
+                            self.reg()?,
+                            self.comma()?.reg()?
+                        ),
+                        "add" => InsTy::Add(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "addu" => IrTy::Addu(
+                        "addu" => InsTy::Addu(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "sub" => IrTy::Sub(
+                        "sub" => InsTy::Sub(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "subu" => IrTy::Subu(
+                        "subu" => InsTy::Subu(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "and" => IrTy::And(
+                        "and" => InsTy::And(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "or" => IrTy::Or(
+                        "or" => InsTy::Or(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "xor" => IrTy::Xor(
+                        "xor" => InsTy::Xor(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "nor" => IrTy::Nor(
+                        "nor" => InsTy::Nor(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "slt" => IrTy::Slt(
+                        "slt" => InsTy::Slt(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "sltu" => IrTy::Sltu(
+                        "sltu" => InsTy::Sltu(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "bgez" => IrTy::Bgez(
-                            self.reg()?,
-                            self.comma()?.addr()?,
-                        ),
-                        "bltz" => IrTy::Bltz(
-                            self.reg()?,
-                            self.comma()?.addr()?,
-                        ),
-                        "bgezal" => IrTy::Bgezal(
+                        "bgez" => InsTy::Bgez(
                             self.reg()?,
                             self.comma()?.addr()?,
                         ),
-                        "bltzal" => IrTy::Bltzal(
+                        "bltz" => InsTy::Bltz(
                             self.reg()?,
                             self.comma()?.addr()?,
                         ),
-                        "j" => IrTy::J(self.addr()?),
-                        "jal" => IrTy::Jal(self.addr()?),
-                        "beq" => IrTy::Beq(
+                        "bgezal" => InsTy::Bgezal(
+                            self.reg()?,
+                            self.comma()?.addr()?,
+                        ),
+                        "bltzal" => InsTy::Bltzal(
+                            self.reg()?,
+                            self.comma()?.addr()?,
+                        ),
+                        "j" => InsTy::J(self.addr()?),
+                        "jal" => InsTy::Jal(self.addr()?),
+                        "beq" => InsTy::Beq(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.addr()?,
                         ),
-                        "bne" => IrTy::Bne(
+                        "bne" => InsTy::Bne(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.addr()?,
                         ),
-                        "blez" => IrTy::Blez(
+                        "blez" => InsTy::Blez(
                             self.reg()?,
                             self.comma()?.addr()?,
                         ),
-                        "bgtz" => IrTy::Bgtz(
+                        "bgtz" => InsTy::Bgtz(
                             self.reg()?,
                             self.comma()?.addr()?,
                         ),
-                        "addi" => IrTy::Addi(
+                        "addi" => InsTy::Addi(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "addiu" => IrTy::Addiu(
+                        "addiu" => InsTy::Addiu(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "slti" => IrTy::Slti(
+                        "slti" => InsTy::Slti(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "sltiu" => IrTy::Sltiu(
+                        "sltiu" => InsTy::Sltiu(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "andi" => IrTy::Andi(
+                        "andi" => InsTy::Andi(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "ori" => IrTy::Ori(
+                        "ori" => InsTy::Ori(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "xori" => IrTy::Xori(
+                        "xori" => InsTy::Xori(
                             self.reg()?,
                             self.comma()?.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "lui" => IrTy::Lui(
+                        "lui" => InsTy::Lui(
                             self.reg()?,
                             self.comma()?.num()?,
                         ),
                         "lb" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Lb(rt, rd, offset)
+                            InsTy::Lb(rt, rd, offset)
                         }
                         "lh" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Lh(rt, rd, offset)
+                            InsTy::Lh(rt, rd, offset)
                         },
                         "lwl" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Lwl(rt, rd, offset)
+                            InsTy::Lwl(rt, rd, offset)
                         },
                         "lw" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Lw(rt, rd, offset)
+                            InsTy::Lw(rt, rd, offset)
                         },
                         "lbu" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Lbu(rt, rd, offset)
+                            InsTy::Lbu(rt, rd, offset)
                         },
                         "lhu" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Lhu(rt, rd, offset)
+                            InsTy::Lhu(rt, rd, offset)
                         },
                         "lwr" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Lwr(rt, rd, offset)
+                            InsTy::Lwr(rt, rd, offset)
                         },
                         "sb" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Sb(rt, rd, offset)
+                            InsTy::Sb(rt, rd, offset)
                         },
                         "sh" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Sh(rt, rd, offset)
+                            InsTy::Sh(rt, rd, offset)
                         },
                         "swl" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Swl(rt, rd, offset)
+                            InsTy::Swl(rt, rd, offset)
                         },
                         "sw" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Sw(rt, rd, offset)
+                            InsTy::Sw(rt, rd, offset)
                         },
                         "swr" => {
                             let rt = self.reg()?;
                             let (rd, offset) = self.comma()?.reg_offset()?;
-                            IrTy::Swr(rt, rd, offset)
+                            InsTy::Swr(rt, rd, offset)
                         },
-                        "mfc0" => IrTy::Mfc0(
+                        "mfc0" => InsTy::Mfc0(
                             self.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "mtc0" => IrTy::Mtc0(
+                        "mtc0" => InsTy::Mtc0(
                             self.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "mfc2" => IrTy::Mfc2(
+                        "mfc2" => InsTy::Mfc2(
                             self.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "mtc2" => IrTy::Mtc2(
+                        "mtc2" => InsTy::Mtc2(
                             self.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "nop" => IrTy::Nop,
-                        "move" => IrTy::Move(
+                        "nop" => InsTy::Nop,
+                        "move" => InsTy::Move(
                             self.reg()?,
                             self.comma()?.reg()?,
                         ),
-                        "li" => IrTy::Li(
+                        "li" => InsTy::Li(
                             self.reg()?,
                             self.comma()?.num()?,
                         ),
-                        "la" => IrTy::La(
+                        "la" => InsTy::La(
                             self.reg()?,
                             self.comma()?.addr()?,
                         ),
-                        "b" => IrTy::B(self.addr()?),
-                        "beqz" => IrTy::Beqz(
+                        "b" => InsTy::B(self.addr()?),
+                        "beqz" => InsTy::Beqz(
                             self.reg()?,
                             self.comma()?.addr()?,
                         ),
-                        "bnez" => IrTy::Bnez(
+                        "bnez" => InsTy::Bnez(
                             self.reg()?,
                             self.comma()?.addr()?,
                         ),
@@ -464,7 +464,7 @@ impl<'a, Iter: Clone + Iterator<Item = Result<Tok<'a>, Error>>> Parser<'a, Iter>
                             &format!("Unknown instruction '{}'", id)
                         )),
                     };
-                    push_ir(self.sec, Ir::new(tok.line, ins));
+                    push_ins(self.sec, Ins::new(tok.line, ins));
                 }
             }
         }

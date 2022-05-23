@@ -2,7 +2,7 @@ mod cpu;
 mod dma;
 
 use crate::bus::bios::Bios;
-use crate::io_port::Controllers;
+use crate::io_port::pad;
 use crate::cdrom::Disc;
 use crate::Cpu;
 
@@ -29,7 +29,7 @@ pub fn run_code(input: &str) -> Box<Cpu> {
         Err(error) => panic!("{error}"),
     };
 
-    let controllers = Rc::new(RefCell::new(Controllers::default()));
+    let controllers = Rc::new(RefCell::new(pad::Controllers::default()));
     let disc = Rc::new(RefCell::new(Disc::default()));
     let renderer = Rc::new(RefCell::new(()));
     let sound = Rc::new(RefCell::new(()));

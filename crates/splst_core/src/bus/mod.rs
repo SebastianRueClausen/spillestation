@@ -1,12 +1,4 @@
 //! Represent the memory BUS of the playstation 1.
-//!
-//! # TODO
-//!
-//! - Add a debug peek funktion to read from devices without side effects. For now reading data
-//!   through the debugger could potentially have side effects.
-//!
-//! - Make ['MemUnit'] a trait implemented on u8, u16 and u32 and make devices return and take the
-//!   actual primtive being loaded or stored. This also allows the compiler to infer the type.
 
 pub mod bios;
 pub mod dma;
@@ -38,7 +30,7 @@ pub struct Bus {
     pub(super) irq_state: IrqState,
     pub(super) bios: Bios,
     pub(super) schedule: Schedule,
-    ram: Ram,
+    pub(super) ram: Ram,
     dma: Dma,
     pub(super) gpu: Gpu,
     pub(super) cdrom: CdRom,
@@ -270,6 +262,7 @@ pub fn addr_cached(addr: u32) -> bool {
     (addr >> 29) <= 4
 }
 
+/// Change address into bus offset.
 #[inline]
 pub fn regioned_addr(addr: u32) -> u32 {
     const REGION_MAP: [u32; 8] = [
@@ -292,10 +285,15 @@ pub trait BusMap {
     /// The last address included in the range.
     const BUS_END: u32;
 
-    /// Get the offset into the mapped range from absolute address (Which has been masked to the
-    /// region). Returns 'None' if the address isn't in the mapped range.
+    /// Check that BUS offset (Not address) lies within the memory range.
+    fn contains(addr: u32) -> bool {
+        (Self::BUS_BEGIN..=Self::BUS_END).contains(&addr)
+    }
+
+    /// Get the offset into the mapped range from BUS offset (Not address). Returns `None` if the
+    /// address isn't in the mapped range.
     fn offset(addr: u32) -> Option<u32> {
-        if (Self::BUS_BEGIN..=Self::BUS_END).contains(&addr) {
+        if Self::contains(addr) {
             Some(addr - Self::BUS_BEGIN)
         } else {
             None
@@ -402,10 +400,10 @@ pub trait AddrUnit: Into<u32> + From<u8> {
     ///
     /// # Example
     ///
-    /// '''
+    /// ```
     /// let val: u8 = u8::from_u32(0xff00, 1);
     /// assert_eq!(val, 0xff);
-    /// '''
+    /// ```
     fn from_u32_aligned(val: u32, addr: u32) -> Self;
 
     /// Get from 'u32' which may be lossy.
@@ -421,10 +419,10 @@ pub trait AddrUnit: Into<u32> + From<u8> {
     ///
     /// # Example
     ///
-    /// '''
+    /// ```
     /// let val: u16 = 0xff00;
     /// assert_eq!(val.as_u32(2), 0xff00_0000);
-    /// '''
+    /// ```
     fn as_u32_aligned(self, addr: u32) -> u32 {
         let val: u32 = self.into();
         let align = addr & 3;
@@ -447,14 +445,14 @@ pub trait AddrUnit: Into<u32> + From<u8> {
     }
 }
 
-/// Align 'addr' to the an address with alignment of ['AddrUnit'] 'T'. It will always round down,
+/// Align `addr` to the an address with alignment of ['AddrUnit'] `T`. It will always round down,
 ///
 /// # Example
 ///
-/// '''
+/// ```
 /// assert_eq!(align_as::<u16>(3), 2);
 /// assert_eq!(align_as::<u32>(3), 0);
-/// '''
+/// ```
 pub fn align_as<T: AddrUnit>(addr: u32) -> u32 {
     addr & !(T::WIDTH as u32 - 1)
 }
@@ -463,10 +461,10 @@ pub fn align_as<T: AddrUnit>(addr: u32) -> u32 {
 ///
 /// # Example
 ///
-/// '''
+/// ```
 /// assert_eq!(is_aligned_as::<u16>(3), false);
 /// assert_eq!(is_aligned_as::<u32>(4), true);
-/// '''
+/// ```
 pub fn is_aligned_to<T: AddrUnit>(addr: u32) -> bool {
     (addr % T::WIDTH as u32) == 0
 }

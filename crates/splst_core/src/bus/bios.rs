@@ -1,4 +1,7 @@
+use splst_asm::{InsTy, Register, assemble_ins};
 use super::{AddrUnit, BusMap};
+use crate::exe::Exe;
+
 use thiserror::Error;
 
 use std::fs::File;
@@ -52,7 +55,8 @@ impl Bios {
 
     #[cfg(test)]
     pub fn from_code(base: u32, code: &[u8]) -> Self {
-        debug_assert!((Self::BUS_BEGIN..=Self::BUS_END).contains(&base));
+        let base = super::regioned_addr(base);
+        debug_assert!(Self::contains(base));
 
         let base = (base - Self::BUS_BEGIN) as usize;
 
@@ -74,11 +78,52 @@ impl Bios {
         }
     }
 
+    /// Load value from bios.
     pub fn load<T: AddrUnit>(&self, addr: u32) -> T {
         let val: u32 = (0..T::WIDTH as usize).fold(0, |val, byte| {
             val | (self.data[addr as usize + byte] as u32) << (8 * byte)
         });
         T::from_u32(val)
+    }
+
+    pub fn patch_for_exe(&mut self, exe: &Exe) {
+        let mut ins = vec![
+            InsTy::Label("main"),
+            InsTy::Li(Register::T0, exe.pc),
+            InsTy::Li(Register::GP, exe.gp),
+        ]; 
+
+        if exe.sp != 0 {
+            ins.extend_from_slice(&[
+                InsTy::Li(Register::SP, exe.sp),
+                InsTy::Lui(Register::FP, exe.sp >> 16),
+                InsTy::Jr(Register::T0),
+                InsTy::Ori(Register::FP, Register::FP, exe.sp & 0xffff),
+            ])
+        } else {
+            ins.extend_from_slice(&[
+                InsTy::Nop,
+                InsTy::Nop,
+                InsTy::Nop,
+                InsTy::Jr(Register::T0),
+                InsTy::Nop,
+            ])
+        };
+
+        let (code, base) = assemble_ins(0xbfc06ff0, ins.into_iter()).unwrap();
+
+        self.patch(&code, base);
+    }
+
+    fn patch(&mut self, code: &[u8], base: u32) {
+        let base = super::regioned_addr(base);
+        let offset = Self::offset(base + code.len() as u32)
+            .and(Self::offset(base))
+            .expect("trying to path at address outside BIOS") as usize;
+
+        for (i, byte) in code.iter().enumerate() {
+            self.data[offset + i] = *byte;
+        }
     }
 }
 

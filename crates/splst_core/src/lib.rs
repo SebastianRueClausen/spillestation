@@ -24,7 +24,9 @@ pub mod bus;
 pub mod gpu;
 pub mod cpu;
 pub mod time;
+pub mod exe;
 
+use exe::Exe;
 use io_port::pad;
 use schedule::Schedule;
 use cpu::irq::IrqState;
@@ -55,9 +57,28 @@ impl System {
         disc: Rc<RefCell<Disc>>,
         controllers: Rc<RefCell<pad::Controllers>>,
     ) -> Self {
-        Self {
-            cpu: Cpu::new(bios, video_output, audio_output, disc, controllers),
+        Self { cpu: Cpu::new(bios, video_output, audio_output, disc, controllers) }
+    }
+
+    /// Load executable file into RAM and path the BIOS to run `exe`.
+    pub fn load_exe(&mut self, exe: &Exe) {
+        debug!("loading exe file");
+
+        // `exe` should be validated, so there is no need to check the stores here.
+      
+        // Copy text data into RAM.
+        let text_base = bus::regioned_addr(exe.text_base);
+        for (i, byte) in (0..exe.text_size).zip(exe.text.iter()) {
+            self.cpu.bus.ram.store(text_base + i, *byte);
         }
+
+        // Fill bss section with 0 RAM.
+        let bss_base = bus::regioned_addr(exe.bss_base);
+        for i in 0..exe.bss_size {
+            self.cpu.bus.ram.store(bss_base + i, 0_u8);
+        }
+
+        self.cpu.bus.bios.patch_for_exe(exe);
     }
 
     /// Run at native speed for a given amount of time.
@@ -72,8 +93,7 @@ impl System {
     /// nice to have if the `System` exits early.
     ///
     /// Technically it doesn't run the system for `hz` cycles but `hz` instructions per second,
-    /// meaning it will run faster than native speed even if 'hz' is the same as the original
-    /// hardware. 
+    /// meaning it will run faster than native speed even if `hz` is the same as the original hardware. 
     pub fn run_debug(
         &mut self,
         hz: u64,
@@ -148,6 +168,8 @@ pub enum StopReason {
     /// The emulator has hit a breakpoint.
     Break,
 }
+
+
 
 pub trait Debugger {
     /// Called when loading an instruction.

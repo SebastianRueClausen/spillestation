@@ -1,14 +1,14 @@
 use crate::Error;
-use crate::ir::{Directive, Register};
+use crate::ins::{Directive, Register};
 
 use std::str::Chars;
 
 /// The type of token and the data accosiated with it. 
 #[derive(Debug, PartialEq, Eq)]
 pub enum TokTy<'a> {
-    /// Directives used to indicate data and sections. '.' followed by a keyword. fx '.ascii'.
+    /// Directives used to indicate data and sections. `.` followed by a keyword. fx `.ascii`.
     Directive(Directive),
-    /// Identifier followed by a ':'.
+    /// Identifier followed by a `:`.
     Label(&'a str),
     /// Identifier. Either an instruction or a reference to a label.
     Id(&'a str),
@@ -16,7 +16,7 @@ pub enum TokTy<'a> {
     Num(u32),
     /// String literal.
     Str(String),
-    /// A register fx '$t0' or '$12'.
+    /// A register fx `$t0` or `$12`.
     Reg(Register), 
     Comma,
     LParan,
@@ -92,7 +92,7 @@ impl<'a> Lexer<'a> {
         self.chars.nth(n - 1)
     }
 
-    /// Consume a single character if it matches 'c'.
+    /// Consume a single character if it matches `c`.
     fn eat_char(&mut self, c: char) -> bool {
         if self.first() == c {
             self.eat();
@@ -145,7 +145,7 @@ impl<'a> Lexer<'a> {
         &as_str[..eaten]
     }
 
-    /// Consume and parse a number. Doesn't handle unary '-' and expects 'first' to be valid digit.
+    /// Consume and parse a number. Doesn't handle unary `-` and expects `first` to be valid digit.
     fn eat_num(&mut self) -> Result<u32, Error> {
         debug_assert!(self.first().is_ascii_digit());
         let (base, eat_while): (u32, fn(char) -> bool) = if self.first() == '0' {
@@ -172,7 +172,7 @@ impl<'a> Lexer<'a> {
         Tok::new(self.line, ty)  
     }
 
-    /// Scan the next token. Returns 'TokTy::Eof' if the whole input has been consumed.
+    /// Scan the next token. Returns `TokTy::Eof` if the whole input has been consumed.
     fn next_tok(&mut self) -> Result<Tok<'a>, Error> {
         self.eat_whitespace();
         match self.first() {

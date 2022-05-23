@@ -21,131 +21,10 @@
 //!     - 5-bit shift value.
 //!     - 6-bit function field.
 
-use super::REGISTER_NAMES;
 use splst_util::Bit;
+use splst_asm::Register;
 
 use std::fmt;
-
-/// The index of a register. Used for better type safety.
-#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
-pub struct RegIdx(pub u8);
-
-impl From<u32> for RegIdx {
-    fn from(val: u32) -> Self {
-        Self(val as u8)
-    }
-}
-
-impl From<u8> for RegIdx {
-    fn from(val: u8) -> Self {
-        Self(val)
-    }
-}
-
-impl RegIdx {
-    #[allow(dead_code)]
-    pub const ZERO: Self = Self(0);
-
-    #[allow(dead_code)]
-    pub const AT: Self = Self(1);
-
-    #[allow(dead_code)]
-    pub const V0: Self = Self(2);
-
-    #[allow(dead_code)]
-    pub const V1: Self = Self(3);
-
-    #[allow(dead_code)]
-    pub const A0: Self = Self(4);
-
-    #[allow(dead_code)]
-    pub const A1: Self = Self(5);
-
-    #[allow(dead_code)]
-    pub const A2: Self = Self(6);
-
-    #[allow(dead_code)]
-    pub const A3: Self = Self(7);
-
-    #[allow(dead_code)]
-    pub const T0: Self = Self(8);
-
-    #[allow(dead_code)]
-    pub const T1: Self = Self(9);
-
-    #[allow(dead_code)]
-    pub const T2: Self = Self(10);
-
-    #[allow(dead_code)]
-    pub const T3: Self = Self(11);
-
-    #[allow(dead_code)]
-    pub const T4: Self = Self(12);
-
-    #[allow(dead_code)]
-    pub const T5: Self = Self(13);
-
-    #[allow(dead_code)]
-    pub const T6: Self = Self(14);
-
-    #[allow(dead_code)]
-    pub const T7: Self = Self(15);
-
-    #[allow(dead_code)]
-    pub const S0: Self = Self(16);
-
-    #[allow(dead_code)]
-    pub const S1: Self = Self(17);
-
-    #[allow(dead_code)]
-    pub const S2: Self = Self(18);
-
-    #[allow(dead_code)]
-    pub const S3: Self = Self(19);
-
-    #[allow(dead_code)]
-    pub const S4: Self = Self(20);
-
-    #[allow(dead_code)]
-    pub const S5: Self = Self(21);
-
-    #[allow(dead_code)]
-    pub const S6: Self = Self(22);
-
-    #[allow(dead_code)]
-    pub const S7: Self = Self(23);
-
-    #[allow(dead_code)]
-    pub const T8: Self = Self(24);
-
-    #[allow(dead_code)]
-    pub const T9: Self = Self(25);
-
-    #[allow(dead_code)]
-    pub const K0: Self = Self(26);
-
-    #[allow(dead_code)]
-    pub const K1: Self = Self(27);
-
-    #[allow(dead_code)]
-    pub const GP: Self = Self(28);
-
-    #[allow(dead_code)]
-    pub const SP: Self = Self(29);
-
-    #[allow(dead_code)]
-    pub const FP: Self = Self(30);
-
-    #[allow(dead_code)]
-    pub const RA: Self = Self(31);
-}
-
-impl fmt::Display for RegIdx {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "${}", REGISTER_NAMES[self.0 as usize])
-    }
-}
-
 
 #[derive(Clone, Copy)]
 pub struct Opcode(pub(super) u32);
@@ -191,18 +70,18 @@ impl Opcode {
     }
 
     /// Destination register.
-    pub fn rd(self) -> RegIdx {
-        RegIdx::from(self.0.bit_range(11, 15))
+    pub fn rd(self) -> Register {
+        Register::from(self.0.bit_range(11, 15))
     }
 
     /// Target register.
-    pub fn rt(self) -> RegIdx {
-        RegIdx::from(self.0.bit_range(16, 20))
+    pub fn rt(self) -> Register {
+        Register::from(self.0.bit_range(16, 20))
     }
 
     /// Source register.
-    pub fn rs(self) -> RegIdx {
-        RegIdx::from(self.0.bit_range(21, 25))
+    pub fn rs(self) -> Register {
+        Register::from(self.0.bit_range(21, 25))
     }
 
     /// Branch if greater or equal zero. Used by BCONDZ to determine the type of branching.

@@ -9,10 +9,48 @@ use winit::window::Window;
 
 use std::sync::Arc;
 
-#[derive(Clone)]
+struct ErrorPopup {
+    heading: String,
+    text: String,
+    id: egui::Id,
+}
+
+#[derive(Default)]
 pub struct GuiContext {
     pub egui_ctx: egui::Context,
-    pub main_style: Arc<egui::Style>,
+    /// Each new [`ErrorPopup`] get's assigned a unique ID, which is derived from the total amount
+    /// of errors shown.
+    error_count: usize,
+    errors: Vec<ErrorPopup>,
+    main_style: Arc<egui::Style>,
+}
+
+impl GuiContext {
+    pub fn error(&mut self, heading: impl Into<String>, text: impl Into<String>) {
+        self.errors.push(ErrorPopup {
+            heading: heading.into(),
+            text: text.into(),
+            // This is very likely not necessary to be a string, but it assures that we don't
+            // get any collisions.
+            id: egui::Id::new(format!("Error {}", self.error_count)),
+        });
+        self.error_count += 1;
+    }
+
+    fn show_errors(&mut self) {
+        self.errors.retain(|error| {
+            let mut open = true;
+            egui::Window::new(&error.heading)
+                .open(&mut open)
+                .id(error.id)
+                .resizable(false)
+                .collapsible(false)
+                .show(&self.egui_ctx, |ui| {
+                    ui.label(&error.text);
+                });
+            open 
+        });
+    }
 }
 
 /// All the egui stuff required to draw gui to the screen.
@@ -26,11 +64,12 @@ pub struct GuiRenderer {
 }
 
 impl GuiRenderer {
+    pub fn ctx(&mut self) -> &mut GuiContext {
+        &mut self.ctx
+    }
+
     pub fn new(scale_factor: f32, renderer: &Renderer) -> Self {
-        let ctx = GuiContext {
-            egui_ctx: egui::Context::default(),
-            main_style: Arc::new(egui::Style::default()),
-        };
+        let ctx = GuiContext::default();
 
         ctx.egui_ctx.set_style(ctx.main_style.clone());
 
@@ -46,7 +85,7 @@ impl GuiRenderer {
             physical_width,
             physical_height,
             scale_factor,
-       };
+        };
 
         let render_pass = RenderPass::new(&renderer.device, renderer.surface_format, 1);
 
@@ -86,25 +125,22 @@ impl GuiRenderer {
         func: F,
     ) -> Result<(), BackendError>
     where
-        F: FnOnce(&GuiContext),
+        F: FnOnce(&mut GuiContext),
     {
         let input = self.win_state.take_egui_input(window);
-        let output = self.ctx.egui_ctx.run(input, |_| func(&self.ctx));
+        let output = self.ctx.egui_ctx.clone().run(input, |_| {
+            self.ctx.show_errors();
+            func(&mut self.ctx)
+        });
 
         self.textures.append(output.textures_delta);
-        self.win_state.handle_platform_output(
-            window,
-            &self.ctx.egui_ctx,
-            output.platform_output,
-        );
+        self.win_state
+            .handle_platform_output(window, &self.ctx.egui_ctx, output.platform_output);
 
         self.jobs = self.ctx.egui_ctx.tessellate(output.shapes);
 
-        self.render_pass.add_textures(
-            &renderer.device,
-            &renderer.queue,
-            &self.textures,
-        )?;
+        self.render_pass
+            .add_textures(&renderer.device, &renderer.queue, &self.textures)?;
 
         self.render_pass.update_buffers(
             &renderer.device,
@@ -113,14 +149,9 @@ impl GuiRenderer {
             &self.screen_descriptor,
         );
 
-        self.render_pass.execute(
-            encoder,
-            target,
-            &self.jobs,
-            &self.screen_descriptor,
-            None,
-        )?;
-        
+        self.render_pass
+            .execute(encoder, target, &self.jobs, &self.screen_descriptor, None)?;
+
         let textures = std::mem::take(&mut self.textures);
         self.render_pass.remove_textures(textures)
     }
@@ -222,10 +253,10 @@ fn main_widget_style() -> egui::style::Widgets {
 }
 
 const CORNER_ROUNDING: egui::Rounding = egui::Rounding {
-    nw: 6.0,  
-    ne: 6.0,  
-    sw: 6.0,  
-    se: 6.0,  
+    nw: 6.0,
+    ne: 6.0,
+    sw: 6.0,
+    se: 6.0,
 };
 
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(209, 207, 205);

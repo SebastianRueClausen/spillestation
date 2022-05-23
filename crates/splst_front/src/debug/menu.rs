@@ -22,8 +22,8 @@ pub struct DebugMenu {
     pub open: bool,
 }
 
-impl DebugMenu {
-    pub fn new() -> Self {
+impl Default for DebugMenu {
+    fn default() -> Self {
         Self {
             open: false,
             apps: vec![
@@ -39,7 +39,9 @@ impl DebugMenu {
             ],
         }
     }
+}
 
+impl DebugMenu {
     pub fn toggle_open(&mut self) {
         self.open = !self.open;
     }
@@ -82,8 +84,6 @@ impl DebugMenu {
                 .min_width(4.0)
                 .default_width(150.0)
                 .show(&ctx.egui_ctx, |ui| {
-                    ui.set_style(ctx.main_style.clone());
-                    
                     ui.horizontal(|ui| {
                         ui.selectable_value(mode, RunMode::Debug, "Debug");
                         ui.selectable_value(mode, RunMode::Emulation, "Emulation");

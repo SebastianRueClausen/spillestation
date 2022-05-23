@@ -5,7 +5,7 @@ use super::raw::RawMem;
 pub struct Ram(RawMem<{Self::SIZE}>);
 
 impl Ram {
-    const SIZE: usize = 2 * 1024 * 1024;
+    pub const SIZE: usize = 2 * 1024 * 1024;
 
     pub fn new() -> Self {
         Self(RawMem::new())

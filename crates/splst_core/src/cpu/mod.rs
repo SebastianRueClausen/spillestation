@@ -16,6 +16,7 @@ mod gte;
 pub mod irq;
 pub mod opcode;
 
+use splst_asm::Register;
 use splst_util::Bit;
 use crate::io_port::pad;
 use crate::cdrom::Disc;
@@ -32,11 +33,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 pub use irq::{Irq, IrqState};
-pub use opcode::{Opcode, RegIdx};
+pub use opcode::Opcode;
 
 #[derive(Clone)]
 struct DelaySlot {
-    reg: RegIdx,
+    reg: Register,
     ready: Timestamp,
     val: u32,
 }
@@ -44,7 +45,7 @@ struct DelaySlot {
 impl Default for DelaySlot {
     fn default() -> Self {
         Self {
-            reg: RegIdx::ZERO,
+            reg: Register::ZERO,
             ready: Timestamp::STARTUP,
             val: 0,
         }
@@ -76,15 +77,15 @@ pub struct Cpu {
     ///
     /// It's used when entering an exception. If the CPU is in a delay slot, it has to return one
     /// instruction behind `last_pc`.
-    in_branch_delay: bool,
+    pub(super) in_branch_delay: bool,
     /// Set when a branch occours. Used to set 'in_branch_delay'.
-    branched: bool,
+    pub(super) branched: bool,
     /// Results of multiply and divide instructions aren't stored in general purpose
     /// registers like normal instructions, but is instead stored in two special registers hi and
     /// lo.
     pub hi: u32,
     pub lo: u32,
-    /// This stores the timestamp that the result of an multiply or divide instruction is ready
+    /// This stores the timestamp when the result of an multiply or divide instruction is ready
     /// since they take more than a single cycle to complete.
     ///
     /// The CPU can run while the result is being calculated, but if the result is being read
@@ -177,11 +178,11 @@ impl Cpu {
         })
     }
 
-    pub fn read_reg(&self, idx: RegIdx) -> u32 {
+    pub fn read_reg(&self, idx: Register) -> u32 {
         self.registers[idx.0 as usize]
     }
 
-    fn set_reg(&mut self, idx: RegIdx, val: u32) {
+    fn set_reg(&mut self, idx: Register, val: u32) {
         self.registers[idx.0 as usize] = val;
         self.registers[0] = 0;
     }
@@ -205,6 +206,7 @@ impl Cpu {
     }
 
     /// Load an instruction from memory.
+    #[inline]
     fn load_code<T: AddrUnit>(&mut self, addr: u32) -> Result<T, Exception> {
         if !bus::is_aligned_to::<T>(addr) {
             self.cop0.set_reg(8, addr);
@@ -222,6 +224,7 @@ impl Cpu {
             .ok_or(Exception::BusInstructionError)
     }
 
+    #[inline]
     fn store<T: AddrUnit>(&mut self, addr: u32, val: T) -> Result<(), Exception> {
         if !bus::is_aligned_to::<T>(addr) {
             self.cop0.set_reg(8, addr);
@@ -257,14 +260,14 @@ impl Cpu {
     ///
     /// When loading from memory the CPU has to wait for the previous load to be done before the
     /// new load can begin.
-    fn pipeline_bus_load(&mut self, reg: RegIdx, val: u32, time: SysTime) {
+    fn pipeline_bus_load(&mut self, reg: Register, val: u32, time: SysTime) {
         // Check if the current load in the pipeline is different from the new one. If there aren't
         // any loads then 'self.load_delay.reg' points to the zero register.
         let diff = (self.load_delay.reg != reg) as u8;
 
         // If the load in the pipeline is the same as 'reg' then 'lreg' points to the zero
         // register, meaning writing to it would do nothing.
-        let lreg = RegIdx::from(self.load_delay.reg.0 * diff);
+        let lreg = Register::from(self.load_delay.reg.0 * diff);
 
         // This works since 'skip_to' ignores cycles less than the current cycle (take max of the
         // two).
@@ -275,11 +278,11 @@ impl Cpu {
         self.load_delay = DelaySlot { reg, val, ready };
     }
 
-    /// Almost the same as ['pipeline_bus_load'] but doesn't have to wait for any previous loads to
+    /// Almost the same as [´pipeline_bus_load´] but doesn't have to wait for any previous loads to
     /// come in. It will however still execute the next instruction in the load delay slot.
-    fn pipeline_cop_load(&mut self, reg: RegIdx, val: u32) {
+    fn pipeline_cop_load(&mut self, reg: Register, val: u32) {
         let diff = (self.load_delay.reg != reg) as u8;
-        let lreg = RegIdx::from(self.load_delay.reg.0 * diff);
+        let lreg = Register::from(self.load_delay.reg.0 * diff);
 
         self.set_reg(lreg, self.load_delay.val);
 
@@ -289,7 +292,7 @@ impl Cpu {
     /// Access a register, meaning that it's either gonna be get written to or read from. If there
     /// is a load in the pipeline to the same register, the processor has to wait for it to be
     /// done.
-    fn access_reg(&mut self, reg: RegIdx) -> RegIdx {
+    fn access_reg(&mut self, reg: Register) -> Register {
         let same = self.load_delay.reg == reg;
         let skip = Timestamp::new(self.load_delay.ready.time_since_startup() * same as u64);
         self.bus.schedule.skip_to(skip);
@@ -695,15 +698,15 @@ impl Cpu {
 
     // TODO: Add more syscall commands.
     fn syscall_trace(&mut self) {
-        match self.read_reg(RegIdx::V0) {
+        match self.read_reg(Register::V0) {
             1 => {
-                trace!("syscall: print {}", self.read_reg(RegIdx::A0));
+                trace!("syscall: print {}", self.read_reg(Register::A0));
             }
             2 | 3 => {
                 warn!("syscall: print float");
             }
             4 => {
-                let mut addr = self.read_reg(RegIdx::A0);
+                let mut addr = self.read_reg(Register::A0);
                 let mut print = String::new();
                 loop {
                     let c = match self.load::<u8>(addr) {
@@ -728,7 +731,7 @@ impl Cpu {
                 debug!("syscall: read string");
             }
             9 => {
-                debug!("syscall: allocate {} bytes", self.read_reg(RegIdx::A0));
+                debug!("syscall: allocate {} bytes", self.read_reg(Register::A0));
             }
             10 => {
                 debug!("syscall: terminate");
@@ -1044,7 +1047,7 @@ impl Cpu {
 
         // Set return register if required.
         if op.update_ra_on_branch() {
-            self.set_reg(RegIdx::RA, self.next_pc);
+            self.set_reg(Register::RA, self.next_pc);
         }
 
         if cond != 0 {
@@ -1062,10 +1065,10 @@ impl Cpu {
     /// JAL - Jump and link.
     fn op_jal(&mut self, op: Opcode) {
         let pc = self.next_pc;
-        self.access_reg(RegIdx::RA);
+        self.access_reg(Register::RA);
 
         self.op_j(op);
-        self.set_reg(RegIdx::RA, pc);
+        self.set_reg(Register::RA, pc);
     }
 
     /// BEQ - Branch if equal.
@@ -1352,7 +1355,7 @@ impl Cpu {
         dbg.data_load(aligned);
 
         let val = if self.load_delay.reg == rt {
-            debug_assert_ne!(self.load_delay.reg, RegIdx::ZERO);
+            debug_assert_ne!(self.load_delay.reg, Register::ZERO);
             self.load_delay.val
         } else {
             self.read_reg(rt)
@@ -1438,7 +1441,7 @@ impl Cpu {
         dbg.data_load(aligned);
 
         let val = if self.load_delay.reg == rt {
-            debug_assert_ne!(self.load_delay.reg, RegIdx::ZERO);
+            debug_assert_ne!(self.load_delay.reg, Register::ZERO);
             self.load_delay.val
         } else {
             self.read_reg(rt)

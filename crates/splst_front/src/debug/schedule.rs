@@ -6,7 +6,7 @@ pub struct ScheduleView;
 
 impl DebugApp for ScheduleView {
     fn name(&self) -> &'static str {
-        "Schedule View"
+        "Schedule"
     }
 
     fn show(&mut self, system: &mut System, ui: &mut egui::Ui) {

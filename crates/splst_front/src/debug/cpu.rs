@@ -9,6 +9,7 @@ use splst_core::cpu::REGISTER_NAMES;
 use splst_core::{System, StopReason, Debugger};
 
 use std::time::Duration;
+use std::fmt;
 
 #[derive(PartialEq, Eq)]
 enum RunMode {
@@ -59,18 +60,24 @@ struct BreakPoint {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum BreakPointTy {
+enum BreakPointKind {
     Ins,
     Load,
     Store,
 }
 
-impl BreakPointTy {
-    fn name(self) -> &'static str {
+impl Default for BreakPointKind {
+    fn default() -> Self {
+        BreakPointKind::Ins
+    }
+}
+
+impl fmt::Display for BreakPointKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            BreakPointTy::Ins => "Instruction Load",
-            BreakPointTy::Load => "Data Load",
-            BreakPointTy::Store => "Data store",
+            BreakPointKind::Ins => f.write_str("Instruction Load"),
+            BreakPointKind::Load => f.write_str("Data Load"),
+            BreakPointKind::Store => f.write_str("Data store"),
         }
     }
 }
@@ -78,25 +85,24 @@ impl BreakPointTy {
 /// Represents a breakpoint which has been hit.
 struct Break {
     addr: u32,
-    kind: BreakPointTy,
+    kind: BreakPointKind,
 }
 
-/// Keeps track of all breakpoints and used as ['Debugger'] by the system. 
+/// Keeps track of all breakpoints and used as [`Debugger`] by the system. 
 #[derive(Default)]
-struct BreakPoints {
+struct Breaks {
     ins: Vec<BreakPoint>,
     loads: Vec<BreakPoint>,
     stores: Vec<BreakPoint>,
-    /// Keeps track of all breaks that has accured, but hasn't been reported.
-    breaks: Vec<Break>,
+    hits: Vec<Break>,
 }
 
-impl Debugger for BreakPoints {
+impl Debugger for Breaks {
     fn instruction_load(&mut self, addr: u32) {
         self.ins.retain(|bp| {
             if bp.addr == addr {
-                self.breaks.push(Break {
-                    kind: BreakPointTy::Ins,
+                self.hits.push(Break {
+                    kind: BreakPointKind::Ins,
                     addr,
                 });
                 bp.retain
@@ -109,8 +115,8 @@ impl Debugger for BreakPoints {
     fn data_load(&mut self, addr: u32) {
         self.loads.retain(|bp| {
             if bp.addr == addr {
-                self.breaks.push(Break {
-                    kind: BreakPointTy::Load,
+                self.hits.push(Break {
+                    kind: BreakPointKind::Load,
                     addr,
                 });
                 bp.retain
@@ -123,8 +129,8 @@ impl Debugger for BreakPoints {
     fn data_store(&mut self, addr: u32) {
         self.stores.retain(|bp| {
             if bp.addr == addr {
-                self.breaks.push(Break {
-                    kind: BreakPointTy::Store,
+                self.hits.push(Break {
+                    kind: BreakPointKind::Store,
                     addr,
                 });
                 bp.retain
@@ -135,89 +141,70 @@ impl Debugger for BreakPoints {
     }
 
     fn should_stop(&mut self) -> bool {
-        !self.breaks.is_empty()
-    }
-}
-
-/// Data for the part of the app for adding a new breakpoint.
-struct BreakPointAdd {
-    /// The address input.
-    addr: String,
-    kind: BreakPointTy,
-    retain: bool,
-}
-
-impl Default for BreakPointAdd {
-    fn default() -> Self {
-        Self {
-            addr: String::new(),
-            kind: BreakPointTy::Ins,
-            retain: false,
-        }
+        !self.hits.is_empty()
     }
 }
 
 #[derive(Default)]
-pub struct CpuApp {
-    mode: RunMode,
-    /// Message shown when a break point has been hit.
-    bp_msg: Option<String>,
-    bps: BreakPoints,
-    bp_add: BreakPointAdd,
+struct BreakPointUi {
+    /// The address input for adding a new breakpoint.
+    addr: String,
+    /// The kind of new breakpoint.
+    kind: BreakPointKind,
+    /// Flag for having new breakpoints retain after being hit.
+    retain: bool,
+    breaks: Breaks,
+    message: Option<String>,
 }
 
-impl CpuApp {
-    /// Show the breakpoints section.
-    fn show_breakpoints(&mut self, ui: &mut egui::Ui) {
+impl BreakPointUi {
+    fn show(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.add_sized(
-                    [120.0, 20.0],
-                    egui::TextEdit::singleline(&mut self.bp_add.addr),
-                );
+                ui.add_sized([120.0, 20.0], egui::TextEdit::singleline(&mut self.addr));
                 egui::ComboBox::from_id_source("type_combo")
-                    .selected_text(self.bp_add.kind.name())
+                    .selected_text(format!("{}", self.kind))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
-                            &mut self.bp_add.kind,
-                            BreakPointTy::Ins,
-                            BreakPointTy::Ins.name(),
+                            &mut self.kind,
+                            BreakPointKind::Ins,
+                            "instruction",
                         );
                         ui.selectable_value(
-                            &mut self.bp_add.kind,
-                            BreakPointTy::Load,
-                            BreakPointTy::Load.name(),
+                            &mut self.kind,
+                            BreakPointKind::Load,
+                            "data load",
                         );
                         ui.selectable_value(
-                            &mut self.bp_add.kind,
-                            BreakPointTy::Store,
-                            BreakPointTy::Store.name(),
+                            &mut self.kind,
+                            BreakPointKind::Store,
+                            "data store"
                         );
                     });
 
-                ui.checkbox(&mut self.bp_add.retain, "Retain");
+                ui.checkbox(&mut self.retain, "Retain");
                 
                 let enter = ui.input().key_pressed(egui::Key::Enter);
                 if enter || ui.button("Add").clicked() {
                     // Parse the string as address in hex.
-                    if let Ok(addr) = u32::from_str_radix(&self.bp_add.addr, 16) {
-                        let vec = match self.bp_add.kind {
-                            BreakPointTy::Ins => &mut self.bps.ins,
-                            BreakPointTy::Load => &mut self.bps.loads,
-                            BreakPointTy::Store => &mut self.bps.stores,
+                    if let Ok(addr) = u32::from_str_radix(&self.addr, 16) {
+                        let vec = match self.kind {
+                            BreakPointKind::Ins => &mut self.breaks.ins,
+                            BreakPointKind::Load => &mut self.breaks.loads,
+                            BreakPointKind::Store => &mut self.breaks.stores,
                         };
 
                         let bp = BreakPoint {
-                            name: self.bp_add.addr.clone(),
-                            retain: self.bp_add.retain,
+                            name: self.addr.clone(),
+                            retain: self.retain,
                             addr,
                         };
 
                         vec.push(bp);
-                        self.bp_add.addr.clear();
+                        self.addr.clear();
                     } else {
-                        self.bp_msg = Some(
-                            format!("Invalid Breakpoint Address: {}", self.bp_add.addr)
+                        self.message = Some(
+                            format!("Invalid Breakpoint Address: {}", self.addr)
                         );
                     }
                 }
@@ -233,13 +220,18 @@ impl CpuApp {
                     ui.label("Retain");
                     ui.end_row();
 
-                    show_bps(ui, &mut self.bps.ins, BreakPointTy::Ins.name());
-                    show_bps(ui, &mut self.bps.loads, BreakPointTy::Load.name());
-                    show_bps(ui, &mut self.bps.stores, BreakPointTy::Store.name());
+                    show_bps(ui, &mut self.breaks.ins, "Instruction Load");
+                    show_bps(ui, &mut self.breaks.loads, "Data Load");
+                    show_bps(ui, &mut self.breaks.stores, "Data Store");
                 });
         });
-
     }
+}
+
+#[derive(Default)]
+pub struct CpuApp {
+    mode: RunMode,
+    break_point: BreakPointUi,
 }
 
 impl DebugApp for CpuApp {
@@ -252,8 +244,8 @@ impl DebugApp for CpuApp {
             RunMode::Step { ref mut stepped, amount } => {
                 if *stepped {
                     *stepped = false;
-                    self.bp_msg = None;
-                    sys.step_debug(amount, &mut self.bps)
+                    self.break_point.message = None;
+                    sys.step_debug(amount, &mut self.break_point.breaks)
                 } else {
                     StopReason::Timeout
                 }
@@ -261,9 +253,9 @@ impl DebugApp for CpuApp {
             RunMode::Run { speed, ref mut remainder } => {
                 // Clear the break message if running, since the user must have clicked run again
                 // after a breakpoint.
-                self.bp_msg = None;
+                self.break_point.message = None;
                 let time = *remainder + dt;
-                let (rem, stop) = sys.run_debug(speed, time, &mut self.bps);
+                let (rem, stop) = sys.run_debug(speed, time, &mut self.break_point.breaks);
                 *remainder = rem;
                 stop
             }
@@ -272,19 +264,19 @@ impl DebugApp for CpuApp {
         if stop == StopReason::Break {
             self.mode = RunMode::step();
 
-            let message: String = self.bps.breaks
+            let message: String = self.break_point.breaks.hits
                 .drain(..)
                 .map(|b| {
                     let kind = match b.kind {
-                        BreakPointTy::Ins => "loading instruction",
-                        BreakPointTy::Load => "loading data",
-                        BreakPointTy::Store => "storing data",
+                        BreakPointKind::Ins => "loading instruction",
+                        BreakPointKind::Load => "loading data",
+                        BreakPointKind::Store => "storing data",
                     };
                     format!("Broke {kind} at '{:08x}'\n", b.addr)
                 })
                 .collect();
             
-            self.bp_msg = Some(message);
+            self.break_point.message = Some(message);
         }
     }
 
@@ -341,13 +333,9 @@ impl DebugApp for CpuApp {
         ui.add_space(6.0);
         
         egui::ScrollArea::vertical().show(ui, |ui| {
-            if let Some(ref msg) = self.bp_msg {
+            if let Some(ref msg) = self.break_point.message {
                 ui.label(msg);
             }
-
-            ui.collapsing("Breakpoints", |ui| {
-                self.show_breakpoints(ui);
-            });
 
             ui.collapsing("Status", |ui| {
                 egui::Grid::new("cpu_status_grid").show(ui, |ui| {
@@ -381,6 +369,8 @@ impl DebugApp for CpuApp {
                     }
                 });
             });
+
+            ui.collapsing("Breakpoints", |ui| self.break_point.show(ui));
         });
     }
 

@@ -1,18 +1,24 @@
 use splst_core::io_port::{pad, IoSlot};
 use crate::keys;
+use crate::gui::GuiContext;
 
-use serde::{Serialize, Deserialize};
 use winit::event::{VirtualKeyCode, ElementState};
 
 use std::collections::HashMap;
 
 /// Controller settings.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct ControllerConfig {
-    connection1: Connection,
-    connection2: Connection,
+    #[serde(rename = "connection-1")]
+    conn1: Connection,
 
+    #[serde(rename = "connection-2")]
+    conn2: Connection,
+
+    #[serde(rename = "slot-1")]
     slot1: ButtonBindings,
+
+    #[serde(rename = "slot-2")]
     slot2: ButtonBindings,
 
     #[serde(skip)]
@@ -22,19 +28,27 @@ pub struct ControllerConfig {
     recording: Option<(IoSlot, pad::Button)>,
 
     #[serde(skip)]
-    error: Option<String>,
-
-    #[serde(skip)]
-    pub is_modified: bool,
+    pub modified: bool,
 }
 
 impl ControllerConfig {
+    pub fn is_modified(&self) -> bool {
+        self.modified
+    }
+
+    pub fn mark_as_saved(&mut self) {
+        self.modified = false;
+    }
+
     /// Get the key map corresponding to the controller settings. It will always generate a new key
     /// map. If generating the key map fails, an empty map will be returned and the menu will show
     /// and error.
-    pub fn get_key_map(&mut self) -> HashMap<VirtualKeyCode, (IoSlot, pad::Button)> {
+    pub fn get_key_map(
+        &mut self,
+        ctx: &mut GuiContext
+    ) -> HashMap<VirtualKeyCode, (IoSlot, pad::Button)> {
         gen_key_map(&self.slot1, &self.slot2)
-            .map_err(|err| self.error = Some(err))
+            .map_err(|err| ctx.error("Key Error", err))
             .unwrap_or_default()
     }
 
@@ -47,6 +61,7 @@ impl ControllerConfig {
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, pad::Button)>,
         key: VirtualKeyCode,
         state: ElementState,
+        ctx: &mut GuiContext,
     ) -> bool {
         if state != ElementState::Pressed {
             return false;
@@ -54,7 +69,7 @@ impl ControllerConfig {
 
         if let Some((slot, button)) = self.recording {
             self.recording = None;
-            self.is_modified = true;
+            self.modified = true;
 
             let bindings = match slot {
                 IoSlot::Slot1 => &mut self.slot1,
@@ -65,9 +80,10 @@ impl ControllerConfig {
 
             // Create a new key map or report the error. Also clears the error if generating the
             // key map succeeded.
-            self.error = gen_key_map(&self.slot1, &self.slot2)
-                .map(|map| *key_map = map)
-                .err();
+            match gen_key_map(&self.slot1, &self.slot2) {
+                Ok(map) => *key_map = map,
+                Err(err) => ctx.error("Key Error", err),
+            }
 
             true
         } else {
@@ -88,28 +104,22 @@ impl ControllerConfig {
                 .zip(pad::Button::ALL.iter())
                 .for_each(|(binding, button)| {
                     ui.label(format!("{button}"));
-
                     let key_name = binding
                         .map(|key| keys::keycode_name(key))
                         .unwrap_or("Unbound");
-
                     let rebind = egui::Button::new(key_name);
                     if ui.add_sized([60.0, 8.0], rebind).clicked() {
                         self.recording = Some((slot, *button));
                     }
-
                     ui.end_row();
                 });
         });
     }
 
-    /// Update ['Controllers'] from config. It should only be called when the configs could have
-    /// changed since it will reset the internal state of the controllers.
+    /// Update [`pad::Controllers`] from config. It should only be called when the configs could
+    /// have changed since it will reset the internal state of the controllers.
     pub fn update_controllers(&self, controllers: &mut pad::Controllers) {
-        for (ctrl, conn) in controllers
-            .iter_mut()
-            .zip([self.connection1, self.connection2].iter())
-        {
+        for (ctrl, conn) in controllers.iter_mut().zip([self.conn1, self.conn2].iter()) {
             *ctrl = match conn {
                 Connection::Unconnected => pad::Connection::unconnected(),
                 Connection::Virtual => pad::Connection::digital(),
@@ -127,8 +137,8 @@ impl ControllerConfig {
             ui.add_space(10.0);
 
             let connection = match self.show_slot {
-                IoSlot::Slot1 => &mut self.connection1,
-                IoSlot::Slot2 => &mut self.connection2,
+                IoSlot::Slot1 => &mut self.conn1,
+                IoSlot::Slot2 => &mut self.conn2,
             };
 
             let before = *connection;
@@ -141,7 +151,7 @@ impl ControllerConfig {
                 });
 
             if before != *connection {
-                self.is_modified = true;
+                self.modified = true;
                 controllers[self.show_slot] = match *connection {
                     Connection::Unconnected => pad::Connection::unconnected(),
                     Connection::Virtual => pad::Connection::digital(),
@@ -189,7 +199,7 @@ fn gen_key_map(
     Ok(map)
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 enum Connection {
     Unconnected,
     Virtual,
@@ -203,7 +213,7 @@ impl Default for Connection {
 }
 
 #[repr(C)]
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct ButtonBindings {
     select: Option<VirtualKeyCode>,  
     l3: Option<VirtualKeyCode>,  
@@ -212,7 +222,7 @@ struct ButtonBindings {
     up: Option<VirtualKeyCode>,  
     right: Option<VirtualKeyCode>,  
     down: Option<VirtualKeyCode>,  
-    left: Option<VirtualKeyCode>,  
+    left: Option<VirtualKeyCode>,
     l2: Option<VirtualKeyCode>,  
     r2: Option<VirtualKeyCode>,  
     l1: Option<VirtualKeyCode>,  
