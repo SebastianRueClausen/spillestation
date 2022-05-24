@@ -51,11 +51,13 @@ pub struct Cop0 {
     regs: [u32; 16],
 }
 
-impl Cop0 {
-    pub fn new() -> Self {
+impl Default for Cop0 {
+    fn default() -> Self {
         Self { regs: REGISTER_VALUES }
     }
+}
 
+impl Cop0 {
     /// If the scratchpad is enabled.
     pub fn cache_isolated(&self) -> bool {
         self.regs[12].bit(16)

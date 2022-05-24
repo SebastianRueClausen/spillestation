@@ -170,8 +170,8 @@ impl Cpu {
             hi_lo_ready: Timestamp::STARTUP,
             registers: [0x0; 32],
             load_delay: DelaySlot::default(),
-            gte: Gte::new(),
-            cop0: Cop0::new(),
+            gte: Gte::default(),
+            cop0: Cop0::default(),
             icache,
             icache_misses: 0,
             bus,
@@ -199,7 +199,8 @@ impl Cpu {
         let addr = bus::regioned_addr(addr);
 
         if let Some(offset) = ScratchPad::offset(addr) {
-            Ok((self.bus.scratchpad.load::<T>(offset), SysTime::ZERO))
+            let val = unsafe { self.bus.scratchpad.load_unchecked::<T>(offset) };
+            Ok((val, SysTime::ZERO))
         } else {
             self.bus.load::<T>(addr).ok_or(Exception::BusDataError)
         }
@@ -262,14 +263,14 @@ impl Cpu {
     /// new load can begin.
     fn pipeline_bus_load(&mut self, reg: Register, val: u32, time: SysTime) {
         // Check if the current load in the pipeline is different from the new one. If there aren't
-        // any loads then 'self.load_delay.reg' points to the zero register.
+        // any loads then `self.load_delay.reg` points to the zero register.
         let diff = (self.load_delay.reg != reg) as u8;
 
-        // If the load in the pipeline is the same as 'reg' then 'lreg' points to the zero
+        // If the load in the pipeline is the same as `reg` then `lreg` points to the zero
         // register, meaning writing to it would do nothing.
         let lreg = Register::from(self.load_delay.reg.0 * diff);
 
-        // This works since 'skip_to' ignores cycles less than the current cycle (take max of the
+        // This works since `skip_to` ignores cycles less than the current cycle (take max of the
         // two).
         self.bus.schedule.skip_to(self.load_delay.ready);
         self.set_reg(lreg, self.load_delay.val);
@@ -301,7 +302,7 @@ impl Cpu {
 
     /// Fetch pending load if there is any. It doesn't wait for the load to be finished, so the
     /// register will contain the value before it's done loading. Only if the register is actually
-    /// read or written to will the CPU wait through 'access_reg'.
+    /// read or written to will the CPU wait through `access_reg`.
     fn fetch_load_slot(&mut self) {
         self.set_reg(self.load_delay.reg, self.load_delay.val);
         self.load_delay = DelaySlot::default();
@@ -1258,7 +1259,7 @@ impl Cpu {
 
         if cop.bit(4) {
             self.fetch_load_slot();
-            self.gte.cmd(op.0);
+            self.gte.exec(op.0);
         } else {
             match cop {
                 // Load from COP2 data register.
