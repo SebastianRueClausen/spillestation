@@ -6,7 +6,6 @@ fn zero_reg() {
     let cpu = run_code(r#"
         main:
             li $zero, 1
-            break 0
     "#);
     assert_eq!(cpu.read_reg(Register::ZERO), 0);
 }

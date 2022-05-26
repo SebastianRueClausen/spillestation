@@ -24,9 +24,9 @@ pub mod bus;
 pub mod gpu;
 pub mod cpu;
 pub mod time;
-pub mod exe;
+pub mod debug;
 
-use exe::Exe;
+use splst_util::Exe;
 use io_port::pad;
 use schedule::Schedule;
 use cpu::irq::IrqState;
@@ -94,14 +94,14 @@ impl System {
         &mut self,
         hz: u64,
         mut time: Duration,
-        dbg: &mut impl Debugger,
+        dbg: &mut impl debug::Debugger,
     ) -> (Duration, StopReason) {
         let cycle_time = Duration::from_secs(1) / hz as u32;
 
         while let Some(new) = time.checked_sub(cycle_time) {
             time = new;
             self.cpu.step(dbg);
-            if dbg.should_stop() {
+            if dbg.should_break() {
                 return (time, StopReason::Break);
             }
         }
@@ -116,11 +116,11 @@ impl System {
     pub fn step_debug(
         &mut self,
         steps: u64,
-        dbg: &mut impl Debugger,
+        dbg: &mut impl debug::Debugger,
     ) -> StopReason {
         for _ in 0..steps {
             self.cpu.step(dbg);
-            if dbg.should_stop() {
+            if dbg.should_break() {
                 return StopReason::Break;
             }
         }
@@ -157,38 +157,12 @@ impl System {
 }
 
 /// The result of running the emulator.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StopReason {
     /// The run session has timed out, meaning that the specified runtime has elapsed.
     Timeout,
     /// The emulator has hit a breakpoint.
     Break,
-}
-
-
-
-pub trait Debugger {
-    /// Called when loading an instruction.
-    fn instruction_load(&mut self, addr: u32);
-    /// Callec when loading data. 
-    fn data_load(&mut self, addr: u32);
-    /// Called when storing data.
-    fn data_store(&mut self, addr: u32);
-    /// Called after every cycle. The [`System`] will stop if it returns true.
-    fn should_stop(&mut self) -> bool;
-}
-
-// Implement debugger for unit type to easily use no debugger.
-impl Debugger for () {
-    fn instruction_load(&mut self, _: u32) {}
-
-    fn data_load(&mut self, _: u32) {}
-
-    fn data_store(&mut self, _: u32) {}
-
-    fn should_stop(&mut self) -> bool {
-        false
-    }
 }
 
 pub trait VideoOutput {

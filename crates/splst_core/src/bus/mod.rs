@@ -124,9 +124,6 @@ impl Bus {
         Some(val)
     }
 
-    /// Load from BUS.
-    ///
-    /// This 
     pub fn load<T: AddrUnit>(&mut self, addr: u32) -> Option<(T, SysTime)> {
         let (val, time) = match addr {
             Ram::BUS_BEGIN..=Ram::BUS_END => {
@@ -399,12 +396,12 @@ impl fmt::Display for AddrUnitWidth {
 }
 
 /// Addressable unit.
-pub trait AddrUnit: Into<u32> + From<u8> {
+pub trait AddrUnit: Into<u32> + From<u8> + Copy {
     /// The width of the addressable unit.
     const WIDTH: AddrUnitWidth;
 
-    /// Create from 'u32' where it gets the value from the bytes of 'val', depending on the
-    /// value of 'addr'. 'addr' should be aligned to get a correct value.
+    /// Create from `u32` where it gets the value from the bytes of `val`, depending on the
+    /// value of `addr`. `addr` should be aligned to get a correct value.
     ///
     /// # Example
     ///
@@ -422,7 +419,7 @@ pub trait AddrUnit: Into<u32> + From<u8> {
         Self::from(val)
     }
 
-    /// Get as 'u32' where the value depend on the alignment of 'addr'. 'addr' should be correctly
+    /// Get as `u32` where the value depend on the alignment of `addr`. `addr` should be correctly
     /// aligned.
     ///
     /// # Example
@@ -437,17 +434,17 @@ pub trait AddrUnit: Into<u32> + From<u8> {
         val << (8 * align)
     }
 
-    /// Cast to u32 like 'self as u32'.
+    /// Cast to u32 like `self as u32`.
     fn as_u32(self) -> u32 {
         self.into()
     }
 
-    /// Cast to u16 like 'self as u16'.
+    /// Cast to u16 like `self as u16`.
     fn as_u16(self) -> u16 {
         self.as_u32() as u16
     }
 
-    /// Cast to u8 like 'self as u8'.
+    /// Cast to u8 like `self as u8`.
     fn as_u8(self) -> u8 {
         self.as_u32() as u8
     }

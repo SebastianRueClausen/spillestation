@@ -18,9 +18,9 @@ pub enum Exception {
     BusInstructionError = 0x6,
     /// Trying to load or store data at an invalid address.
     BusDataError = 0x7,
-    /// Thrown via 'super::Gpu::op_syscall'.
+    /// Thrown via [`super::Cpu::op_syscall`].
     Syscall = 0x8,
-    /// Thrown via 'super::Gpu::op_break'.
+    /// Thrown via [`super::Cpu::op_break`].
     Breakpoint = 0x9,
     /// Thrown when calling a illegal instruction.
     ReservedInstruction = 0xa,
@@ -36,18 +36,22 @@ pub struct Cop0 {
     /// Most aren't used by any game, so it would maybe be a better idea just to
     /// only implement the required onces.  
     ///
-    /// - 0..2 - NA.
-    /// - 3 - BPC - Breakpoint on execution.
-    /// - 5 - BDA - Breakpoint on data access.
-    /// - 6 - JUMPDEST - Memorized jump address.
-    /// - 7 - DCIC - Breakpoint control.
-    /// - 8 - BadVaddr - Bad virtual address.
-    /// - 9 - BDAM - Data access breakpoint mask.
-    /// - 11 - BPCM- Execute breakpoint mask.
-    /// - 12 - SR - Status register.
-    /// - 13 - Cause - Exception type.
-    /// - 14 - EPC - Return address tom trap.
-    /// - 15 - PRID - Processor ID.
+    /// | Number | Name     | Usage                       |
+    /// |--------|----------|-----------------------------|
+    /// | 0..2   | Na       | -                           |
+    /// | 3      | bpc      | Breakpoint on execution     |
+    /// | 5      | bda      | Breakpoint on data access   |
+    /// | 6      | jumpdest | Memorized jump address      |
+    /// | 7      | dcic     | Breakpoint control          |
+    /// | 8      | badvaddr | Bad virtual address.        |
+    /// | 9      | bdam     | Data access breakpoint mask |
+    /// | 10     | Na       | -                           |
+    /// | 11     | bpcm     | Execute breakpoint mask     |
+    /// | 12     | sr       | Status register             |
+    /// | 13     | cause    | Exception type              |
+    /// | 14     | epc      | Return address from trap    |
+    /// | 15     | prid     | Processor ID                |
+    /// 
     regs: [u32; 16],
 }
 

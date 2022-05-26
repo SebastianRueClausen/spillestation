@@ -8,6 +8,7 @@ resolver = "2"
 splst_core = { path = "../splst_core" }
 splst_cdimg = { path = "../splst_cdimg" }
 splst_render = { path = "../splst_render" }
+splst_util = { path = "../splst_util" }
 
 egui = "0.17.0"
 egui_wgpu_backend = "0.17.0"

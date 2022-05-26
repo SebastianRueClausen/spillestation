@@ -5,8 +5,8 @@
 
 use super::DebugApp;
 
-use splst_core::cpu::REGISTER_NAMES;
-use splst_core::{System, StopReason, Debugger};
+use splst_core::cpu::{Cpu, REGISTER_NAMES, Opcode};
+use splst_core::{System, StopReason, debug::Debugger, bus::AddrUnit};
 
 use std::time::Duration;
 use std::fmt;
@@ -31,17 +31,11 @@ enum RunMode {
 
 impl RunMode {
     fn step() -> Self {
-        RunMode::Step {
-            amount: 1,
-            stepped: false
-        }
+        RunMode::Step { amount: 1, stepped: false }
     }
 
     fn run() -> Self {
-        RunMode::Run {
-            speed: 1,
-            remainder: Duration::ZERO
-        }
+        RunMode::Run { speed: 1, remainder: Duration::ZERO }
     }
 }
 
@@ -98,7 +92,7 @@ struct Breaks {
 }
 
 impl Debugger for Breaks {
-    fn instruction_load(&mut self, addr: u32) {
+    fn instruction(&mut self, _: &Cpu, addr: u32, _: Opcode) {
         self.ins.retain(|bp| {
             if bp.addr == addr {
                 self.hits.push(Break {
@@ -112,7 +106,7 @@ impl Debugger for Breaks {
         });
     }
 
-    fn data_load(&mut self, addr: u32) {
+    fn load<T: AddrUnit>(&mut self, _: &Cpu, addr: u32, _: T) {
         self.loads.retain(|bp| {
             if bp.addr == addr {
                 self.hits.push(Break {
@@ -126,7 +120,7 @@ impl Debugger for Breaks {
         });
     }
 
-    fn data_store(&mut self, addr: u32) {
+    fn store<T: AddrUnit>(&mut self, _: &Cpu, addr: u32, _: T) {
         self.stores.retain(|bp| {
             if bp.addr == addr {
                 self.hits.push(Break {
@@ -140,7 +134,7 @@ impl Debugger for Breaks {
         });
     }
 
-    fn should_stop(&mut self) -> bool {
+    fn should_break(&mut self) -> bool {
         !self.hits.is_empty()
     }
 }

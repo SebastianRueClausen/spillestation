@@ -14,7 +14,7 @@ pub struct Gte {
 
 impl Gte {
     pub fn ctrl_store(&mut self, offset: u32, val: u32) {
-        debug_assert!(offset < 32, "invalid control register store at {offset}");
+        assert!(offset < 32, "invalid control register store at {offset}");
 
         match offset {
             4 | 12 | 20 | 26 | 27 | 29 | 30 => unsafe {
@@ -29,12 +29,12 @@ impl Gte {
     }
 
     pub fn ctrl_load(&mut self, offset: u32) -> u32 {
-        debug_assert!(offset < 32, "invalid control register store at {offset}");
+        assert!(offset < 32, "invalid control register store at {offset}");
         unsafe { self.ctrl.load_unchecked(offset) }
     }
 
     pub fn data_store(&mut self, offset: u32, val: u32) {
-        debug_assert!(offset < 32, "invalid control register store at {offset}");
+        assert!(offset < 32, "invalid control register store at {offset}");
 
         match offset {
             1 | 3 | 5 | 8..=11 => unsafe {
@@ -85,7 +85,7 @@ impl Gte {
     }
 
     pub fn data_load(&mut self, offset: u32) -> u32 {
-        debug_assert!(offset < 32, "invalid control register store at {offset}");
+        assert!(offset < 32, "invalid control register store at {offset}");
 
         match offset {
             // `sxyp` is a mirror of `sxy2`.

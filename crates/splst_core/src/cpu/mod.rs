@@ -18,13 +18,13 @@ pub mod opcode;
 
 use splst_asm::Register;
 use splst_util::Bit;
+
 use crate::io_port::pad;
 use crate::cdrom::Disc;
-use crate::bus::bios::Bios;
-use crate::bus::scratchpad::ScratchPad;
-use crate::bus::{self, AddrUnit, Bus, BusMap};
+use crate::bus::{self, bios::Bios, scratchpad::ScratchPad, AddrUnit, Bus, BusMap};
+use crate::{SysTime, Timestamp, VideoOutput, AudioOutput};
 use crate::schedule::Event;
-use crate::{SysTime, Timestamp, Debugger, VideoOutput, AudioOutput};
+use crate::debug::Debugger;
 
 use cop0::{Cop0, Exception};
 use gte::Gte;
@@ -187,27 +187,8 @@ impl Cpu {
         self.registers[0] = 0;
     }
 
-    /// Load data from the bus. Must not be called when loading code.
-    fn load<T: AddrUnit>(&mut self, addr: u32) -> Result<(T, SysTime), Exception> {
-        self.bus.schedule.skip_to(self.load_delay.ready);
-
-        if !bus::is_aligned_to::<T>(addr) {
-            self.cop0.set_reg(8, addr);
-            return Err(Exception::AddressLoadError);
-        }
-
-        let addr = bus::regioned_addr(addr);
-
-        if let Some(offset) = ScratchPad::offset(addr) {
-            let val = unsafe { self.bus.scratchpad.load_unchecked::<T>(offset) };
-            Ok((val, SysTime::ZERO))
-        } else {
-            self.bus.load::<T>(addr).ok_or(Exception::BusDataError)
-        }
-    }
-
     /// Load an instruction from memory.
-    #[inline]
+    #[inline(always)]
     fn load_code<T: AddrUnit>(&mut self, addr: u32) -> Result<T, Exception> {
         if !bus::is_aligned_to::<T>(addr) {
             self.cop0.set_reg(8, addr);
@@ -225,14 +206,54 @@ impl Cpu {
             .ok_or(Exception::BusInstructionError)
     }
 
-    #[inline]
-    fn store<T: AddrUnit>(&mut self, addr: u32, val: T) -> Result<(), Exception> {
+    /// Load data from the bus. Must not be called when loading code.
+    #[inline(always)]
+    fn load<T: AddrUnit, Dgb: Debugger>(
+        &mut self,
+        dbg: &mut Dgb,
+        addr: u32,
+    ) -> Result<(T, SysTime), Exception> {
+        self.bus.schedule.skip_to(self.load_delay.ready);
+
+        if !bus::is_aligned_to::<T>(addr) {
+            self.cop0.set_reg(8, addr);
+            return Err(Exception::AddressLoadError);
+        }
+
+        let addr = bus::regioned_addr(addr);
+
+        if let Some(offset) = ScratchPad::offset(addr) {
+            let val = unsafe {
+                self.bus.scratchpad.load_unchecked::<T>(offset)
+            };
+
+            Ok((val, SysTime::ZERO))
+        } else {
+            let Some((val, time)) = self.bus.load::<T>(addr) else {
+                return Err(Exception::BusDataError);
+            };
+
+            dbg.load(self, addr, val);
+
+            Ok((val, time))
+        }
+    }
+
+    #[inline(always)]
+    fn store<T: AddrUnit, Dbg: Debugger>(
+        &mut self,
+        dbg: &mut Dbg,
+        addr: u32,
+        val: T,
+    ) -> Result<(), Exception> {
         if !bus::is_aligned_to::<T>(addr) {
             self.cop0.set_reg(8, addr);
             return Err(Exception::AddressStoreError);
         }
 
         let addr = bus::regioned_addr(addr);
+
+        dbg.store(self, addr, val);
 
         if !self.cop0.cache_isolated() {
             self.bus.store(addr, val).ok_or(Exception::BusDataError)
@@ -248,6 +269,7 @@ impl Cpu {
             }
 
             self.icache[line_idx] = line;
+
             Ok(())
         } else {
             warn!("store with cache isolated but not enabled");
@@ -401,8 +423,6 @@ impl Cpu {
     fn execute_instruction(&mut self, dbg: &mut impl Debugger) {
         let addr = self.next_pc();
 
-        dbg.instruction_load(addr);
-
         if bus::addr_cached(addr) && self.bus.cache_ctrl.icache_enabled() {
             let tag = addr.bit_range(12, 30);
             let word_idx = addr.bit_range(2, 3) as usize;
@@ -414,7 +434,12 @@ impl Cpu {
                 self.bus.schedule.skip_to(self.load_delay.ready);
 
                 match self.fetch_cachline(&mut line, word_idx, addr) {
-                    Ok(()) => self.exec(dbg, Opcode::new(line.data[word_idx])),
+                    Ok(()) => {
+                        let op = Opcode::new(line.data[word_idx]);
+
+                        dbg.instruction(self, addr, op);
+                        self.exec(dbg, op);
+                    }
                     Err(exp) => self.throw_exception(exp),
                 }
 
@@ -423,7 +448,10 @@ impl Cpu {
                 self.icache[line_idx] = line;
                 self.icache_misses += 1;
             } else {
-                self.exec(dbg, Opcode::new(line.data[word_idx]));
+                let op = Opcode::new(line.data[word_idx]);
+                
+                dbg.instruction(self, addr, op);
+                self.exec(dbg, op);
             }
         } else {
             self.bus.schedule.skip_to(self.load_delay.ready);
@@ -432,14 +460,19 @@ impl Cpu {
             self.bus.schedule.advance(SysTime::new(4));
 
             match self.load_code::<u32>(addr) {
-                Ok(val) => self.exec(dbg, Opcode::new(val)),
+                Ok(val) => {
+                    let op = Opcode::new(val);
+
+                    dbg.instruction(self, addr, op);
+                    self.exec(dbg, op)
+                }
                 Err(exp) => self.throw_exception(exp),
             }
         }
         self.bus.schedule.advance(SysTime::new(1));
     }
 
-    /// Execute pending event (if any) and execute a single instruction.
+    /// Execute pending events (if any) and execute a single instruction.
     ///
     /// It doesn't check if the debugger has hit a breakpoint. No timeput event should be pending
     /// when calling the function.
@@ -461,6 +494,8 @@ impl Cpu {
                     callback(&mut self.bus.gpu, &mut self.bus.schedule, &mut self.bus.timers);
                 }
                 Event::Irq(irq) => {
+                    dbg.irq(self, irq);
+
                     self.bus.irq_state.trigger(irq);
                     self.check_for_pending_irq();
                 }
@@ -513,7 +548,7 @@ impl Cpu {
                 None => {
                     self.execute_instruction(dbg);
 
-                    if dbg.should_stop() {
+                    if dbg.should_break() {
                         let time_left = self.bus.schedule
                             .time_until_event(timeout)
                             .expect("timeout event not found");
@@ -593,11 +628,11 @@ impl Cpu {
             0x2e => self.op_swr(dbg, opcode),
             0x30 => self.op_lwc0(),
             0x31 => self.op_lwc1(),
-            0x32 => self.op_lwc2(opcode),
+            0x32 => self.op_lwc2(dbg, opcode),
             0x33 => self.op_lwc3(),
             0x38 => self.op_swc0(),
             0x39 => self.op_swc1(),
-            0x3a => self.op_swc2(opcode),
+            0x3a => self.op_swc2(dbg, opcode),
             0x3b => self.op_swc3(),
             _ => self.op_illegal(),
         }
@@ -697,50 +732,16 @@ impl Cpu {
         self.set_reg(rd, pc);
     }
 
-    // TODO: Add more syscall commands.
     fn syscall_trace(&mut self) {
-        match self.read_reg(Register::V0) {
-            1 => {
-                trace!("syscall: print {}", self.read_reg(Register::A0));
-            }
-            2 | 3 => {
-                warn!("syscall: print float");
-            }
-            4 => {
-                let mut addr = self.read_reg(Register::A0);
-                let mut print = String::new();
-                loop {
-                    let c = match self.load::<u8>(addr) {
-                        Ok((val, _)) => (val as u8) as char,
-                        Err(_) => break,
-                    };
-                    if c == '\n' {
-                        break;
-                    }
-                    print.push(c);
-                    addr += 1;
-                }
-                debug!("syscall: print \"{}\"", print);
-            }
-            5 => {
-                debug!("syscall: read integer")
-            }
-            6 | 7 => {
-                trace!("syscall: read float")
-            }
-            8 => {
-                debug!("syscall: read string");
-            }
-            9 => {
-                debug!("syscall: allocate {} bytes", self.read_reg(Register::A0));
-            }
-            10 => {
-                debug!("syscall: terminate");
-            }
-            val => {
-                debug!("syscall: type {}", val)
-            }
-        }
+        let text = match self.read_reg(Register::A0) {
+            0x0 => String::from("no function"),
+            0x1 => String::from("enter critical section"),
+            0x2 => String::from("exit critical section"),
+            0x3 => String::from("change thread sub function"),
+            0x4 => String::from("deliver event"),
+            val => format!("unknown with code {val:08x}"),
+        };
+        trace!("syscall: {text}");
     }
 
     /// SYSCALL - Throws syscall exception.
@@ -1304,15 +1305,13 @@ impl Cpu {
     }
 
     /// LB - Load byte.
-    fn op_lb(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_lb<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
-        dbg.data_load(addr);
-
-        match self.load::<u8>(addr) {
+        match self.load::<u8, Dbg>(dbg, addr) {
             Ok((val, time)) => {
                 let val = val as i8;
                 self.pipeline_bus_load(rt, val as u32, time)
@@ -1322,15 +1321,13 @@ impl Cpu {
     }
 
     /// LH - Load half word.
-    fn op_lh(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_lh<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
-        dbg.data_load(addr);
-
-        match self.load::<u16>(addr) {
+        match self.load::<u16, Dbg>(dbg, addr) {
             Err(exp) => self.throw_exception(exp),
             Ok((val, time)) => {
                 let val = val as i16;
@@ -1346,14 +1343,12 @@ impl Cpu {
     /// memory which contain the unaligned address. The result is a combination (bitwise or) of the
     /// base value and the loaded word, where the combination depend on the alignment of the
     /// address.
-    fn op_lwl(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_lwl<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
         let aligned = addr & !0x3;
-
-        dbg.data_load(aligned);
 
         let val = if self.load_delay.reg == rt {
             debug_assert_ne!(self.load_delay.reg, Register::ZERO);
@@ -1363,7 +1358,7 @@ impl Cpu {
         };
 
         // Get word containing unaligned address.
-        match self.load::<u32>(aligned) {
+        match self.load::<u32, Dbg>(dbg, aligned) {
             Ok((word, time)) => {
                 // Extract 1, 2, 3, 4 bytes dependent on the address alignment.
                 let val = match addr & 0x3 {
@@ -1385,45 +1380,39 @@ impl Cpu {
     }
 
     /// LW - Load word.
-    fn op_lw(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_lw<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
-        dbg.data_load(addr);
-
-        match self.load::<u32>(addr) {
+        match self.load::<u32, Dbg>(dbg, addr) {
             Ok((val, time)) => self.pipeline_bus_load(rt, val, time),
             Err(exp) => self.throw_exception(exp),
         }
     }
 
     /// LBU - Load byte unsigned.
-    fn op_lbu(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_lbu<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
-        dbg.data_load(addr);
-
-        match self.load::<u8>(addr) {
+        match self.load::<u8, Dbg>(dbg, addr) {
             Ok((val, time)) => self.pipeline_bus_load(rt, val.into(), time),
             Err(exp) => self.throw_exception(exp),
         }
     }
 
     /// LHU - Load half word unsigned.
-    fn op_lhu(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_lhu<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
-        dbg.data_load(addr);
-
-        match self.load::<u16>(addr) {
+        match self.load::<u16, Dbg>(dbg, addr) {
             Ok((val, time)) => self.pipeline_bus_load(rt, val.into(), time),
             Err(exp) => self.throw_exception(exp),
         }
@@ -1432,14 +1421,13 @@ impl Cpu {
     /// # LWR - Load word right
     ///
     /// See 'op_lwl'.
-    fn op_lwr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_lwr<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
         let aligned = addr & !0x3;
-        dbg.data_load(aligned);
 
         let val = if self.load_delay.reg == rt {
             debug_assert_ne!(self.load_delay.reg, Register::ZERO);
@@ -1448,7 +1436,7 @@ impl Cpu {
             self.read_reg(rt)
         };
 
-        match self.load::<u32>(aligned) {
+        match self.load::<u32, Dbg>(dbg, aligned) {
             Ok((word, time)) => {
                 let val = match addr & 0x3 {
                     0 => word,
@@ -1465,35 +1453,31 @@ impl Cpu {
     }
 
     /// SB - Store byte.
-    fn op_sb(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_sb<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
-        dbg.data_store(addr);
-
         let val = self.read_reg(rt);
         self.fetch_load_slot();
 
-        if let Err(exp) = self.store::<u8>(addr, val as u8) {
+        if let Err(exp) = self.store::<u8, Dbg>(dbg, addr, val as u8) {
             self.throw_exception(exp);
         }
     }
 
     /// SH - Store half word.
-    fn op_sh(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_sh<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
-        dbg.data_store(addr);
-
         let val = self.read_reg(rt);
         self.fetch_load_slot();
 
-        if let Err(exp) = self.store::<u16>(addr, val as u16) {
+        if let Err(exp) = self.store::<u16, Dbg>(dbg, addr, val as u16) {
             self.throw_exception(exp);
         }
     }
@@ -1502,21 +1486,17 @@ impl Cpu {
     ///
     /// This is used to store words to addresses which aren't 32 bit aligned. It's the 
     /// same idea as 'op_lwl' and 'op_lwr'.
-    fn op_swl(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_swl<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
-
         let val = self.read_reg(rt);
 
         // Get address of whole word containing unaligned address.
         let aligned = addr & !3;
 
-        dbg.data_store(aligned);
-        dbg.data_load(aligned);
-
-        match self.load::<u32>(aligned) {
+        match self.load::<u32, Dbg>(dbg, aligned) {
             Ok((word, time)) => {
                 let val = match addr & 3 {
                     0 => (word & 0xffff_ff00) | (val >> 24),
@@ -1529,7 +1509,7 @@ impl Cpu {
                 self.bus.schedule.advance(time);
                 self.fetch_load_slot();
 
-                if let Err(exp) = self.store::<u32>(aligned, val) {
+                if let Err(exp) = self.store::<u32, Dbg>(dbg, aligned, val) {
                     self.throw_exception(exp);
                 }
             }
@@ -1540,40 +1520,38 @@ impl Cpu {
     /// # SW - Store word
     ///
     /// Store word from target register at address from source register + signed immediate value.
-    fn op_sw(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    fn op_sw<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
 
-        dbg.data_store(addr);
-
         let val = self.read_reg(rt);
         self.fetch_load_slot();
 
-        if let Err(exp) = self.store::<u32>(addr, val) {
+        dbg.store(self, addr, val);
+
+        if let Err(exp) = self.store::<u32, Dbg>(dbg, addr, val) {
             self.throw_exception(exp);
         }
     }
 
     /// # SWR - Store world right
     ///
-    /// See 'op_swl'.
-    fn op_swr(&mut self, dbg: &mut impl Debugger, op: Opcode) {
+    /// See [`op_swl`].
+    fn op_swr<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
         let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
-
         let val = self.read_reg(rt);
 
         let aligned = addr & !3;
 
-        dbg.data_store(aligned);
-        dbg.data_load(aligned);
-
-        match self.load::<u32>(aligned) {
+        match self.load::<u32, Dbg>(dbg, aligned) {
             Ok((word, time)) => {
+                dbg.load(self, aligned, word);
+
                 let val = match addr & 3 {
                     0 => val,
                     1 => (word & 0x0000_00ff) | (val << 8),
@@ -1585,7 +1563,9 @@ impl Cpu {
                 self.bus.schedule.advance(time);
                 self.fetch_load_slot();
 
-                if let Err(ex) = self.store::<u32>(aligned, val) {
+                dbg.store(self, aligned, val);
+
+                if let Err(ex) = self.store::<u32, Dbg>(dbg, aligned, val) {
                     self.throw_exception(ex);
                 }
             }
@@ -1605,7 +1585,7 @@ impl Cpu {
     }
 
     /// LWC2 - Load word in Coprocessor2.
-    fn op_lwc2(&mut self, op: Opcode) {
+    fn op_lwc2<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
         let addr = self
@@ -1614,7 +1594,7 @@ impl Cpu {
 
         self.fetch_load_slot();
 
-        match self.load::<u32>(addr) {
+        match self.load::<u32, Dbg>(dbg, addr) {
             Ok((val, time)) => {
                 self.bus.schedule.advance(time);
                 self.gte.data_store(op.rt().0 as u32, val);
@@ -1640,8 +1620,8 @@ impl Cpu {
         self.throw_exception(Exception::CopUnusable);
     }
 
-    /// SWC2 - Store world in Coprocessor0.
-    fn op_swc2(&mut self, op: Opcode) {
+    /// SWC2 - Store word in Coprocessor0.
+    fn op_swc2<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
         let val = self.gte.data_load(op.rt().0.into());
@@ -1652,7 +1632,7 @@ impl Cpu {
 
         self.fetch_load_slot();
 
-        if let Err(ex) = self.store::<u32>(addr, val) {
+        if let Err(ex) = self.store::<u32, Dbg>(dbg, addr, val) {
             self.throw_exception(ex);
         }
     }

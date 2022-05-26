@@ -5,3 +5,8 @@ edition = "2021"
 
 [profile.dev]
 opt-level = 3
+
+[dependencies]
+bytemuck = { version = "1.7.2" }
+thiserror = "*"
+log = "*"

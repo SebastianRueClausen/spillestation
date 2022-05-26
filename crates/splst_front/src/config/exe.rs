@@ -1,4 +1,4 @@
-use splst_core::exe::Exe;
+use splst_util::Exe;
 use super::quick_access::QuickAccess;
 use crate::gui::GuiContext;
 
