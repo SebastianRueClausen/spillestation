@@ -8,7 +8,7 @@
 use splst_util::{Bit, BitSet};
 
 use crate::cpu::Irq;
-use crate::{SysTime, Timestamp};
+use crate::{dump, dump::Dumper, SysTime, Timestamp};
 use crate::bus::{Ram, AddrUnit, Bus, BusMap, Schedule, Event};
 
 use std::ops::{Index, IndexMut};
@@ -27,12 +27,12 @@ pub struct Dma {
     /// Control register. 
     ctrl: CtrlReg,
     /// Interrupt register.
-    pub irq: IrqReg,
+    irq: IrqReg,
     channels: [ChanStat; 7],
 }
 
 impl Dma {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             ctrl: CtrlReg(0x7654321),
             irq: IrqReg(0),
@@ -48,7 +48,7 @@ impl Dma {
         }
     }
 
-    pub fn load<T: AddrUnit>(&self, offset: u32) -> T {
+    pub(super) fn load<T: AddrUnit>(&self, offset: u32) -> T {
         let chan = offset.bit_range(4, 6);
         let reg = offset.bit_range(0, 3);
 
@@ -65,7 +65,7 @@ impl Dma {
         T::from_u32_aligned(val, offset)
     }
 
-    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
+    pub(super) fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
         let chan = offset.bit_range(4, 6);
         let reg = offset.bit_range(0, 3);
 
@@ -80,6 +80,10 @@ impl Dma {
             },
             _ => unreachable!(),
         }
+    }
+
+    pub fn irq_reg(&self) -> &IrqReg {
+        &self.irq
     }
 
     /// Mark channel as done.
@@ -103,7 +107,7 @@ impl Dma {
         port: Port,
         chan: &mut T,
         schedule: &mut Schedule,
-        ram: &mut Ram
+        ram: &mut Ram,
     ) {
         let ctrl = self[port].ctrl;
 
@@ -283,7 +287,7 @@ impl Dma {
 }
 
 impl Bus {
-    pub fn run_dma(&mut self) {
+    pub(crate) fn run_dma(&mut self) {
         self.dma.run_chan(
             Port::Gpu,
             &mut self.gpu,
@@ -310,7 +314,7 @@ impl Bus {
         );
     }
 
-    pub fn run_dma_chan(&mut self, port: Port) {
+    pub(crate) fn run_dma_chan(&mut self, port: Port) {
         match port {
             Port::Gpu => {
                self.dma.run_chan(
@@ -402,8 +406,17 @@ pub enum Direction {
     ToPort,
 }
 
+impl fmt::Display for Direction {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Direction::ToRam => f.write_str("to ram"),
+            Direction::ToPort => f.write_str("to port"),
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, Copy, Clone)]
-pub enum SyncMode {
+enum SyncMode {
     /// Start immediately and transfer all at once. Used to send textures to the VRAM and
     /// initializing the ordering table.
     Manual = 0,
@@ -413,11 +426,30 @@ pub enum SyncMode {
     LinkedList = 2,
 }
 
+impl fmt::Display for SyncMode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            SyncMode::Manual => f.write_str("manual"),
+            SyncMode::Request => f.write_str("request"),
+            SyncMode::LinkedList => f.write_str("linked list"),
+        }
+    }
+}
+
 /// Which way to step from the base address. Either increment or decrement one word.
 #[derive(Copy, Clone)]
 pub enum Step {
     Inc,
     Dec,
+}
+
+impl fmt::Display for Step {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Step::Inc => f.write_str("increment"),
+            Step::Dec => f.write_str("decrement"),
+        }
+    }
 }
 
 impl Step {
@@ -432,7 +464,7 @@ impl Step {
 }
 
 #[derive(Clone, Copy)]
-struct ChanCtrl(u32);
+pub struct ChanCtrl(u32);
 
 impl ChanCtrl {
     /// Check if Channel is either from or to CPU.
@@ -450,7 +482,7 @@ impl ChanCtrl {
         }
     }
 
-    /// Chopping means that the CPU get's to run at intervals while transfering.
+    /// When chopping is enabled the CPU get's to run at intervals while transfering.
     fn chopping_enabled(self) -> bool {
         self.0.bit(8)
     }
@@ -460,7 +492,7 @@ impl ChanCtrl {
             0 => SyncMode::Manual,
             1 => SyncMode::Request,
             2 => SyncMode::LinkedList,
-            _ => unreachable!("Invalid sync mode"),
+            _ => unreachable!("invalid sync mode"),
         }
     }
 
@@ -498,7 +530,7 @@ impl ChanCtrl {
         }
         self.0 = val;
         if self.chopping_enabled() {
-            warn!("Chopping enabled for port {:?}", port);
+            warn!("chopping enabled for port {port:?}");
         }
     }
 }
@@ -538,7 +570,7 @@ impl ChanStat {
             0 => self.base,
             4 => self.block_ctrl.load(),
             8 => self.ctrl.0,
-            _ => unreachable!("Invalid load in channel at offset {offset}"),
+            _ => unreachable!("invalid load in channel at offset {offset}"),
         }
     }
 
@@ -548,8 +580,27 @@ impl ChanStat {
             0 => self.base = val.bit_range(0, 23),
             4 => self.block_ctrl = BlockCtrl::new(val),
             8 => self.ctrl.store(self.port, val),
-            _ => unreachable!("Invalid store at in channel at offset {:08x}", offset),
+            _ => unreachable!("invalid store at in channel at offset {:08x}", offset),
         }
+    }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "base", "{}", self.base);
+
+        dump!(d, "block size", "{}", self.block_ctrl.size);
+        dump!(d, "block count", "{}", self.block_ctrl.count);
+
+        dump!(d, "enabled", "{}", self.ctrl.enabled());
+        dump!(d, "direction", "{}", self.ctrl.direction());
+        dump!(d, "step", "{}", self.ctrl.step());
+        dump!(d, "chopping enabled", "{}", self.ctrl.chopping_enabled());
+        dump!(d, "sync mode", "{}", self.ctrl.sync_mode());
+
+        dump!(d, "dma chop size", "{}", self.ctrl.dma_chop_size().as_cpu_cycles());
+        dump!(d, "cpu chop size", "{}", self.ctrl.cpu_chop_size().as_cpu_cycles());
+
+        dump!(d, "start", "{}", self.ctrl.start());
+        dump!(d, "transfer ongoing", "{}", self.transfer.is_some());
     }
 }
 
@@ -603,16 +654,16 @@ impl IrqReg {
         self.0 = self.0.set_bit(24 + channel as usize, true);
     }
 
-    /// This is a readonly and is updated whenever ['Interrupt'] is changed in any way.
+    /// This is a readonly and is updated whenever [`IrqReg`] is changed in any way.
     fn master_irq_flag(self) -> bool {
         self.0.bit(31)
     }
 
     /// If this ever get's set, an interrupt is triggered.
     fn update_master_irq_flag(&mut self, schedule: &mut Schedule) {
-        // If this is true, then the DMA should trigger an interrupt if 'master_irq_flag' isn't
+        // If this is true, then the DMA should trigger an interrupt if `master_irq_flag` isn't
         // already on. If the force_irq flag is set, then it will always trigger an interrupt.
-        // Otherwise it will trigger if any of the flags are set and 'master_irq_enabled' is on.
+        // Otherwise it will trigger if any of the flags are set and `master_irq_enabled` is on.
         let result = self.force_irq()
             || self.master_irq_enabled()
             && self.0.bit_range(24, 30) != 0;
@@ -634,6 +685,20 @@ impl IrqReg {
         self.0 &= !(val & 0x7f00_0000);
         self.update_master_irq_flag(schedule);
     }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "force irq", "{}", self.force_irq());
+        dump!(d, "master irq enabled", "{}", self.master_irq_enabled());
+        dump!(d, "master irq flag", "{}", self.master_irq_flag());
+
+        dump!(d, "mdec in irq enabled", "{}", self.channel_irq_enabled(Port::MdecIn));
+        dump!(d, "mdec out irq enabled", "{}", self.channel_irq_enabled(Port::MdecOut));
+        dump!(d, "gpu irq enabled", "{}", self.channel_irq_enabled(Port::Gpu));
+        dump!(d, "cdrom irq enabled", "{}", self.channel_irq_enabled(Port::CdRom));
+        dump!(d, "spu irq enabled", "{}", self.channel_irq_enabled(Port::CdRom));
+        dump!(d, "pio irq enabled", "{}", self.channel_irq_enabled(Port::Pio));
+        dump!(d, "otc irq enabled", "{}", self.channel_irq_enabled(Port::Otc));
+    }
 }
 
 
@@ -648,7 +713,7 @@ impl IrqReg {
 ///
 /// The DMA is used to create an empty table of a given size. Here each element starts out by with
 /// an empty offset and the pointer pointing to the previous element in the table, and the last one
-/// with the value ffffffh.
+/// with the value 0xffffff.
 ///
 /// When the Playstation wants to draw a line or polygon it calculates its distance to the camera
 /// and uses that value to determine a slot in the ordering table. It then inserts the drawcall at

@@ -1,6 +1,7 @@
 use crate::bcd::Bcd;
 
 use std::ops::Sub;
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Msf {
@@ -86,5 +87,11 @@ impl Sub<Msf> for Msf {
     
     fn sub(self, other: Self) -> Self::Output {
         Self::from_sector(self.sector() - other.sector()).unwrap()
+    }
+}
+
+impl fmt::Display for Msf {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.min, self.sec, self.frame)        
     }
 }

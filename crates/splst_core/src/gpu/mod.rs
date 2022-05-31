@@ -22,6 +22,7 @@ use crate::bus::{self, dma, Bus, BusMap, AddrUnit};
 use crate::schedule::{Event, EventId, Schedule};
 use crate::timer::Timers;
 use crate::{VideoOutput, SysTime};
+use crate::{dump, dump::Dumper};
 
 use fifo::PushAction;
 use primitive::Color;
@@ -70,30 +71,30 @@ pub struct Gpu {
     /// The bottom edge of the draw area in VRAM.
     da_y_min: i32,
     /// Draw offset x. This is added to the x-coordinate of vertex and point drawn.
-    pub x_offset: i16,
+    x_offset: i16,
     /// Draw offset y. This is added to the y-coordinate of vertex and point drawn.
-    pub y_offset: i16,
+    y_offset: i16,
     /// The first column to be displayed on the screen.
-    pub vram_x_start: u16,
+    vram_x_start: u16,
     /// The first line to be displayed on the screen.
-    pub vram_y_start: u16,
+    vram_y_start: u16,
     /// Which column the the display area starts on the screen.
-    pub dis_x_start: u16,
+    dis_x_start: u16,
     /// Which column the the display area ends on the screen.
-    pub dis_x_end: u16,
+    dis_x_end: u16,
     /// Which row the the display area starts on the screen.
-    pub dis_y_start: u16,
+    dis_y_start: u16,
     /// Which row the the display area ends on the screen.
-    pub dis_y_end: u16,
+    dis_y_end: u16,
     /// The current scanline, between 0 and `scanline_count`.
-    pub scanline: u16,
+    scanline: u16,
     /// The total number of scanlines.
-    pub scanline_count: u16,
+    scanline_count: u16,
     /// The amount of time it takes to display a single scanline including the time in Hblank.
     scanline_time: SysTime,
     /// If the GPU is in VBlank. This is when 'scanline' is outside the display area, defined by
     /// `dis_y_start` and `dis_y_end`.
-    pub in_vblank: bool,
+    in_vblank: bool,
     scanline_event: EventId,
 }
 
@@ -528,6 +529,25 @@ impl Gpu {
             }));
         }
     }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "state", "{}", self.state);
+        dump!(d, "fifo length", "{} / {} words", self.fifo().len(), Fifo::SIZE);
+        dump!(d, "scanline", "{} / {}", self.scanline, self.scanline_count);
+        dump!(d, "in vblank", "{}", self.in_vblank);
+        dump!(d, "draw x-offset", "{}", self.x_offset);
+        dump!(d, "draw y-offset", "{}", self.y_offset);
+        dump!(d, "display vram x-start", "{}", self.vram_x_start);
+        dump!(d, "display vram y-start", "{}", self.vram_y_start);
+        dump!(d, "display x-start", "{}", self.dis_x_start);
+        dump!(d, "display x-end", "{}", self.dis_x_end);
+        dump!(d, "display y-start", "{}", self.dis_y_start);
+        dump!(d, "display y-end", "{}", self.dis_y_end);
+        dump!(d, "texture window width", "{}", self.tex_win_w);
+        dump!(d, "texture window height", "{}", self.tex_win_h);
+        dump!(d, "texture window x-start", "{}", self.tex_win_x);
+        dump!(d, "texture window y-start", "{}", self.tex_win_y);
+    }
 }
 
 /// How to blend two colors. Used only for blending with background color, not blending texture
@@ -775,13 +795,13 @@ impl Status {
         self.0.bit(4) as i32 * 256
     }
 
-    /// How to background and texture/shade colors.
+    /// How to blend background and texture/shade colors.
     pub fn blend_mode(self) -> TransBlend {
         TransBlend::from_value(self.0.bit_range(5, 6))
     }
 
     /// Depth of the texture colors.
-    pub fn texture_depth(self) -> TexelDepth {
+    pub fn texel_depth(self) -> TexelDepth {
         TexelDepth::from_value(self.0.bit_range(7, 8))
     }
 
@@ -924,6 +944,28 @@ impl Status {
     /// VRAM.
     fn interlaced_480(self) -> bool {
         self.vertical_interlace() && self.vertical_res() == VerticalRes::P480
+    }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "texture page x-base", "{}", self.tex_page_x());
+        dump!(d, "texture page y-base", "{}", self.tex_page_y());
+        dump!(d, "background blend mode", "{}", self.blend_mode());
+        dump!(d, "texel depth", "{}", self.texel_depth());
+        dump!(d, "dithering enabled", "{}", self.dithering_enabled());
+        dump!(d, "draw to display", "{}", self.draw_to_display());
+        dump!(d, "set mask bit", "{}", self.set_mask_bit());
+        dump!(d, "draw masked pixels", "{}", self.draw_masked_pixels());
+        dump!(d, "interlace field", "{}", self.interlace_field());
+        dump!(d, "textures disabled", "{}", self.texture_disabled());
+        dump!(d, "horizontal resolution", "{}", self.horizontal_res());
+        dump!(d, "vertical resolution", "{}", self.vertical_res());
+        dump!(d, "video mode", "{}", self.video_mode());
+        dump!(d, "color depth", "{}", self.color_depth());
+        dump!(d, "vertical interalce enabled", "{}", self.vertical_interlace());
+        dump!(d, "vram to cpu ready", "{}", self.vram_to_cpu_ready());
+        dump!(d, "dma block ready", "{}", self.dma_block_ready());
+        dump!(d, "dma direction", "{}", self.dma_direction());
+         
     }
 }
 

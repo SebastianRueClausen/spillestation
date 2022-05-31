@@ -19,11 +19,10 @@ pub struct Schedule {
     next_event_id: EventId,
     /// The amount of time since startup.
     now: Timestamp,
-    /// Event queue. This allows for a fast way to check if any events should run at any given cycle.
-    /// Events are sorted in the binary queue such that the next event to run is the root item.
+    /// Priority queue of pending events.
     events: BinaryHeap<EventEntry>,
     /// The timestamp when the next event is ready. This is simply an optimization. Just peeking
-    /// at the first item in `events` is constant time, bit requires 4 branches.
+    /// at the first item in `events` is constant time, but requires 4 branches.
     next_event: Timestamp,
 }
 
@@ -62,8 +61,8 @@ impl Schedule {
         self.events.iter()
     }
 
-    /// Schedule an [`Event`] to trigger in 'time' and repeat with an interval of 'time'.
-    pub fn schedule_repeat(&mut self, time: SysTime, event: Event) -> EventId {
+    /// Schedule an [`Event`] to trigger in 'time' and repeat with an interval of `time`.
+    pub(crate) fn schedule_repeat(&mut self, time: SysTime, event: Event) -> EventId {
         let id = self.get_event_id();
         let ready = self.now() + time;
         let entry = EventEntry {
@@ -77,7 +76,7 @@ impl Schedule {
     }
 
     /// Schedule an [`Event`] to trigger in `time` and don't repeat it.
-    pub fn schedule(&mut self, time: SysTime, event: Event) -> EventId {
+    pub(crate) fn schedule(&mut self, time: SysTime, event: Event) -> EventId {
         let id = self.get_event_id();
         let ready = self.now() + time;
         let entry = EventEntry {
@@ -88,7 +87,8 @@ impl Schedule {
     }
 
     /// Trigger an [`Event`] now and repeat with an interval of `time`.
-    pub fn trigger_repeat(&mut self, time: SysTime, event: Event) -> EventId {
+    #[allow(dead_code)]
+    pub(crate) fn trigger_repeat(&mut self, time: SysTime, event: Event) -> EventId {
         let id = self.get_event_id();
         let entry = EventEntry {
             ready: Timestamp::STARTUP,
@@ -104,7 +104,7 @@ impl Schedule {
     }
 
     /// Trigger an [`Event`] as soon as possible and don't repeat it.
-    pub fn trigger(&mut self, event: Event) -> EventId {
+    pub(crate) fn trigger(&mut self, event: Event) -> EventId {
         let id = self.get_event_id();
         let entry = EventEntry {
             event, id, ready: Timestamp::STARTUP, mode: RepeatMode::Once,
@@ -117,7 +117,7 @@ impl Schedule {
     }
 
     /// Get a pending event if there is any. Returns the action and name.
-    pub fn get_pending_event(&mut self) -> Option<Event> {
+    pub(crate) fn get_pending_event(&mut self) -> Option<Event> {
         if self.next_event <= self.now {
             // Since `self.next_event` is set to `SysTime::FOREVER` if there aren't any pending
             // events, it should be safe to assume that the heap isn't empty. The only way that
@@ -140,7 +140,7 @@ impl Schedule {
     }
 
     /// Trigger a scheduled [`Event`] early.
-    pub fn trigger_early(&mut self, id: EventId) {
+    pub(crate) fn trigger_early(&mut self, id: EventId) {
         if let Some(entry) = self.events.iter().find(|e| e.id == id) {
             let mut entry = entry.clone();
             
@@ -163,7 +163,7 @@ impl Schedule {
     
     /// Make event with `id` repeat at an interval of `time`. It doesn't change when the event
     /// will trigger next. If no active event exists with `id`, nothing will happend.
-    pub fn repeat_every(&mut self, time: SysTime, id: EventId) {
+    pub(crate) fn repeat_every(&mut self, time: SysTime, id: EventId) {
         let mut entry = None;
 
         // This is a bit wasteful, but i don't see a better way and we rarely do this anyway so
@@ -189,14 +189,14 @@ impl Schedule {
     }
     
     /// Unschedule an [`Event`].
-    pub fn unschedule(&mut self, id: EventId) {
+    pub(crate) fn unschedule(&mut self, id: EventId) {
         self.events.retain(|event| event.id != id);
         self.update_next_event();
     }
     
     /// Get the amount of time until event with `id` is ready to trigger. It will return 'None'
     /// if no event exists with the id `id`.
-    pub fn time_until_event(&self, id: EventId) -> Option<SysTime> {
+    pub(crate) fn time_until_event(&self, id: EventId) -> Option<SysTime> {
         self.iter_event_entries()
             .find(|entry| entry.id == id)
             .map(|entry| {
@@ -212,13 +212,13 @@ impl Schedule {
     }
 
     /// Advance a given amount of time.
-    pub fn advance(&mut self, time: SysTime) {
+    pub(crate) fn advance(&mut self, time: SysTime) {
         self.now = self.now + time;
     }
 
     /// Skip to an amount of time since startup. It can only skip forward, so if the time given
     /// is less than the current amount of time since startup, then nothing happens.
-    pub fn skip_to(&mut self, time: Timestamp) {
+    pub(crate) fn skip_to(&mut self, time: Timestamp) {
         self.now = self.now.max(time);
     }
 }
@@ -278,7 +278,7 @@ impl fmt::Display for Event {
         match self {
             Event::IrqCheck => f.write_str("interrupt check"),
             Event::Irq(irq) => write!(f, "interrupt of type {irq}"),
-            Event::Dma(port, ..) => write!(f, "DMA port {port}"),
+            Event::Dma(port, _) => write!(f, "DMA port {port}"),
             Event::Gpu(..) => f.write_str("GPU"),
             Event::CdRom(..) => f.write_str("CD-ROM"),
             Event::Timer(..) => f.write_str("timer"),

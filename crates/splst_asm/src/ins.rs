@@ -1,17 +1,31 @@
 use std::fmt;
 
+/// Handle for the general purpose registers of the MIPS R3000, to provide a safe way to address
+/// the 32 different registers without doing any runtime bounds checking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Register(pub u8);
+pub struct Register(u8);
 
-impl From<u32> for Register {
-    fn from(val: u32) -> Self {
-        Register(val as u8)
+impl Register {
+    /// Checks that `index` is valid, returns `None` otherwise.
+    #[inline]
+    pub fn new(index: u32) -> Option<Self> {
+        if index > 31 {
+            None
+        } else {
+            Some(Register(index as u8))
+        }
     }
-}
 
-impl From<u8> for Register {
-    fn from(val: u8) -> Self {
-        Register(val)
+    /// Creates a new `Register` without checking that `index` is valid.
+    #[inline]
+    pub unsafe fn new_unchecked(index: u32) -> Self {
+        Self(index as u8)
+    }
+   
+    /// Get as index into registers, meaning that `0` would point at $zero.
+    #[inline]
+    pub fn index(&self) -> u8 {
+        self.0
     }
 }
 

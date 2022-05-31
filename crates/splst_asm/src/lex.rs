@@ -266,20 +266,23 @@ impl<'a> Lexer<'a> {
                 self.eat();
                 let reg = if self.first().is_ascii_digit() {
                     let num = self.eat_num()?;
-                    if !(0..32).contains(&num) {
-                        return Err(self.err(
-                            &format!("Invalid register '${}'", num)
-                        ));
+                    match Register::new(num) {
+                        Some(reg) => reg,
+                        None => return Err(self.err(
+                            &format!("Invalid register '${num}'")
+                        )),
                     }
-                    Register(num as u8)
                 } else {
                     let id = self.eat_id();
                     let reg = REGISTER_NAMES.iter()
                         .position(|k| *k == id)
                         .ok_or_else(|| {
-                            self.err(&format!("Invalid register '${}'", id))
+                            self.err(&format!("Invalid register '${id}'"))
                         })?;
-                    Register(reg as u8)
+                    // Safety: `REGISTER_NAMES` is only 32 elements long.
+                    unsafe {
+                        Register::new_unchecked(reg as u32)
+                    }
                 };
                 Ok(self.tok(TokTy::Reg(reg)))
             }
@@ -319,11 +322,11 @@ fn comment() {
     "#;
     let expected = [
         TokTy::Id("add"),
-        TokTy::Reg(Register(10)),
+        TokTy::Reg(Register::T2),
         TokTy::Comma,
-        TokTy::Reg(Register(8)),
+        TokTy::Reg(Register::T0),
         TokTy::Comma,
-        TokTy::Reg(Register(9)),
+        TokTy::Reg(Register::T1),
     ];
     let res: Vec<TokTy> = tokenize(input).map(|t| t.unwrap().ty).collect();
     for (got, exp) in res.iter().zip(expected) {
@@ -422,98 +425,98 @@ fn general() {
         TokTy::Label("main"),
 
         TokTy::Id("li"),
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
         TokTy::Comma,
         TokTy::Num(4),
 
         TokTy::Id("la"),
-        TokTy::Reg(Register(4)),
+        TokTy::Reg(Register::A0),
         TokTy::Comma,
         TokTy::Id("string1"),
 
         TokTy::Id("syscall"),
 
         TokTy::Id("li"),
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
         TokTy::Comma,
         TokTy::Num(5),
         
         TokTy::Id("syscall"),
 
         TokTy::Id("move"),
-        TokTy::Reg(Register(8)),
+        TokTy::Reg(Register::T0),
         TokTy::Comma,
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
 
         TokTy::Id("li"),
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
         TokTy::Comma,
         TokTy::Num(4),
 
         TokTy::Id("la"),
-        TokTy::Reg(Register(4)),
+        TokTy::Reg(Register::A0),
         TokTy::Comma,
         TokTy::Id("endLine"),
 
         TokTy::Id("syscall"),
 
         TokTy::Id("li"),
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
         TokTy::Comma,
         TokTy::Num(4),
 
         TokTy::Id("la"),
-        TokTy::Reg(Register(4)),
+        TokTy::Reg(Register::A0),
         TokTy::Comma,
         TokTy::Id("string2"),
 
         TokTy::Id("syscall"),
 
         TokTy::Id("li"),
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
         TokTy::Comma,
         TokTy::Num(5),
 
         TokTy::Id("syscall"),
 
         TokTy::Id("move"),
-        TokTy::Reg(Register(9)),
+        TokTy::Reg(Register::T1),
         TokTy::Comma,
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
 
         TokTy::Id("li"),
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
         TokTy::Comma,
         TokTy::Num(4),
 
         TokTy::Id("la"),
-        TokTy::Reg(Register(4)),
+        TokTy::Reg(Register::A0),
         TokTy::Comma,
         TokTy::Id("string3"),
 
         TokTy::Id("syscall"),
 
         TokTy::Id("add"),
-        TokTy::Reg(Register(10)),
+        TokTy::Reg(Register::T2),
         TokTy::Comma,
-        TokTy::Reg(Register(9)),
+        TokTy::Reg(Register::T1),
         TokTy::Comma,
-        TokTy::Reg(Register(8)),
+        TokTy::Reg(Register::T0),
 
         TokTy::Id("li"),
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
         TokTy::Comma,
         TokTy::Num(1),
 
         TokTy::Id("move"),
-        TokTy::Reg(Register(4)),
+        TokTy::Reg(Register::A0),
         TokTy::Comma,
-        TokTy::Reg(Register(10)),
+        TokTy::Reg(Register::T2),
 
         TokTy::Id("syscall"),
 
         TokTy::Id("li"),
-        TokTy::Reg(Register(2)),
+        TokTy::Reg(Register::V0),
         TokTy::Comma,
         TokTy::Num(10),
 

@@ -5,6 +5,7 @@ use crate::bus::BusMap;
 use crate::schedule::{Schedule, Event, EventId};
 use crate::{SysTime, Timestamp};
 use crate::bus::{self, AddrUnit};
+use crate::{dump, dump::Dumper};
 
 use std::fmt;
 
@@ -24,7 +25,7 @@ impl TimerId {
         }
     }
 
-    fn from_value(val: u32) -> TimerId {
+    fn from_index(val: u32) -> TimerId {
         match val {
             0 => TimerId::Tmr0,
             1 => TimerId::Tmr1,
@@ -37,9 +38,9 @@ impl TimerId {
 impl fmt::Display for TimerId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", match *self {
-            TimerId::Tmr0 => "Tmr0",
-            TimerId::Tmr1 => "Tmr1",
-            TimerId::Tmr2 => "Tmr2",
+            TimerId::Tmr0 => "timer 0",
+            TimerId::Tmr1 => "timer 1",
+            TimerId::Tmr2 => "timer 2",
         })
     }
 }
@@ -47,12 +48,13 @@ impl fmt::Display for TimerId {
 /// All the possible sync mode for all the timers. The kind of sync modes vary from counter to
 /// counter.
 ///
-/// # The naming follows the convention
+/// ## The naming follows the convention
 ///
-/// - 'Pause' - The timer is paused during V/H Blank.
-/// - 'Reset' - The timer resets to 0 when entering V/H Blank.
-/// - 'ResetAndRun' - Reset the counter to 0 when entering V/H Blank and pause when not in H/V Blank.
-/// - 'Wait' - Wait until V/H Blank and switch to 'FreeRun'.
+/// - `Pause` - The timer is paused during V/H Blank.
+/// - `Reset` - The timer resets to 0 when entering V/H Blank.
+/// - `ResetAndRun` - Reset the counter to 0 when entering V/H Blank and pause when not in H/V Blank.
+/// - `Wait` - Wait until V/H Blank and switch to `FreeRun`.
+///
 #[derive(PartialEq, Eq)]
 pub enum SyncMode {
     HblankPause,
@@ -69,7 +71,7 @@ pub enum SyncMode {
 
 impl fmt::Display for SyncMode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", match *self {
+        let name = match self {
             SyncMode::HblankPause => "Hblank pause",
             SyncMode::HblankReset => "Hblank reset",
             SyncMode::HblankResetAndRun => "Hblank reset and run",
@@ -80,7 +82,8 @@ impl fmt::Display for SyncMode {
             SyncMode::VblankWait => "Vblank wait",
             SyncMode::Stop => "stop",
             SyncMode::FreeRun => "free run",
-        })
+        };
+        f.write_str(name)
     }
 }
 
@@ -130,7 +133,7 @@ impl fmt::Display for ClockSource {
 pub struct Mode(u16);
 
 impl Mode {
-    /// If the is false, then the timer effectively runs in ['SyncMode::FreeRun'] sync mode.
+    /// If the is false, then the timer effectively runs in [`SyncMode::FreeRun`] sync mode.
     pub fn sync_enabled(self) -> bool {
         self.0.bit(0)
     }
@@ -168,13 +171,13 @@ impl Mode {
     }
 
     /// If this is true, the timer triggers an interrupt each time it hits the target or overflows,
-    /// dependent on ['irq_on_target'] and ['irq_on_overflow']. If it's false, it won't stop the
+    /// dependent on [`irq_on_target`] and [`irq_on_overflow`]. If it's false, it won't stop the
     /// timer after first interrupt, but will just avoid triggering again.
     pub fn irq_repeat(self) -> bool {
         self.0.bit(6)
     }
 
-    /// If this is true, the timer toggles ['master_irq_flag'] after each interrupt. Otherwise, it
+    /// If this is true, the timer toggles [`master_irq_flag`] after each interrupt. Otherwise, it
     /// will be set all the time except a few cycles after an interrupt.
     pub fn irq_toggle_mode(self) -> bool {
         self.0.bit(7)
@@ -249,10 +252,10 @@ pub struct Timer {
     pub mode: Mode,
     pub counter: u16,
     pub target: u16,
-    /// This is to track if it has interrupted since last write to 'mode', since in oneshot
+    /// This is to track if it has interrupted since last write to `mode`, since in oneshot
     /// mode it only does it once.
     has_triggered: bool,
-    /// The ['EventId'] for any update events.
+    /// The [`EventId`] for any update events, and the timestamp.
     next_update: Option<EventId>,
 }
 
@@ -285,7 +288,7 @@ impl Timer {
         }
     }
 
-    /// Same as 'load' but without side effects.
+    /// Same as `load` but without side effects.
     fn peek(&self, offset: u32) -> u16 {
         match offset.bit_range(0, 3) {
             0 => self.counter,
@@ -431,20 +434,45 @@ impl Timer {
         self.add_to_counter(schedule, ticks as u16);
     }
 
+    fn sync_mode(&self) -> SyncMode {
+        self.mode.sync_mode(self.id)
+    }
+
     fn clock_source(&self) -> ClockSource {
         self.mode.clock_source(self.id)
     }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "counter", "{}", self.counter);
+        dump!(d, "target", "{}", self.counter);
+
+        let mode = self.mode;
+
+        dump!(d, "sync enabled", "{}", mode.sync_enabled());
+        dump!(d, "sync mode", "{}", self.sync_mode());
+        dump!(d, "reset on target", "{}", mode.reset_on_target());
+        dump!(d, "irq on target", "{}", mode.irq_on_target());
+        dump!(d, "irq on overflow", "{}", mode.irq_on_overflow());
+        dump!(d, "irq repeat", "{}", mode.irq_repeat());
+        dump!(d, "irq toggle mode", "{}", mode.irq_toggle_mode());
+        dump!(d, "clock source", "{}", self.clock_source());
+        dump!(d, "master irq flag", "{}", mode.master_irq_flag());
+        dump!(d, "target reached", "{}", mode.target_reached());
+        dump!(d, "overflow reached", "{}", mode.overflow_reached());
+
+    }
 }
 
-/// A number of registers which control the Playstations 3 timers. All the timers can run
-/// simultaneously. Each timer can be configured to take different sources, have different targets
-/// and what to do when reaching the target such as triggering an interrupt.
+/// The 3 timers of the Playstation.
+///
+/// All the timers can run simultaneously. Each timer can be configured to take different sources,
+/// have different targets and what to do when reaching the target such as triggering an interrupt.
 pub struct Timers {
     pub timers: [(Timer, Timestamp); 3],
 }
 
 impl Timers {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             timers: [
                 (Timer::new(TimerId::Tmr0), Timestamp::STARTUP),
@@ -455,8 +483,8 @@ impl Timers {
     }
 
     /// Load memory from either timer 1, 2 or 3 depending on the offset.
-    pub fn load<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32) -> T {
-        let id = TimerId::from_value(offset.bit_range(4, 5));
+    pub(crate) fn load<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32) -> T {
+        let id = TimerId::from_index(offset.bit_range(4, 5));
 
         self.update_timer(schedule, id);
 
@@ -470,9 +498,9 @@ impl Timers {
         T::from_u32(u32::from(val))
     }
 
-    /// Same as 'load' but without side effects.
-    pub fn peek<T: AddrUnit>(&self, offset: u32) -> T {
-        let id = TimerId::from_value(offset.bit_range(4, 5));
+    /// Same as `load` but without side effects.
+    pub(crate) fn peek<T: AddrUnit>(&self, offset: u32) -> T {
+        let id = TimerId::from_index(offset.bit_range(4, 5));
         let (tmr, _) = &self.timers[id as usize];
 
         let val = tmr.peek(bus::align_as::<u32>(offset));
@@ -480,8 +508,8 @@ impl Timers {
         T::from_u32_aligned(u32::from(val), offset)
     }
 
-    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
-        let id = TimerId::from_value(offset.bit_range(4, 5));
+    pub(crate) fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
+        let id = TimerId::from_index(offset.bit_range(4, 5));
 
         self.update_timer(schedule, id);
 
@@ -509,7 +537,7 @@ impl Timers {
     }
 
     /// Update the timer and schedule the next run if required.
-    pub fn run_timer(&mut self, schedule: &mut Schedule, id: TimerId) {
+    pub(crate) fn run_timer(&mut self, schedule: &mut Schedule, id: TimerId) {
         self.update_timer(schedule, id);
 
         let (tmr, _) = &mut self.timers[id as usize];
@@ -517,12 +545,12 @@ impl Timers {
         tmr.schedule_next_run(schedule);
     }
 
-    pub fn enable_irq_master_flag(&mut self, _: &mut Schedule, id: TimerId) {
+    pub(crate) fn enable_irq_master_flag(&mut self, _: &mut Schedule, id: TimerId) {
         let (tmr, _) = &mut self.timers[id as usize];
         tmr.mode.set_master_irq_flag(true);
     }
 
-    pub fn hblank(&mut self, schedule: &mut Schedule, count: u64) {
+    pub(crate) fn hblank(&mut self, schedule: &mut Schedule, count: u64) {
         let (tmr1, _) = &mut self.timers[1];
 
         if let ClockSource::Hblank = tmr1.clock_source() {

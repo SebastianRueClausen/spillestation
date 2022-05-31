@@ -3,23 +3,27 @@
 //! All Opcodes are incoded in 32 bits.
 //!
 //! There are three main opcode layouts:
-//! - Immediate
-//!     - 6-bit op.
-//!     - 5-bit source register.
-//!     - 5-bit target register.
-//!     - 16-bit immediate value.
 //!
-//! - Jump
-//!     - 6-bit op.
-//!     - 26-bit target address.
+//! ## Immediate
 //!
-//! - Register
-//!     - 6-bit op.
-//!     - 5-bit source register.
-//!     - 5-bit target register.
-//!     - 5-bit destination register.
-//!     - 5-bit shift value.
-//!     - 6-bit function field.
+//!  - 6-bit op.
+//!  - 5-bit source register.
+//!  - 5-bit target register.
+//!  - 16-bit immediate value.
+//!
+//! ## Jump
+//!
+//!  - 6-bit op.
+//!  - 26-bit target address.
+//!
+//! ## Register
+//!
+//!  - 6-bit op.
+//!  - 5-bit source register.
+//!  - 5-bit target register.
+//!  - 5-bit destination register.
+//!  - 5-bit shift value.
+//!  - 6-bit function field.
 
 use splst_util::Bit;
 use splst_asm::Register;
@@ -30,66 +34,86 @@ use std::fmt;
 pub struct Opcode(pub(super) u32);
 
 impl Opcode {
+    #[inline(always)]
     pub fn new(opcode: u32) -> Self {
         Opcode(opcode)
     }
 
     /// Operation.
+    #[inline(always)]
     pub fn op(self) -> u32 {
         self.0.bit_range(26, 31)
     }
 
     /// Sub operation / function.
+    #[inline(always)]
     pub fn special(self) -> u32 {
         self.0.bit_range(0, 5)
     }
 
     /// COP operation.
+    #[inline(always)]
     pub fn cop_op(self) -> u32 {
-        self.rs().0.into()
+        self.rs().index().into()
     }
 
     /// Immediate value.
+    #[inline(always)]
     pub fn imm(self) -> u32 {
         self.0.bit_range(0, 15)
     }
 
     /// Signed immediate value.
+    #[inline(always)]
     pub fn signed_imm(self) -> u32 {
         let value = self.0.bit_range(0, 15) as i16;
         value as u32
     }
 
     /// Target address used for branch instructions.
+    #[inline(always)]
     pub fn target(self) -> u32 {
         self.0.bit_range(0, 25)
     }
 
+    #[inline(always)]
     pub fn shift(self) -> u32 {
         self.0.bit_range(6, 10)
     }
 
     /// Destination register.
+    #[inline(always)]
     pub fn rd(self) -> Register {
-        Register::from(self.0.bit_range(11, 15))
+        // Safety: 5 bits can at most represents 32.
+        unsafe {
+            Register::new_unchecked(self.0.bit_range(11, 15))
+        }
     }
 
     /// Target register.
+    #[inline(always)]
     pub fn rt(self) -> Register {
-        Register::from(self.0.bit_range(16, 20))
+        unsafe {
+            Register::new_unchecked(self.0.bit_range(16, 20))
+        }
     }
 
     /// Source register.
+    #[inline(always)]
     pub fn rs(self) -> Register {
-        Register::from(self.0.bit_range(21, 25))
+        unsafe {
+            Register::new_unchecked(self.0.bit_range(21, 25))
+        }
     }
 
     /// Branch if greater or equal zero. Used by BCONDZ to determine the type of branching.
+    #[inline(always)]
     pub fn bgez(self) -> bool {
         self.0.bit(16)
     }
 
     /// Set return register on branch. Used by BCONDZ.
+    #[inline(always)]
     pub fn update_ra_on_branch(self) -> bool {
         self.0.bit_range(17, 20) == 0x8
     }

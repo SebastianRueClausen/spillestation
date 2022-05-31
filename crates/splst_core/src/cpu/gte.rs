@@ -2,6 +2,7 @@
 //!
 //! - SIMD optimize.
 
+use crate::{dump, dump::Dumper};
 use splst_util::{Bit, BitSet};
 
 use std::fmt;
@@ -9,31 +10,31 @@ use std::fmt;
 #[derive(Default)]
 pub struct Gte {
     data: DataRegs,
-    ctrl: ControlRegs,
+    control: ControlRegs,
 }
 
 impl Gte {
-    pub fn ctrl_store(&mut self, offset: u32, val: u32) {
+    pub(super) fn control_store(&mut self, offset: u32, val: u32) {
         assert!(offset < 32, "invalid control register store at {offset}");
 
         match offset {
             4 | 12 | 20 | 26 | 27 | 29 | 30 => unsafe {
                 let val = (val as u16) as i32;
-                self.ctrl.store_unchecked(offset, val as u32);
+                self.control.store_unchecked(offset, val as u32);
             },
-            31 => self.ctrl.flags.0 = val & 0x7ffff000,
+            31 => self.control.flags.0 = val & 0x7ffff000,
             _ => unsafe {
-                self.ctrl.store_unchecked(offset, val);
+                self.control.store_unchecked(offset, val);
             },
         }
     }
 
-    pub fn ctrl_load(&mut self, offset: u32) -> u32 {
+    pub(super) fn control_load(&mut self, offset: u32) -> u32 {
         assert!(offset < 32, "invalid control register store at {offset}");
-        unsafe { self.ctrl.load_unchecked(offset) }
+        unsafe { self.control.load_unchecked(offset) }
     }
 
-    pub fn data_store(&mut self, offset: u32, val: u32) {
+    pub(super) fn data_store(&mut self, offset: u32, val: u32) {
         assert!(offset < 32, "invalid control register store at {offset}");
 
         match offset {
@@ -84,7 +85,7 @@ impl Gte {
         }
     }
 
-    pub fn data_load(&mut self, offset: u32) -> u32 {
+    pub(super) fn data_load(&mut self, offset: u32) -> u32 {
         assert!(offset < 32, "invalid control register store at {offset}");
 
         match offset {
@@ -101,8 +102,8 @@ impl Gte {
         }
     }
 
-    pub fn exec(&mut self, val: u32) {
-        self.ctrl.flags.clear();
+    pub(super) fn exec(&mut self, val: u32) {
+        self.control.flags.clear();
 
         let op = Opcode(val);
         debug!("{op}");
@@ -133,12 +134,20 @@ impl Gte {
         }
     }
 
+    pub fn data_regs(&self) -> &DataRegs {
+        &self.data
+    }
+
+    pub fn control_regs(&self) -> &ControlRegs {
+        &self.control
+    }
+
     /// Truncate `val`, check for overflow and set `mac[idx]`.
     ///
     /// Returns `val` shifted and truncated.
     #[inline]
     fn set_mac(&mut self, idx: usize, shift: u8, val: i64) -> i32 {
-        let val = saturate_to_mac(&mut self.ctrl.flags, idx, shift, val);
+        let val = saturate_to_mac(&mut self.control.flags, idx, shift, val);
         self.data.mac[idx] = val;
         val
     }
@@ -146,19 +155,19 @@ impl Gte {
     /// Truncate `val`, check for overflow and set `mac0`.
     #[inline]
     fn set_mac0(&mut self, val: i64) {
-        self.data.mac0 = saturate_to_mac0(&mut self.ctrl.flags, val);
+        self.data.mac0 = saturate_to_mac0(&mut self.control.flags, val);
     }
 
     /// Saturate `val` at set `ir[idx]`.
     #[inline]
     fn set_ir(&mut self, idx: usize, clamp: bool, val: i32) {
-        self.data.ir[idx].0 = saturate_to_ir(&mut self.ctrl.flags, idx, clamp, val);
+        self.data.ir[idx].0 = saturate_to_ir(&mut self.control.flags, idx, clamp, val);
     }
 
     /// Saturate `val` and set `ir0`.
     #[inline]
     fn set_ir0(&mut self, val: i32) {
-        self.data.ir0 = saturate_to_ir0(&mut self.ctrl.flags, val);
+        self.data.ir0 = saturate_to_ir0(&mut self.control.flags, val);
     }
 
     #[inline]
@@ -171,13 +180,17 @@ impl Gte {
     #[inline]
     fn set_otz(&mut self, val: i32) {
         let (val, of) = saturate(0x0, 0xffff, val);
-        self.ctrl.flags.set_flag(18, of);
+        self.control.flags.set_flag(18, of);
         self.data.otz = val as u16;
     }
 
     #[inline]
-    fn ir_vec(&self) -> [i16; 3] {
-        [self.data.ir[0].0, self.data.ir[1].0, self.data.ir[2].0]
+    fn ir_vec(&self) -> Vec3<i16> {
+        Vec3 {
+            x: self.data.ir[0].0,
+            y: self.data.ir[1].0,
+            z: self.data.ir[2].0,
+        }
     }
 
     /// Push `val` into `sz` FIFO.
@@ -187,7 +200,7 @@ impl Gte {
         const MAX: i32 = 0xffff;
         const MIN: i32 = 0x0000;
 
-        self.ctrl.flags.set_flag(18, !(MIN..=MAX).contains(&val));
+        self.control.flags.set_flag(18, !(MIN..=MAX).contains(&val));
         let val = val.clamp(MIN, MAX) as u16;
 
         self.data.sz[0] = self.data.sz[1];
@@ -202,25 +215,25 @@ impl Gte {
         const MAX: i32 = 0x3ff;
         const MIN: i32 = -0x400;
 
-        self.ctrl.flags.set_flag(14, !(MIN..=MAX).contains(&x));
-        self.ctrl.flags.set_flag(13, !(MIN..=MAX).contains(&y));
-       
+        self.control.flags.set_flag(14, !(MIN..=MAX).contains(&x));
+        self.control.flags.set_flag(13, !(MIN..=MAX).contains(&y));
+
         let xy = [x.clamp(MIN, MAX) as i16, y.clamp(MIN, MAX) as i16];
-        
+
         self.data.sxy0 = self.data.sxy1;
         self.data.sxy1 = self.data.sxy2;
         self.data.sxy2 = self.data.sxyp;
 
-        self.data.sxyp = xy; 
+        self.data.sxyp = xy;
     }
 
     fn rgb_push_from_mac(&mut self) {
-        let rgbc = [
-            saturate_to_rgb(&mut self.ctrl.flags, 0, self.data.mac[0] >> 4),
-            saturate_to_rgb(&mut self.ctrl.flags, 1, self.data.mac[1] >> 4),
-            saturate_to_rgb(&mut self.ctrl.flags, 2, self.data.mac[2] >> 4),
-            self.data.rgbc[3],
-        ];
+        let rgbc = Rgb {
+            r: saturate_to_rgb(&mut self.control.flags, 0, self.data.mac[0] >> 4),
+            g: saturate_to_rgb(&mut self.control.flags, 1, self.data.mac[1] >> 4),
+            b: saturate_to_rgb(&mut self.control.flags, 2, self.data.mac[2] >> 4),
+            _pad: self.data.rgbc[3],
+        };
 
         self.data.rgb0 = self.data.rgb1;
         self.data.rgb1 = self.data.rgb2;
@@ -230,21 +243,21 @@ impl Gte {
     /// Rotate, translate, perspective transform `vec`.
     ///
     /// Returns projection factor.
-    fn rtp(&mut self, vec: [i16; 3], shift: u8, clamp: bool) -> i64 {
+    fn rtp(&mut self, vec: Vec3<i16>, shift: u8, clamp: bool) -> i64 {
         // Translate and rotate `vec`, which is done with the formula `tr` + `vec` * `rt`.
 
-        let mut dot_row = |row: usize| {
-            let tr = (i64::from(self.ctrl.tr[row]) << 12)
-                + i64::from(self.ctrl.rt[row][0]) * i64::from(vec[0]);
-            let rt = sign_extend_mac(&mut self.ctrl.flags, row, tr)
-                + i64::from(self.ctrl.rt[row][1]) * i64::from(vec[1])
-                + i64::from(self.ctrl.rt[row][2]) * i64::from(vec[2]);
-            sign_extend_mac(&mut self.ctrl.flags, row, rt)
+        let mut dot_row = |add: i32, row: usize| {
+            let tr =
+                (i64::from(add) << 12) + i64::from(self.control.rt.0[row].x) * i64::from(vec.x);
+            let rt = sign_extend_mac(&mut self.control.flags, row, tr)
+                + i64::from(self.control.rt.0[row].y) * i64::from(vec.y)
+                + i64::from(self.control.rt.0[row].z) * i64::from(vec.z);
+            sign_extend_mac(&mut self.control.flags, row, rt)
         };
 
-        let x = dot_row(0);
-        let y = dot_row(1);
-        let z = dot_row(2);
+        let x = dot_row(self.control.tr.x, 0);
+        let y = dot_row(self.control.tr.y, 1);
+        let z = dot_row(self.control.tr.z, 2);
 
         self.set_ir_and_mac(0, shift, clamp, x);
         self.set_ir_and_mac(1, shift, clamp, y);
@@ -271,29 +284,29 @@ impl Gte {
 
         // Calculate projection factor. `pf` is a 1.16 unsigned fixed-point integer.
 
-        let pf: i64 = if z > self.ctrl.h / 2 {
-            nr_divide(self.ctrl.h, z).into()
+        let pf: i64 = if z > self.control.h / 2 {
+            nr_divide(self.control.h, z).into()
         } else {
-            self.ctrl.flags.set_flag(17, true);
+            self.control.flags.set_flag(17, true);
             0x1ffff
         };
-                
-        let sx = i64::from(self.data.ir[0].0) + pf + i64::from(self.ctrl.ofx);
-        let sy = i64::from(self.data.ir[1].0) + pf + i64::from(self.ctrl.ofy);
 
-        check_mac0_overflow(&mut self.ctrl.flags, sx);
-        check_mac0_overflow(&mut self.ctrl.flags, sy);
+        let sx = i64::from(self.data.ir[0].0) + pf + i64::from(self.control.ofx);
+        let sy = i64::from(self.data.ir[1].0) + pf + i64::from(self.control.ofy);
 
-        self.sxy_push((sx >> 16) as i32, (sy >> 16) as i32); 
+        check_mac0_overflow(&mut self.control.flags, sx);
+        check_mac0_overflow(&mut self.control.flags, sy);
 
-        pf 
+        self.sxy_push((sx >> 16) as i32, (sy >> 16) as i32);
+
+        pf
     }
 
     #[inline]
     fn color_interp(&mut self, rgb: &[i64; 3], shift: u8, clamp: bool) {
-        let v0 = i64::from(self.ctrl.fc[0] << 12) - rgb[0];
-        let v1 = i64::from(self.ctrl.fc[1] << 12) - rgb[1];
-        let v2 = i64::from(self.ctrl.fc[2] << 12) - rgb[2];
+        let v0 = i64::from(self.control.fc.x << 12) - rgb[0];
+        let v1 = i64::from(self.control.fc.y << 12) - rgb[1];
+        let v2 = i64::from(self.control.fc.z << 12) - rgb[2];
 
         self.set_ir_and_mac(0, shift, false, v0);
         self.set_ir_and_mac(1, shift, false, v1);
@@ -326,22 +339,28 @@ impl Gte {
 
     #[inline]
     fn depth_queue(&mut self, pf: i64) {
-        let depth = self.ctrl.dqb as i64 + self.ctrl.dqa as i64 * pf;
+        let depth = self.control.dqb as i64 + self.control.dqa as i64 * pf;
 
         self.set_mac0(depth);
         self.set_ir0((depth >> 12) as i32);
     }
 
     #[inline]
-    fn ncd(&mut self, vec: [i16; 3], shift: u8, clamp: bool) {
-        (_, self.data.ir) = mat_mul(&self.ctrl.llm, &vec, &mut self.ctrl.flags, shift, clamp);
-        (self.data.mac, self.data.ir) = mat_mul_add(
-            &self.ctrl.lcm,
-            &self.ctrl.bk,
-            &self.ir_vec(),
-            &mut self.ctrl.flags,
+    fn ncd(&mut self, vec: Vec3<i16>, shift: u8, clamp: bool) {
+        (_, self.data.ir) = mat_mul(
+            &self.control.llm,
+            &vec,
+            &mut self.control.flags,
             shift,
-            clamp
+            clamp,
+        );
+        (self.data.mac, self.data.ir) = mat_mul_add(
+            &self.control.lcm,
+            &self.control.bk,
+            &self.ir_vec(),
+            &mut self.control.flags,
+            shift,
+            clamp,
         );
         let rgb = [
             (i64::from(self.data.rgbc[0]) * i64::from(self.data.ir[0].0)) << 4,
@@ -353,16 +372,22 @@ impl Gte {
     }
 
     #[inline]
-    fn ncc(&mut self, vec: [i16; 3], shift: u8, clamp: bool) {
-        (_, self.data.ir) = mat_mul(&self.ctrl.llm, &vec, &mut self.ctrl.flags, shift, clamp);
+    fn ncc(&mut self, vec: Vec3<i16>, shift: u8, clamp: bool) {
+        (_, self.data.ir) = mat_mul(
+            &self.control.llm,
+            &vec,
+            &mut self.control.flags,
+            shift,
+            clamp,
+        );
 
         (self.data.mac, self.data.ir) = mat_mul_add(
-            &self.ctrl.lcm,
-            &self.ctrl.bk,
+            &self.control.lcm,
+            &self.control.bk,
             &self.ir_vec(),
-            &mut self.ctrl.flags,
+            &mut self.control.flags,
             shift,
-            clamp
+            clamp,
         );
 
         let r = (i64::from(self.data.rgbc[0]) * i64::from(self.data.ir[0].0)) << 4;
@@ -377,19 +402,35 @@ impl Gte {
     }
 
     #[inline]
-    fn nc(&mut self, vec: [i16; 3], shift: u8, clamp: bool) {
-        (_, self.data.ir) = mat_mul(&self.ctrl.llm, &vec, &mut self.ctrl.flags, shift, clamp);
+    fn nc(&mut self, vec: Vec3<i16>, shift: u8, clamp: bool) {
+        (_, self.data.ir) = mat_mul(
+            &self.control.llm,
+            &vec,
+            &mut self.control.flags,
+            shift,
+            clamp,
+        );
 
         (self.data.mac, self.data.ir) = mat_mul_add(
-            &self.ctrl.lcm,
-            &self.ctrl.bk,
+            &self.control.lcm,
+            &self.control.bk,
             &self.ir_vec(),
-            &mut self.ctrl.flags,
+            &mut self.control.flags,
             shift,
-            clamp
+            clamp,
         );
 
         self.rgb_push_from_mac();
+    }
+
+    fn avsz(&mut self, val: i16) {
+        let sz = i32::from(self.data.sz[1].0)
+            + i32::from(self.data.sz[2].0)
+            + i32::from(self.data.sz[3].0);
+        let val = i64::from(val) * i64::from(sz);
+
+        self.set_mac0(val);
+        self.set_otz((val >> 12) as i32);
     }
 }
 
@@ -413,7 +454,7 @@ impl Gte {
             (x1 * (y2 - y0)).into(),
             (x2 * (y0 - y1)).into(),
         ];
-        
+
         let sum: i64 = vals.iter().sum();
 
         self.set_mac0(sum);
@@ -424,9 +465,9 @@ impl Gte {
         let shift = op.shift();
         let clamp = op.clamp();
 
-        let d0: i64 = self.ctrl.rt[0][0].into();
-        let d1: i64 = self.ctrl.rt[1][1].into(); 
-        let d2: i64 = self.ctrl.rt[2][2].into(); 
+        let d0: i64 = self.control.rt.0[0].x.into();
+        let d1: i64 = self.control.rt.0[1].y.into();
+        let d2: i64 = self.control.rt.0[2].z.into();
 
         let ir0: i64 = self.data.ir[0].0.into();
         let ir1: i64 = self.data.ir[1].0.into();
@@ -442,12 +483,8 @@ impl Gte {
     }
 
     fn cmd_dpcs(&mut self, op: Opcode) {
-        let rgb = [
-            self.data.rgbc[0],
-            self.data.rgbc[1],
-            self.data.rgbc[2],
-        ];
-        self.dpcs(rgb, op.shift(), op.clamp()); 
+        let rgb = [self.data.rgbc[0], self.data.rgbc[1], self.data.rgbc[2]];
+        self.dpcs(rgb, op.shift(), op.clamp());
     }
 
     fn cmd_intpl(&mut self, op: Opcode) {
@@ -463,16 +500,16 @@ impl Gte {
 
     fn cmd_mvmva(&mut self, op: Opcode) {
         let mat = match op.mat() {
-            0 => &self.ctrl.rt,
-            1 => &self.ctrl.llm,
-            2 => &self.ctrl.lcm,
+            0 => &self.control.rt,
+            1 => &self.control.llm,
+            2 => &self.control.lcm,
             _ => todo!("buggy matrix"),
         };
         let trans = match op.tr_vec() {
-            0 => &self.ctrl.tr,
-            1 => &self.ctrl.bk,
-            2 => &self.ctrl.fc,
-            _ => &[0, 0, 0],
+            0 => &self.control.tr,
+            1 => &self.control.bk,
+            2 => &self.control.fc,
+            _ => &Vec3 { x: 0, y: 0, z: 0 },
         };
         let vec = match op.vec() {
             0 => self.data.v0,
@@ -481,8 +518,14 @@ impl Gte {
             _ => self.ir_vec(),
         };
 
-        (self.data.mac, self.data.ir) =
-            mat_mul_add(mat, trans, &vec, &mut self.ctrl.flags, op.shift(), op.clamp());
+        (self.data.mac, self.data.ir) = mat_mul_add(
+            mat,
+            trans,
+            &vec,
+            &mut self.control.flags,
+            op.shift(),
+            op.clamp(),
+        );
     }
 
     fn cmd_ncds(&mut self, op: Opcode) {
@@ -499,7 +542,7 @@ impl Gte {
     }
 
     fn cmd_nccs(&mut self, op: Opcode) {
-        self.ncc(self.data.v0, op.shift(), op.clamp()); 
+        self.ncc(self.data.v0, op.shift(), op.clamp());
     }
 
     fn cmd_cc(&mut self, op: Opcode) {
@@ -507,12 +550,12 @@ impl Gte {
         let clamp = op.clamp();
 
         (self.data.mac, self.data.ir) = mat_mul_add(
-            &self.ctrl.lcm,
-            &self.ctrl.bk,
+            &self.control.lcm,
+            &self.control.bk,
             &self.ir_vec(),
-            &mut self.ctrl.flags,
+            &mut self.control.flags,
             shift,
-            clamp
+            clamp,
         );
 
         let r = (i64::from(self.data.rgbc[0]) * i64::from(self.data.ir[0].0)) << 4;
@@ -577,33 +620,17 @@ impl Gte {
 
     fn cmd_dpct(&mut self, op: Opcode) {
         for _ in 0..3 {
-            let rgb = [
-                self.data.rgb0[0],
-                self.data.rgb0[1],
-                self.data.rgb0[2],
-            ];
+            let rgb = [self.data.rgb0.r, self.data.rgb0.g, self.data.rgb0.b];
             self.dpcs(rgb, op.shift(), op.clamp());
         }
     }
 
     fn cmd_avsz3(&mut self) {
-        let sz = i32::from(self.data.sz[1].0)
-            + i32::from(self.data.sz[2].0)
-            + i32::from(self.data.sz[3].0);
-        let val = i64::from(self.ctrl.zsf3) * i64::from(sz);
-
-        self.set_mac0(val);
-        self.set_otz((val >> 12) as i32);
+        self.avsz(self.control.zsf3);
     }
 
     fn cmd_avsz4(&mut self) {
-        let sz = i32::from(self.data.sz[0].0)
-            + i32::from(self.data.sz[1].0)
-            + i32::from(self.data.sz[3].0);
-        let val = i64::from(self.ctrl.zsf4) * i64::from(sz);
-
-        self.set_mac0(val);
-        self.set_otz((val >> 12) as i32);
+        self.avsz(self.control.zsf4);
     }
 
     fn cmd_rtpt(&mut self, op: Opcode) {
@@ -653,18 +680,47 @@ impl Gte {
     }
 }
 
-/// GTE data registers (0..31).
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct Vec3<T: Copy> {
+    x: T,
+    y: T,
+    z: T,
+}
+
+impl<T: fmt::Display + Copy> fmt::Display for Vec3<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {}, {})", self.x, self.y, self.z)
+    }
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct Rgb {
+    r: u8,
+    g: u8,
+    b: u8,
+    _pad: u8,
+}
+
+impl fmt::Display for Rgb {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "({}, {}, {})", self.r, self.g, self.b)
+    }
+}
+
+/// GTE data registers (0..=31).
 #[repr(C)]
 #[derive(Default)]
-struct DataRegs {
+pub struct DataRegs {
     /// Vector 0.
-    v0: [i16; 3],
+    v0: Vec3<i16>,
     _pad0: u16,
     /// Vector 1.
-    v1: [i16; 3],
+    v1: Vec3<i16>,
     _pad1: u16,
-    /// Vector 2
-    v2: [i16; 3],
+    /// Vector 2.
+    v2: Vec3<i16>,
     _pad2: u16,
     /// Color codes.
     rgbc: [u8; 4],
@@ -687,13 +743,13 @@ struct DataRegs {
     /// Screen z coordinate FIFO, each element followed by padding.
     sz: [(u16, u16); 4],
     /// Color FIFO stage 0.
-    rgb0: [u8; 4],
+    rgb0: Rgb,
     /// Color FIFO stage 1.
-    rgb1: [u8; 4],
+    rgb1: Rgb,
     /// Color FIFO stage 2.
-    rgb2: [u8; 4],
+    rgb2: Rgb,
     /// ??
-    res1: [u8; 4],
+    _res1: [u8; 4],
     /// 32 bit value accumulator.
     mac0: i32,
     /// 32 bit matrix accumulator.
@@ -701,32 +757,101 @@ struct DataRegs {
     /// Input rgb values for conversion.
     irgb: u32,
     /// Output rgb values for conversion.
-    orgb: u32,
+    _orgb: u32,
     /// Count leading zeros or ones. This is the input value.
     lzcs: i32,
     /// The amount of leading zeroes or ones (depending on sign) in `lzcs`.
     lzcr: u32,
 }
 
-/// GTE control registers (32..63).
+impl DataRegs {
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "vector 0", "{}", &self.v0);
+        dump!(d, "vector 1", "{}", &self.v1);
+        dump!(d, "vector 2", "{}", &self.v2);
+
+        dump!(
+            d,
+            "rgbc",
+            "{}, {}, {}, {}",
+            self.rgbc[0],
+            self.rgbc[1],
+            self.rgbc[2],
+            self.rgbc[3],
+        );
+
+        dump!(d, "ir0", "{}", self.ir0);
+        dump!(d, "ir1", "{}", self.ir[0].0);
+        dump!(d, "ir2", "{}", self.ir[1].0);
+        dump!(d, "ir3", "{}", self.ir[2].0);
+
+        dump!(d, "sxy0", "{}, {}", self.sxy0[0], self.sxy0[1]);
+        dump!(d, "sxy1", "{}, {}", self.sxy1[0], self.sxy1[1]);
+        dump!(d, "sxy2", "{}, {}", self.sxy2[0], self.sxy2[1]);
+        dump!(d, "sxyp", "{}, {}", self.sxyp[0], self.sxyp[1]);
+
+        dump!(
+            d,
+            "sz",
+            "{}, {}, {}, {}",
+            self.sz[0].0,
+            self.sz[1].0,
+            self.sz[2].0,
+            self.sz[3].0,
+        );
+
+        dump!(d, "rgb 0", "{}", self.rgb0);
+        dump!(d, "rgb 1", "{}", self.rgb1);
+        dump!(d, "rgb 2", "{}", self.rgb2);
+
+        dump!(d, "mac0", "{}", self.mac0);
+        dump!(d, "mac1", "{}", self.mac[0]);
+        dump!(d, "mac2", "{}", self.mac[1]);
+        dump!(d, "mac3", "{}", self.mac[2]);
+
+        // `irgb` and `orgb`.
+        let (r, g, b) = (
+            (self.ir[0].0 >> 7).clamp(0x0, 0x1f) as u8,
+            (self.ir[1].0 >> 7).clamp(0x0, 0x1f) as u8,
+            (self.ir[2].0 >> 7).clamp(0x0, 0x1f) as u8,
+        );
+
+        dump!(d, "irgb", "{r}, {g}, {b}");
+        dump!(d, "orgb", "{r}, {g}, {b}");
+
+        dump!(d, "lzcs", "{}", self.lzcs);
+        dump!(d, "lzcr", "{}", self.lzcr);
+    }
+}
+
+#[derive(Default)]
+struct Matrix([Vec3<i16>; 3]);
+
+impl fmt::Display for Matrix {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}\n{}\n{}", self.0[0], self.0[1], self.0[2])
+    }
+}
+
+/// GTE control registers (32..=63).
 #[repr(C)]
 #[derive(Default)]
-struct ControlRegs {
+pub struct ControlRegs {
     /// Rotation matrix.
-    rt: [[i16; 3]; 3],
+    rt: Matrix,
     _pad0: u16,
     /// Translation vector.
-    tr: [i32; 3],
+    tr: Vec3<i32>,
     /// Light source matrix.
-    llm: [[i16; 3]; 3],
+    llm: Matrix,
     _pad1: u16,
     /// Background color.
-    bk: [i32; 3],
+    bk: Vec3<i32>,
     /// Light color matrix.
-    lcm: [[i16; 3]; 3],
+    lcm: Matrix,
     _pad2: u16,
     /// Far color.
-    fc: [i32; 3],
+    fc: Vec3<i32>,
     /// X screen offset.
     ofx: i32,
     /// Y screen offset.
@@ -747,6 +872,26 @@ struct ControlRegs {
     _pad6: u16,
     /// Flags register.
     flags: Flags,
+}
+
+impl ControlRegs {
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "rotation", "{}", self.rt);
+        dump!(d, "translation", "{}", self.tr);
+        dump!(d, "light source", "{}", self.llm);
+        dump!(d, "background color", "{}", self.bk);
+        dump!(d, "light color", "{}", self.lcm);
+        dump!(d, "far color", "{}", self.fc);
+        dump!(d, "ofx", "{}", self.ofx);
+        dump!(d, "ofy", "{}", self.ofy);
+        dump!(d, "h", "{}", self.h);
+        dump!(d, "dqa", "{}", self.dqa);
+        dump!(d, "dqb", "{}", self.dqb);
+        dump!(d, "zsf3", "{}", self.zsf3);
+        dump!(d, "zsf4", "{}", self.zsf4);
+
+        // TODO: Flags.
+    }
 }
 
 macro_rules! impl_unsafe_io {
@@ -770,20 +915,19 @@ impl_unsafe_io!(ControlRegs);
 
 #[inline]
 fn mat_mul_add(
-    mat: &[[i16; 3]; 3],
-    trans: &[i32; 3],
-    vec: &[i16; 3],
+    mat: &Matrix,
+    trans: &Vec3<i32>,
+    vec: &Vec3<i16>,
     flags: &mut Flags,
     shift: u8,
     clamp: bool,
 ) -> ([i32; 3], [(i16, u16); 3]) {
-    let mut mul_row = |row: usize| {
-        let val = (i64::from(trans[row]) << 12)
-            + i64::from(mat[row][0]) * i64::from(vec[0]);
+    let mut mul_row = |add: i32, row: usize| {
+        let val = (i64::from(add) << 12) + i64::from(mat.0[row].x) * i64::from(vec.x);
 
         let dot = sign_extend_mac(flags, row, val)
-            + i64::from(mat[row][1]) * i64::from(vec[1])
-            + i64::from(mat[row][2]) * i64::from(vec[2]);
+            + i64::from(mat.0[row].y) * i64::from(vec.y)
+            + i64::from(mat.0[row].z) * i64::from(vec.z);
 
         let val = sign_extend_mac(flags, row, dot);
 
@@ -793,27 +937,26 @@ fn mat_mul_add(
         (mac, ir)
     };
 
-    let (mac1, ir1) = mul_row(0);
-    let (mac2, ir2) = mul_row(1);
-    let (mac3, ir3) = mul_row(2);
+    let (mac1, ir1) = mul_row(trans.x, 0);
+    let (mac2, ir2) = mul_row(trans.y, 1);
+    let (mac3, ir3) = mul_row(trans.z, 2);
 
     ([mac1, mac2, mac3], [(ir1, 0), (ir2, 0), (ir3, 0)])
 }
 
 #[inline]
 fn mat_mul(
-    mat: &[[i16; 3]; 3],
-    vec: &[i16; 3],
+    mat: &Matrix,
+    vec: &Vec3<i16>,
     flags: &mut Flags,
     shift: u8,
     clamp: bool,
 ) -> ([i32; 3], [(i16, u16); 3]) {
     let mut mul_row = |row: usize| {
-        let val = i64::from(mat[row][0]) * i64::from(vec[0])
-            + i64::from(mat[row][1]) * i64::from(vec[1]);
+        let val =
+            i64::from(mat.0[row].x) * i64::from(vec.x) + i64::from(mat.0[row].y) * i64::from(vec.y);
 
-        let dot = sign_extend_mac(flags, row, val)
-            + i64::from(mat[row][2]) * i64::from(vec[2]);
+        let dot = sign_extend_mac(flags, row, val) + i64::from(mat.0[row].z) * i64::from(vec.z);
 
         let val = sign_extend_mac(flags, row, dot);
         let mac = saturate_to_mac(flags, row, shift, val);
@@ -905,7 +1048,6 @@ fn saturate_to_ir0(flags: &mut Flags, val: i32) -> i16 {
     flags.set_flag(12, of);
     val as i16
 }
-
 
 /// Flags register.
 #[derive(Default)]

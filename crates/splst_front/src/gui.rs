@@ -7,55 +7,55 @@ use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
 use egui_winit::State as WinState;
 use winit::window::Window;
 
-use std::sync::Arc;
-
 struct ErrorPopup {
     heading: String,
     text: String,
-    id: egui::Id,
 }
 
 #[derive(Default)]
-pub struct GuiContext {
-    pub egui_ctx: egui::Context,
-    /// Each new [`ErrorPopup`] get's assigned a unique ID, which is derived from the total amount
-    /// of errors shown.
-    error_count: usize,
+pub struct Errors {
     errors: Vec<ErrorPopup>,
-    main_style: Arc<egui::Style>,
 }
 
-impl GuiContext {
-    pub fn error(&mut self, heading: impl Into<String>, text: impl Into<String>) {
+impl Errors {
+    pub fn add(&mut self, heading: impl Into<String>, text: impl Into<String>) {
         self.errors.push(ErrorPopup {
             heading: heading.into(),
             text: text.into(),
-            // This is very likely not necessary to be a string, but it assures that we don't
-            // get any collisions.
-            id: egui::Id::new(format!("Error {}", self.error_count)),
         });
-        self.error_count += 1;
     }
 
-    fn show_errors(&mut self) {
+    fn show(&mut self, egui_ctx: &egui::Context) {
+        let mut i = 0;
+
         self.errors.retain(|error| {
             let mut open = true;
+
             egui::Window::new(&error.heading)
                 .open(&mut open)
-                .id(error.id)
+                .id(egui::Id::new(i))
                 .resizable(false)
                 .collapsible(false)
-                .show(&self.egui_ctx, |ui| {
+                .show(egui_ctx, |ui| {
                     ui.label(&error.text);
                 });
+
+            i += 1;
+
             open 
         });
     }
 }
 
+#[derive(Default)]
+pub struct GuiCtx {
+    pub egui_ctx: egui::Context,
+    pub errors: Errors,
+}
+
 /// All the egui stuff required to draw gui to the screen.
 pub struct GuiRenderer {
-    ctx: GuiContext,
+    ctx: GuiCtx,
     win_state: WinState,
     screen_descriptor: ScreenDescriptor,
     render_pass: RenderPass,
@@ -64,14 +64,12 @@ pub struct GuiRenderer {
 }
 
 impl GuiRenderer {
-    pub fn ctx(&mut self) -> &mut GuiContext {
+    pub fn ctx(&mut self) -> &mut GuiCtx {
         &mut self.ctx
     }
 
     pub fn new(scale_factor: f32, renderer: &Renderer) -> Self {
-        let ctx = GuiContext::default();
-
-        ctx.egui_ctx.set_style(ctx.main_style.clone());
+        let ctx = GuiCtx::default();
 
         let max_texture_dim = renderer.device.limits().max_texture_dimension_2d as usize;
         let win_state = WinState::from_pixels_per_point(max_texture_dim, scale_factor);
@@ -125,11 +123,11 @@ impl GuiRenderer {
         func: F,
     ) -> Result<(), BackendError>
     where
-        F: FnOnce(&mut GuiContext),
+        F: FnOnce(&mut GuiCtx),
     {
         let input = self.win_state.take_egui_input(window);
-        let output = self.ctx.egui_ctx.clone().run(input, |_| {
-            self.ctx.show_errors();
+        let output = self.ctx.egui_ctx.clone().run(input, |ctx| {
+            self.ctx.errors.show(ctx);
             func(&mut self.ctx)
         });
 

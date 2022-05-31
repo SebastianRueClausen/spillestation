@@ -11,8 +11,8 @@
 //! - Test that store and load functions get's inlined properly to avoid branching on Exceptions.
 
 mod cop0;
-mod gte;
 
+pub mod gte;
 pub mod irq;
 pub mod opcode;
 
@@ -25,13 +25,13 @@ use crate::bus::{self, bios::Bios, scratchpad::ScratchPad, AddrUnit, Bus, BusMap
 use crate::{SysTime, Timestamp, VideoOutput, AudioOutput};
 use crate::schedule::Event;
 use crate::debug::Debugger;
+use crate::dump::Dumper;
 
 use cop0::{Cop0, Exception};
-use gte::Gte;
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
+pub use gte::Gte;
 pub use irq::{Irq, IrqState};
 pub use opcode::Opcode;
 
@@ -52,15 +52,63 @@ impl Default for DelaySlot {
     }
 }
 
+/// # General purpose Registers
+///
+/// The MIPS R3000 has 32 addressable registers, all of which are essentially general purpose,
+/// besides $r0 which always contains the value 0.
+///
+/// | Number  | Name    | Usage                 |
+/// |---------|---------|-----------------------|
+/// | r0      | $zero   | Always 0              |
+/// | r1      | $at     | Reserved by assembler |
+/// | r2-r3   | $v0-$v1 | Results               |
+/// | r4-r7   | $a0-$a3 | Arguments             |
+/// | r8-r15  | $t0-$t7 | Temporaries           |
+/// | r16-r23 | $s0-$s7 | Storing               |
+/// | r24-r25 | $t8-$t9 | Temporaries           |
+/// | r26-r27 | $k0-$k1 | Reserved by kernel    |
+/// | r28     | $gp     | Global pointer        |
+/// | r29     | $sp     | Stack pointer         |
+/// | r30     | $fp     | Frame pointer         |
+/// | r31     | $ra     | Return address        |
+///
+#[derive(Default)]
+pub struct Registers([u32; 32]);
+
+impl Registers {
+    #[inline(always)]
+    fn load(&self, reg: Register) -> u32 {
+        // Safety: `Register` is always pointing at valid register.
+        unsafe {
+            *self.0.get_unchecked(reg.index() as usize)
+        }
+    }
+
+    #[inline(always)]
+    fn store(&mut self, reg: Register, val: u32) {
+        unsafe {
+            *self.0.get_unchecked_mut(reg.index() as usize) = val
+        }
+
+        // Make sure the zero register remains zero.
+        self.0[0] = 0;
+    }
+
+    pub fn dump(&self, printer: &mut impl Dumper) {
+        for (label, val) in REGISTER_NAMES.iter().zip(self.0.iter()) {
+            printer.dump_addr_unit(*label, *val)
+        }
+    }
+}
+
 pub struct Cpu {
     /// At the start of each instruction, this points to the last instruction executed. During
     /// the instruction, it points to the current opcode being executed.
     last_pc: u32,
     /// This points to the opcode about to be executed at the start of each
     /// instruction. During the instruction it points at the next opcode.
-    pub pc: u32,
-    /// Always one step ahead of `pc`. This is used to emulate CPU pipelineing and more
-    /// specifically branch delay.
+    pc: u32,
+    /// Always one step ahead of `pc`. This is used to emulate CPU branch delay.
     ///
     /// The MIPS R3000 pipelines one instruction ahead, meaning it loads the next
     /// opcode while the current instruction is being executed to speed up execution. This it not a
@@ -71,7 +119,7 @@ pub struct Cpu {
     ///
     /// To emulate this, `next_pc` is get's changed when branching instead of `pc`, which works
     /// well besides when entering and expception.
-    pub next_pc: u32,
+    next_pc: u32,
     /// Set to true if the current instruction is executed in the branch delay slot, ie.
     /// if the previous instruction branched.
     ///
@@ -83,35 +131,16 @@ pub struct Cpu {
     /// Results of multiply and divide instructions aren't stored in general purpose
     /// registers like normal instructions, but is instead stored in two special registers hi and
     /// lo.
-    pub hi: u32,
-    pub lo: u32,
+    hi: u32,
+    lo: u32,
     /// This stores the timestamp when the result of an multiply or divide instruction is ready
     /// since they take more than a single cycle to complete.
     ///
     /// The CPU can run while the result is being calculated, but if the result is being read
     /// before it's ready, the CPU will wait before continuing.
     hi_lo_ready: Timestamp,
-    /// # Registers
-    ///
-    /// All registers of the MIPS R3000 are essentially general purpose besides $r0 which always
-    /// contains the value 0. They are however used for specific purposes depending on convention.
-    ///
-    /// | Number  | Name    | Usage                 |
-    /// |---------|---------|-----------------------|
-    /// | r0      | $zero   | Always 0              |
-    /// | r1      | $at     | Reserved by assembler |
-    /// | r2-r3   | $v0-$v1 | Results               |
-    /// | r4-r7   | $a0-$a3 | Arguments             |
-    /// | r8-r15  | $t0-$t7 | Temporaries           |
-    /// | r16-r23 | $s0-$s7 | Storing               |
-    /// | r24-r25 | $t8-$t9 | Temporaries           |
-    /// | r26-r27 | $k0-$k1 | Reserved by kernel    |
-    /// | r28     | $gp     | Global pointer        |
-    /// | r29     | $sp     | Stack pointer         |
-    /// | r30     | $fp     | Frame pointer         |
-    /// | r31     | $ra     | Return address        |
-    ///
-    pub registers: [u32; 32],
+    /// General purpose registers.
+    registers: Registers,
     /// # Load Delay Slot
     ///
     /// When loading a value from the BUS to a register, the value is ready in the register after
@@ -168,7 +197,7 @@ impl Cpu {
             hi: 0x0,
             lo: 0x0,
             hi_lo_ready: Timestamp::STARTUP,
-            registers: [0x0; 32],
+            registers: Registers::default(),
             load_delay: DelaySlot::default(),
             gte: Gte::default(),
             cop0: Cop0::default(),
@@ -178,19 +207,10 @@ impl Cpu {
         })
     }
 
-    pub fn read_reg(&self, idx: Register) -> u32 {
-        self.registers[idx.0 as usize]
-    }
-
-    fn set_reg(&mut self, idx: Register, val: u32) {
-        self.registers[idx.0 as usize] = val;
-        self.registers[0] = 0;
-    }
-
     /// Load an instruction from memory.
     #[inline(always)]
-    fn load_code<T: AddrUnit>(&mut self, addr: u32) -> Result<T, Exception> {
-        if !bus::is_aligned_to::<T>(addr) {
+    fn load_code(&mut self, addr: u32) -> Result<u32, Exception> {
+        if !bus::is_aligned_to::<u32>(addr) {
             self.cop0.set_reg(8, addr);
             return Err(Exception::AddressLoadError);
         }
@@ -198,7 +218,7 @@ impl Cpu {
         let addr = bus::regioned_addr(addr);
 
         self.bus
-            .load::<T>(addr)
+            .load::<u32>(addr)
             .map(|(val, time)| {
                 self.bus.schedule.advance(time);
                 val
@@ -279,23 +299,34 @@ impl Cpu {
 
     /// Add a load from memory to the CPU pipeline. It fetches the pending load from the pipeline
     /// if there is any. If the pipeline already contains a load to the same register, then the
-    /// value get's replaced with the new one, effectively throwing away the old value.
+    /// value get's replaced with the new one, throwing away the old value.
     ///
     /// When loading from memory the CPU has to wait for the previous load to be done before the
     /// new load can begin.
     fn pipeline_bus_load(&mut self, reg: Register, val: u32, time: SysTime) {
-        // Check if the current load in the pipeline is different from the new one. If there aren't
-        // any loads then `self.load_delay.reg` points to the zero register.
-        let diff = (self.load_delay.reg != reg) as u8;
+        // Check if there is a load in the pipeline to the same register as `reg`. If there is no
+        // register load in the pipeline, then `self.load_delay.reg` is `Register::ZERO`.
+        //
+        // In the case that `self.load_delay.reg == reg` then there already a load in the pipeline
+        // to the same register, in which case that load should cancelled. This works because
+        // `lreg` then points at the zero register, meaning that the register store later on writes
+        // to the zero register, which does nothing.
+        //
+        // PERF: 
+        //
+        // This if statement "should" be compiled away, making this branchless. But perhaps because
+        // the if statements rarely evaulates to true, it may be faster to just do this with a
+        // branch?
+        let lreg = if self.load_delay.reg == reg {
+            Register::ZERO
+        } else {
+            self.load_delay.reg
+        };
 
-        // If the load in the pipeline is the same as `reg` then `lreg` points to the zero
-        // register, meaning writing to it would do nothing.
-        let lreg = Register::from(self.load_delay.reg.0 * diff);
-
-        // This works since `skip_to` ignores cycles less than the current cycle (take max of the
+        // This works since `skip_to` ignores cycles less than the current cycle (takes max of the
         // two).
         self.bus.schedule.skip_to(self.load_delay.ready);
-        self.set_reg(lreg, self.load_delay.val);
+        self.registers.store(lreg, self.load_delay.val);
 
         let ready = self.bus.schedule.now() + time;
         self.load_delay = DelaySlot { reg, val, ready };
@@ -304,10 +335,13 @@ impl Cpu {
     /// Almost the same as [´pipeline_bus_load´] but doesn't have to wait for any previous loads to
     /// come in. It will however still execute the next instruction in the load delay slot.
     fn pipeline_cop_load(&mut self, reg: Register, val: u32) {
-        let diff = (self.load_delay.reg != reg) as u8;
-        let lreg = Register::from(self.load_delay.reg.0 * diff);
+        let lreg = if self.load_delay.reg == reg {
+            Register::ZERO
+        } else {
+            self.load_delay.reg
+        };
 
-        self.set_reg(lreg, self.load_delay.val);
+        self.registers.store(lreg, self.load_delay.val);
 
         self.load_delay = DelaySlot { reg, val, ready: Timestamp::STARTUP };
     }
@@ -326,7 +360,7 @@ impl Cpu {
     /// register will contain the value before it's done loading. Only if the register is actually
     /// read or written to will the CPU wait through `access_reg`.
     fn fetch_load_slot(&mut self) {
-        self.set_reg(self.load_delay.reg, self.load_delay.val);
+        self.registers.store(self.load_delay.reg, self.load_delay.val);
         self.load_delay = DelaySlot::default();
     }
 
@@ -357,7 +391,7 @@ impl Cpu {
 
     /// Start handeling an exception, and jumps to exception handling code in bios.
     fn throw_exception(&mut self, ex: Exception) {
-        trace!("exception thrown: {:?}", ex);
+        trace!("exception thrown: {ex:?}");
 
         let pc = self.cop0.enter_exception(
             &mut self.bus.schedule,
@@ -378,12 +412,37 @@ impl Cpu {
         self.cop0.irq_enabled() && active != 0
     }
 
-    pub fn curr_ins(&mut self) -> Opcode {
+    /// Get [`Opcode`] of the instruction currently being executed.
+    pub fn current_instruction(&self) -> Opcode {
         Opcode::new(self.bus.peek(self.pc).unwrap_or(0xffff_ffff))
     }
 
-    pub fn icache_misses(&mut self) -> u64 {
+    /// Get the total amount of cache misses.
+    pub fn icache_misses(&self) -> u64 {
         self.icache_misses
+    }
+
+    /// Get the current program counter.
+    pub fn pc(&self) -> u32 {
+        self.pc
+    }
+
+    /// Get content of `hi` register.
+    pub fn hi(&self) -> u32 {
+        self.hi
+    }
+
+    /// Get content of `lo` register.
+    pub fn lo(&self) -> u32 {
+        self.lo
+    }
+
+    pub fn registers(&self) -> &Registers {
+        &self.registers
+    }
+
+    pub fn gte(&self) -> &Gte {
+        &self.gte
     }
 
     /// Move the program counter to the next instruction. Returns the address of the next
@@ -459,7 +518,7 @@ impl Cpu {
             // Cache misses take about 4 cycles.
             self.bus.schedule.advance(SysTime::new(4));
 
-            match self.load_code::<u32>(addr) {
+            match self.load_code(addr) {
                 Ok(val) => {
                     let op = Opcode::new(val);
 
@@ -646,10 +705,10 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let val = self.read_reg(rt) << op.shift();
+        let val = self.registers.load(rt) << op.shift();
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// SRL - Shift right logical. Same as SRA, but unsigned.
@@ -657,10 +716,10 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let val = self.read_reg(rt) >> op.shift();
+        let val = self.registers.load(rt) >> op.shift();
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// SRA - Shift right arithmetic.
@@ -668,11 +727,11 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let val = self.read_reg(rt) as i32;
+        let val = self.registers.load(rt) as i32;
         let val = val >> op.shift();
 
         self.fetch_load_slot();
-        self.set_reg(rd, val as u32);
+        self.registers.store(rd, val as u32);
     }
 
     /// SLLV - Shift left logical variable.
@@ -681,10 +740,10 @@ impl Cpu {
         let rd = self.access_reg(op.rd());
         let rs = self.access_reg(op.rs());
 
-        let val = self.read_reg(rt) << self.read_reg(rs).bit_range(0, 4);
+        let val = self.registers.load(rt) << self.registers.load(rs).bit_range(0, 4);
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// SRLV - Shift right logical variable.
@@ -693,10 +752,10 @@ impl Cpu {
         let rd = self.access_reg(op.rd());
         let rs = self.access_reg(op.rs());
 
-        let val = self.read_reg(rt) >> self.read_reg(rs).bit_range(0, 4);
+        let val = self.registers.load(rt) >> self.registers.load(rs).bit_range(0, 4);
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// SRAV - Shift right arithmetic variable.
@@ -705,18 +764,18 @@ impl Cpu {
         let rd = self.access_reg(op.rd());
         let rs = self.access_reg(op.rs());
 
-        let val = self.read_reg(rt) as i32;
-        let val = val >> self.read_reg(rs).bit_range(0, 4);
+        let val = self.registers.load(rt) as i32;
+        let val = val >> self.registers.load(rs).bit_range(0, 4);
 
         self.fetch_load_slot();
-        self.set_reg(rd, val as u32);
+        self.registers.store(rd, val as u32);
     }
 
     /// JR - Jump register.
     fn op_jr(&mut self, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
-        self.jump(self.read_reg(rs));
+        self.jump(self.registers.load(rs));
         self.fetch_load_slot();
     }
 
@@ -726,14 +785,14 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rd = self.access_reg(op.rd());
 
-        self.jump(self.read_reg(rs));
+        self.jump(self.registers.load(rs));
 
         self.fetch_load_slot();
-        self.set_reg(rd, pc);
+        self.registers.store(rd, pc);
     }
 
     fn syscall_trace(&mut self) {
-        let text = match self.read_reg(Register::A0) {
+        let text = match self.registers.load(Register::A0) {
             0x0 => String::from("no function"),
             0x1 => String::from("enter critical section"),
             0x2 => String::from("exit critical section"),
@@ -766,14 +825,14 @@ impl Cpu {
         self.fetch_pending_hi_lo();
 
         self.fetch_load_slot();
-        self.set_reg(rd, self.hi);
+        self.registers.store(rd, self.hi);
     }
 
     /// MTHI - Move to high.
     fn op_mthi(&mut self, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
-        self.hi = self.read_reg(rs);
+        self.hi = self.registers.load(rs);
         self.fetch_load_slot();
     }
 
@@ -784,14 +843,14 @@ impl Cpu {
         self.fetch_pending_hi_lo();
 
         self.fetch_load_slot();
-        self.set_reg(rd, self.lo);
+        self.registers.store(rd, self.lo);
     }
 
     /// MTLO - Move to low.
     fn op_mtlo(&mut self, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
-        self.lo = self.read_reg(rs);
+        self.lo = self.registers.load(rs);
 
         self.fetch_load_slot();
     }
@@ -804,8 +863,8 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let lhs = self.read_reg(rs) as i32;
-        let rhs = self.read_reg(rt) as i32;
+        let lhs = self.registers.load(rs) as i32;
+        let rhs = self.registers.load(rt) as i32;
 
         let time = match if lhs < 0 { !lhs } else { lhs }.leading_zeros() {
             00..=11 => SysTime::new(13),
@@ -825,8 +884,8 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let lhs = self.read_reg(rs);
-        let rhs = self.read_reg(rt);
+        let lhs = self.registers.load(rs);
+        let rhs = self.registers.load(rt);
 
         let time = match lhs {
             0x00000000..=0x000007ff => SysTime::new(13),
@@ -848,8 +907,8 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let lhs = self.read_reg(rs) as i32;
-        let rhs = self.read_reg(rt) as i32;
+        let lhs = self.registers.load(rs) as i32;
+        let rhs = self.registers.load(rt) as i32;
 
         self.fetch_load_slot();
 
@@ -871,8 +930,8 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let lhs = self.read_reg(rs);
-        let rhs = self.read_reg(rt);
+        let lhs = self.registers.load(rs);
+        let rhs = self.registers.load(rt);
 
         self.fetch_load_slot();
 
@@ -889,13 +948,13 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let lhs = self.read_reg(rs) as i32;
-        let rhs = self.read_reg(rt) as i32;
+        let lhs = self.registers.load(rs) as i32;
+        let rhs = self.registers.load(rt) as i32;
 
         self.fetch_load_slot();
 
         if let Some(val) = lhs.checked_add(rhs) {
-            self.set_reg(rd, val as u32);
+            self.registers.store(rd, val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
         }
@@ -907,13 +966,13 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let lhs = self.read_reg(rs);
-        let rhs = self.read_reg(rt);
+        let lhs = self.registers.load(rs);
+        let rhs = self.registers.load(rt);
 
         let val = lhs.wrapping_add(rhs);
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// SUB - Signed subtraction.
@@ -922,13 +981,13 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let lhs = self.read_reg(rs) as i32;
-        let rhs = self.read_reg(rt) as i32;
+        let lhs = self.registers.load(rs) as i32;
+        let rhs = self.registers.load(rt) as i32;
 
         self.fetch_load_slot();
 
         if let Some(val) = lhs.checked_sub(rhs) {
-            self.set_reg(rd, val as u32);
+            self.registers.store(rd, val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
         }
@@ -940,13 +999,13 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let lhs = self.read_reg(rs);
-        let rhs = self.read_reg(rt);
+        let lhs = self.registers.load(rs);
+        let rhs = self.registers.load(rt);
 
         let val = lhs.wrapping_sub(rhs);
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// AND - Bitwise and.
@@ -955,10 +1014,10 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let val = self.read_reg(rs) & self.read_reg(rt);
+        let val = self.registers.load(rs) & self.registers.load(rt);
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// OR - Bitwise or.
@@ -967,10 +1026,10 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let val = self.read_reg(rs) | self.read_reg(rt);
+        let val = self.registers.load(rs) | self.registers.load(rt);
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// XOR - Bitwise exclusive or.
@@ -979,10 +1038,10 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let val = self.read_reg(rs) ^ self.read_reg(rt);
+        let val = self.registers.load(rs) ^ self.registers.load(rt);
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// NOR - Bitwise not or.
@@ -991,10 +1050,10 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let val = !(self.read_reg(rs) | self.read_reg(rt));
+        let val = !(self.registers.load(rs) | self.registers.load(rt));
 
         self.fetch_load_slot();
-        self.set_reg(rd, val);
+        self.registers.store(rd, val);
     }
 
     /// SLT - Set if less than.
@@ -1003,13 +1062,13 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let lhs = self.read_reg(rs) as i32;
-        let rhs = self.read_reg(rt) as i32;
+        let lhs = self.registers.load(rs) as i32;
+        let rhs = self.registers.load(rt) as i32;
 
         let val = lhs < rhs;
 
         self.fetch_load_slot();
-        self.set_reg(rd, val as u32);
+        self.registers.store(rd, val as u32);
     }
 
     /// SLTU - Set if less than unsigned.
@@ -1018,10 +1077,10 @@ impl Cpu {
         let rt = self.access_reg(op.rt());
         let rd = self.access_reg(op.rd());
 
-        let val = self.read_reg(rs) < self.read_reg(rt);
+        let val = self.registers.load(rs) < self.registers.load(rt);
 
         self.fetch_load_slot();
-        self.set_reg(rd, val as u32);
+        self.registers.store(rd, val as u32);
     }
 
     /// # BCONDZ - Conditional branching
@@ -1038,7 +1097,7 @@ impl Cpu {
     fn op_bcondz(&mut self, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
-        let val = self.read_reg(rs) as i32;
+        let val = self.registers.load(rs) as i32;
         let cond = (val < 0) as u32;
 
         // If the instruction is to test greater or equal zero, we just
@@ -1049,7 +1108,7 @@ impl Cpu {
 
         // Set return register if required.
         if op.update_ra_on_branch() {
-            self.set_reg(Register::RA, self.next_pc);
+            self.registers.store(Register::RA, self.next_pc);
         }
 
         if cond != 0 {
@@ -1070,7 +1129,7 @@ impl Cpu {
         self.access_reg(Register::RA);
 
         self.op_j(op);
-        self.set_reg(Register::RA, pc);
+        self.registers.store(Register::RA, pc);
     }
 
     /// BEQ - Branch if equal.
@@ -1078,7 +1137,7 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        if self.read_reg(rs) == self.read_reg(rt) {
+        if self.registers.load(rs) == self.registers.load(rt) {
             self.branch(op.signed_imm());
         }
 
@@ -1090,7 +1149,7 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        if self.read_reg(rs) != self.read_reg(rt) {
+        if self.registers.load(rs) != self.registers.load(rt) {
             self.branch(op.signed_imm());
         }
 
@@ -1100,7 +1159,7 @@ impl Cpu {
     /// BLEZ - Branch if less than or equal to zero.
     fn op_blez(&mut self, op: Opcode) {
         let rs = self.access_reg(op.rs());
-        let val = self.read_reg(rs) as i32;
+        let val = self.registers.load(rs) as i32;
 
         if val <= 0 {
             self.branch(op.signed_imm());
@@ -1112,7 +1171,7 @@ impl Cpu {
     /// BGTZ - Branch if greater than zero.
     fn op_bgtz(&mut self, op: Opcode) {
         let rs = self.access_reg(op.rs());
-        let val = self.read_reg(rs) as i32;
+        let val = self.registers.load(rs) as i32;
 
         if val > 0 {
             self.branch(op.signed_imm());
@@ -1126,12 +1185,12 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let val = self.read_reg(rs) as i32;
+        let val = self.registers.load(rs) as i32;
 
         self.fetch_load_slot();
 
         if let Some(val) = val.checked_add(op.signed_imm() as i32) {
-            self.set_reg(rt, val as u32);
+            self.registers.store(rt, val as u32);
         } else {
             self.throw_exception(Exception::ArithmeticOverflow);
         }
@@ -1145,10 +1204,10 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let val = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let val = self.registers.load(rs).wrapping_add(op.signed_imm());
 
         self.fetch_load_slot();
-        self.set_reg(rt, val);
+        self.registers.store(rt, val);
     }
 
     /// SLTI - Set if less than immediate signed.
@@ -1156,10 +1215,10 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let val = (self.read_reg(rs) as i32) < (op.signed_imm() as i32);
+        let val = (self.registers.load(rs) as i32) < (op.signed_imm() as i32);
 
         self.fetch_load_slot();
-        self.set_reg(rt, val as u32);
+        self.registers.store(rt, val as u32);
     }
 
     /// SLTUI - Set if less than immediate unsigned.
@@ -1167,10 +1226,10 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let val = self.read_reg(rs) < op.signed_imm();
+        let val = self.registers.load(rs) < op.signed_imm();
 
         self.fetch_load_slot();
-        self.set_reg(rt, val as u32);
+        self.registers.store(rt, val as u32);
     }
 
     /// ANDI - Bitwise and immediate.
@@ -1178,10 +1237,10 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let val = self.read_reg(rs) & op.imm();
+        let val = self.registers.load(rs) & op.imm();
 
         self.fetch_load_slot();
-        self.set_reg(rt, val);
+        self.registers.store(rt, val);
     }
 
     /// ORI - Bitwise or immediate.
@@ -1189,10 +1248,10 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let val = self.read_reg(rs) | op.imm();
+        let val = self.registers.load(rs) | op.imm();
 
         self.fetch_load_slot();
-        self.set_reg(rt, val);
+        self.registers.store(rt, val);
     }
 
     /// XORI - Bitwise exclusive Or immediate.
@@ -1200,10 +1259,10 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let val = self.read_reg(rs) ^ op.imm();
+        let val = self.registers.load(rs) ^ op.imm();
 
         self.fetch_load_slot();
-        self.set_reg(rt, val);
+        self.registers.store(rt, val);
     }
 
     /// LUI - Load upper immediate.
@@ -1212,7 +1271,7 @@ impl Cpu {
         let val = op.imm() << 16;
 
         self.fetch_load_slot();
-        self.set_reg(rt, val);
+        self.registers.store(rt, val);
     }
 
     /// COP0 - Coprocessor0 instruction.
@@ -1220,7 +1279,7 @@ impl Cpu {
         match op.cop_op() {
             // MFC0 - Move from Co-Processor0.
             0x0 => {
-                let reg = op.rd().0;
+                let reg = op.rd().index();
                 let rt = self.access_reg(op.rt());
 
                 if reg > 15 {
@@ -1234,7 +1293,7 @@ impl Cpu {
                 let rt = self.access_reg(op.rt());
 
                 self.fetch_load_slot();
-                self.cop0.set_reg(op.rd().0.into(), self.read_reg(rt));
+                self.cop0.set_reg(op.rd().index().into(), self.registers.load(rt));
             }
             // RFE - Restore from exception.
             0x10 => {
@@ -1266,32 +1325,32 @@ impl Cpu {
                 // Load from COP2 data register.
                 0x0 => {
                     let rt = self.access_reg(op.rt());
-                    let val = self.gte.data_load(op.rd().0.into());
+                    let val = self.gte.data_load(op.rd().index().into());
 
                     self.pipeline_cop_load(rt, val);
                 }
                 // Load from COP2 control register.
                 0x2 => {
                     let rt = self.access_reg(op.rt());
-                    let val = self.gte.ctrl_load(op.rd().0.into());
+                    let val = self.gte.control_load(op.rd().index().into());
 
                     self.pipeline_cop_load(rt, val);
                 }
                 // Store to COP2 data register.
                 0x4 => {
                     let rt = self.access_reg(op.rt());
-                    let val = self.read_reg(rt);
+                    let val = self.registers.load(rt);
 
                     self.fetch_load_slot();
-                    self.gte.data_store(op.rd().0.into(), val);
+                    self.gte.data_store(op.rd().index().into(), val);
                 }
                 // Store to COP2 control register.
                 0x6 => {
                     let rt = self.access_reg(op.rt());
-                    let val = self.read_reg(rt);
+                    let val = self.registers.load(rt);
 
                     self.fetch_load_slot();
-                    self.gte.ctrl_store(op.rd().0.into(), val);
+                    self.gte.control_store(op.rd().index().into(), val);
                 }
                 _ => unreachable!(),
             }
@@ -1309,7 +1368,7 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
         match self.load::<u8, Dbg>(dbg, addr) {
             Ok((val, time)) => {
@@ -1325,7 +1384,7 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
         match self.load::<u16, Dbg>(dbg, addr) {
             Err(exp) => self.throw_exception(exp),
@@ -1347,14 +1406,14 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
         let aligned = addr & !0x3;
 
         let val = if self.load_delay.reg == rt {
             debug_assert_ne!(self.load_delay.reg, Register::ZERO);
             self.load_delay.val
         } else {
-            self.read_reg(rt)
+            self.registers.load(rt)
         };
 
         // Get word containing unaligned address.
@@ -1384,7 +1443,7 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
         match self.load::<u32, Dbg>(dbg, addr) {
             Ok((val, time)) => self.pipeline_bus_load(rt, val, time),
@@ -1397,7 +1456,7 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
         match self.load::<u8, Dbg>(dbg, addr) {
             Ok((val, time)) => self.pipeline_bus_load(rt, val.into(), time),
@@ -1410,7 +1469,7 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
         match self.load::<u16, Dbg>(dbg, addr) {
             Ok((val, time)) => self.pipeline_bus_load(rt, val.into(), time),
@@ -1425,7 +1484,7 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
         let aligned = addr & !0x3;
 
@@ -1433,7 +1492,7 @@ impl Cpu {
             debug_assert_ne!(self.load_delay.reg, Register::ZERO);
             self.load_delay.val
         } else {
-            self.read_reg(rt)
+            self.registers.load(rt)
         };
 
         match self.load::<u32, Dbg>(dbg, aligned) {
@@ -1457,9 +1516,9 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
-        let val = self.read_reg(rt);
+        let val = self.registers.load(rt);
         self.fetch_load_slot();
 
         if let Err(exp) = self.store::<u8, Dbg>(dbg, addr, val as u8) {
@@ -1472,9 +1531,9 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
-        let val = self.read_reg(rt);
+        let val = self.registers.load(rt);
         self.fetch_load_slot();
 
         if let Err(exp) = self.store::<u16, Dbg>(dbg, addr, val as u16) {
@@ -1490,8 +1549,8 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
-        let val = self.read_reg(rt);
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
+        let val = self.registers.load(rt);
 
         // Get address of whole word containing unaligned address.
         let aligned = addr & !3;
@@ -1524,9 +1583,9 @@ impl Cpu {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
-        let val = self.read_reg(rt);
+        let val = self.registers.load(rt);
         self.fetch_load_slot();
 
         dbg.store(self, addr, val);
@@ -1538,13 +1597,13 @@ impl Cpu {
 
     /// # SWR - Store world right
     ///
-    /// See [`op_swl`].
+    /// See [`Cpu::op_swl`].
     fn op_swr<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
         let rt = self.access_reg(op.rt());
 
-        let addr = self.read_reg(rs).wrapping_add(op.signed_imm());
-        let val = self.read_reg(rt);
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
+        let val = self.registers.load(rt);
 
         let aligned = addr & !3;
 
@@ -1588,16 +1647,14 @@ impl Cpu {
     fn op_lwc2<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
-        let addr = self
-            .read_reg(rs)
-            .wrapping_add(op.signed_imm());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
         self.fetch_load_slot();
 
         match self.load::<u32, Dbg>(dbg, addr) {
             Ok((val, time)) => {
                 self.bus.schedule.advance(time);
-                self.gte.data_store(op.rt().0 as u32, val);
+                self.gte.data_store(op.rt().index() as u32, val);
             }
             Err(ex) => {
                 self.throw_exception(ex);
@@ -1624,11 +1681,8 @@ impl Cpu {
     fn op_swc2<Dbg: Debugger>(&mut self, dbg: &mut Dbg, op: Opcode) {
         let rs = self.access_reg(op.rs());
 
-        let val = self.gte.data_load(op.rt().0.into());
-
-        let addr = self
-            .read_reg(rs)
-            .wrapping_add(op.signed_imm());
+        let val = self.gte.data_load(op.rt().index().into());
+        let addr = self.registers.load(rs).wrapping_add(op.signed_imm());
 
         self.fetch_load_slot();
 

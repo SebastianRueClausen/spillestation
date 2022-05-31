@@ -63,15 +63,18 @@ impl Default for Cop0 {
 
 impl Cop0 {
     /// If the scratchpad is enabled.
+    #[inline]
     pub fn cache_isolated(&self) -> bool {
         self.regs[12].bit(16)
     }
 
     /// Describes if boot exception vectors is in RAM.
+    #[inline]
     fn bev_in_ram(&self) -> bool {
         self.regs[12].bit(22)
     }
 
+    #[inline]
     pub fn irq_enabled(&self) -> bool {
         self.regs[12].bit(0)
     }
@@ -82,7 +85,7 @@ impl Cop0 {
 
     pub fn read_reg(&self, reg: u32) -> u32 {
         if reg == 8 {
-            trace!("Bad virtual address register read");
+            trace!("bad virtual address register read");
         }
         self.regs[reg as usize]
     }
@@ -107,11 +110,14 @@ impl Cop0 {
         // kernel/user mode flags. Bits 0..1 keep track of the current flags, bits 2..3 keeps
         // track of the last flags, and bits 4..5 the ones before that.
         let flags = self.regs[12].bit_range(0, 5);
+
         // When entering and exception, two 0 are appended to these bits, which disables interrupts
         // and sets the CPU to kernel mode.
         self.regs[12] = self.regs[12].set_bit_range(0, 5, flags << 2);
+
         // Set CAUSE register to the exception type.
         self.regs[13] = self.regs[13].set_bit_range(2, 6, ex as u32);
+
         // If the CPU is in a branch delay slot, EPC is set to one instruction behind the last pc.
         // Bit 31 of CAUSE is also set.
         let addr = if in_delay { last_pc.wrapping_sub(4) } else { last_pc };
@@ -131,7 +137,7 @@ impl Cop0 {
         }
     }
 
-    pub fn exit_exception(&mut self, schedule: &mut Schedule) {
+    pub(super) fn exit_exception(&mut self, schedule: &mut Schedule) {
         let flags = self.regs[12].bit_range(0, 5);
         self.regs[12] = self.regs[12].set_bit_range(0, 3, flags >> 2);
 

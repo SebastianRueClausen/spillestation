@@ -28,9 +28,9 @@ impl XaBuffer {
 
         let (left, right) = (left >> 15, right >> 15);
 
-        let clamp = |val: i32| -> i16 {
+        fn clamp(val: i32) -> i16 {
             val.clamp(i16::MIN.into(), i16::MAX.into()) as i16 
-        };
+        }
 
         (clamp(left), clamp(right))
     }

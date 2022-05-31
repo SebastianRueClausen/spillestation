@@ -31,31 +31,46 @@ pub enum Irq {
     Spu = 9,
 }
 
+impl Irq {
+    pub const ITEMS: [Irq; 10] = [
+        Irq::VBlank,
+        Irq::Gpu,
+        Irq::CdRom,
+        Irq::Dma,
+        Irq::Tmr0,
+        Irq::Tmr1,
+        Irq::Tmr2,
+        Irq::CtrlAndMemCard,
+        Irq::Sio,
+        Irq::Spu,
+    ];
+}
+
 impl fmt::Display for Irq {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", match *self {
-            Irq::VBlank => "Vblank",
+            Irq::VBlank => "VBlank",
             Irq::Gpu => "GPU",
             Irq::CdRom => "CDROM",
             Irq::Dma => "DMA",
             Irq::Tmr0 => "TMR0",
             Irq::Tmr1 => "TMR1",
             Irq::Tmr2 => "TMR2",
-            Irq::CtrlAndMemCard => "controller and memory card",
+            Irq::CtrlAndMemCard => "Ctrl and Memcard",
             Irq::Sio => "SIO",
-            Irq::Spu => "Spu",
+            Irq::Spu => "SPU",
         })
     }
 }
 
 /// Interrupt registers. There keep track of which 
 pub struct IrqState {
-    pub status: u32,
-    pub mask: u32,
+    status: u32,
+    mask: u32,
 }
 
 impl IrqState {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             status: 0,
             mask: 0,
@@ -65,8 +80,8 @@ impl IrqState {
     /// Trigger interrupt. This doesn't make the system do anything on it's own, since the CPU
     /// doesn't check for new active interrupts unless it's forced to. If the type of interrupt
     /// isn't masked, meaning it's not enabled, it will still be set as active in the
-    /// 'status' register.
-    pub fn trigger(&mut self, irq: Irq) {
+    /// `status` register.
+    pub(crate) fn trigger(&mut self, irq: Irq) {
         self.status |= 1 << irq as u32;
         if irq as u32 & self.mask != 0 {
             trace!("Triggered irq of type {}", irq);
@@ -75,7 +90,7 @@ impl IrqState {
 
     /// Check if there are any active interrupts. Even if this is true, the CPU may not acknowledge
     /// them, since interrupts can be disabled by the COP0.
-    pub fn active(&self) -> bool {
+    pub(crate) fn active(&self) -> bool {
         self.status & self.mask != 0
     }
 
@@ -94,7 +109,7 @@ impl IrqState {
     ///
     /// Writing to the status register will bitwise and `val` with the current value of the
     /// register. Writing to the mask register will set the register.
-    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
+    pub(crate) fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, offset: u32, val: T) {
         if !bus::is_aligned_to::<u32>(offset) {
             warn!("store to irq state not word aligned");
         }
@@ -112,7 +127,7 @@ impl IrqState {
     }
 
     /// Load from interrupt registers.
-    pub fn load<T: AddrUnit>(&self, offset: u32) -> T {
+    pub(crate) fn load<T: AddrUnit>(&self, offset: u32) -> T {
         let val = match bus::align_as::<u32>(offset) {
             0 => self.status,
             4 => self.mask,

@@ -1,5 +1,5 @@
 use splst_core::{Bios, io_port::pad, Disc};
-use crate::gui::GuiContext;
+use crate::gui;
 use crate::RunMode;
 use super::config::Config;
 
@@ -7,13 +7,15 @@ pub fn show(
     config: &mut Config,
     controllers: &mut pad::Controllers,
     disc: &mut Disc,
-    ctx: &mut GuiContext,
+    ctx: &mut gui::GuiCtx,
 ) -> Option<(Bios, RunMode)> {
     egui::CentralPanel::default().show(&ctx.egui_ctx.clone(), |ui| {
         let space = ui.available_size() / 16.0;
-        ui.allocate_space(space);
 
-        ui.vertical_centered_justified(|ui| ui.heading("Spillestation"));
+        ui.allocate_space(space);
+        ui.vertical_centered_justified(|ui| {
+            ui.heading("Spillestation")
+        });
 
         ui.allocate_space(space);
 
@@ -28,7 +30,7 @@ pub fn show(
                         let mut take_bios = || {
                             config.bios.take_bios(ctx).or_else(|| {
                                 config.show_bios_menu();
-                                ctx.error("No BIOS", "A BIOS must be loaded to start the emulator");
+                                ctx.errors.add("No BIOS", "A BIOS must be loaded to start the emulator");
                                 None
                             })
                         };

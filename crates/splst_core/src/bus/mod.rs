@@ -31,7 +31,7 @@ pub struct Bus {
     pub(super) bios: Bios,
     pub(super) schedule: Schedule,
     pub(super) ram: Ram,
-    dma: Dma,
+    pub(super) dma: Dma,
     pub(super) gpu: Gpu,
     pub(super) cdrom: CdRom,
     pub(super) timers: Timers,
@@ -396,7 +396,7 @@ impl fmt::Display for AddrUnitWidth {
 }
 
 /// Addressable unit.
-pub trait AddrUnit: Into<u32> + From<u8> + Copy {
+pub trait AddrUnit: Into<u32> + From<u8> + Copy + fmt::Display + fmt::LowerHex {
     /// The width of the addressable unit.
     const WIDTH: AddrUnitWidth;
 

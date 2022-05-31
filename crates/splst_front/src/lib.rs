@@ -93,11 +93,7 @@ pub fn run() {
                 };
 
                 match stage {
-                    Stage::Running {
-                        ref mut app_menu,
-                        mode,
-                        ..
-                    } => match mode {
+                    Stage::Running { mode, .. } => match mode {
                         RunMode::Emulation => {
                             if renderer.borrow().has_pending_frame() {
                                 redraw();
@@ -105,7 +101,6 @@ pub fn run() {
                         }
                         RunMode::Debug => {
                             if dt >= frame_time || renderer.borrow().has_pending_frame() {
-                                app_menu.draw_tick(dt);
                                 redraw();
                             }
                         }
@@ -227,8 +222,7 @@ pub fn run() {
                             }
                         });
                         if let Err(err) = res {
-                            app_menu.close_apps();
-                            error!("Failed to render GUI: {}", err);
+                            error!("failed to render gui: {err}");
                         }
                     });
                 }
@@ -244,7 +238,7 @@ pub fn run() {
                             );
                         });
                         if let Err(err) = res {
-                            error!("Failed to render GUI: {}", err);
+                            error!("failed to render gui: {err}");
                         }
                     });
 
@@ -280,7 +274,7 @@ pub fn run() {
                     ..
                 } => {
                     match mode {
-                        RunMode::Debug => app_menu.update_tick(last_update.elapsed(), system),
+                        RunMode::Debug => app_menu.run_debugger(last_update.elapsed(), system),
                         RunMode::Emulation => {
                             let run_time = Duration::from_millis(1);
                             let before = Instant::now();

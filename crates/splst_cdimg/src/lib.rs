@@ -7,7 +7,7 @@ pub mod cd;
 
 use thiserror::Error;
 
-use std::io;
+use std::{fmt, io};
 use std::path::Path;
 
 pub use cd::CdImage;
@@ -68,10 +68,11 @@ impl TrackMode {
     }
 
     pub fn track_format(self) -> TrackFormat {
+        use TrackMode::*;
         match self {
-            TrackMode::Audio => TrackFormat::Audio,
-            TrackMode::Mode1 | TrackMode::Mode1Raw => TrackFormat::Mode1,
-            TrackMode::Mode2 | TrackMode::Mode2Raw => TrackFormat::Mode2Xa,
+            Audio => TrackFormat::Audio,
+            Mode1 | Mode1Raw => TrackFormat::Mode1,
+            Mode2 | Mode2Raw => TrackFormat::Mode2Xa,
         }
     }
 }
@@ -81,6 +82,16 @@ pub enum TrackFormat {
     Audio,
     Mode1,
     Mode2Xa,
+}
+
+impl fmt::Display for TrackFormat {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TrackFormat::Audio => f.write_str("audio"),
+            TrackFormat::Mode1 => f.write_str("mode 1"),
+            TrackFormat::Mode2Xa => f.write_str("mode 2 xa"),
+        }
+    }
 }
 
 pub fn open_cd(path: &Path) -> Result<CdImage, Error> {

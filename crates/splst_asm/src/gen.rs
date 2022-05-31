@@ -40,15 +40,15 @@ impl InsBuilder {
     }
 
     fn rd(self, val: Register) -> Self {
-        Self(self.0.set_bit_range(11, 15, val.0.into()))
+        Self(self.0.set_bit_range(11, 15, val.index().into()))
     }
 
     fn rt(self, val: Register) -> Self {
-        Self(self.0.set_bit_range(16, 20, val.0.into()))
+        Self(self.0.set_bit_range(16, 20, val.index().into()))
     }
 
     fn rs(self, val: Register) -> Self {
-        Self(self.0.set_bit_range(21, 25, val.0.into()))
+        Self(self.0.set_bit_range(21, 25, val.index().into()))
     }
 
     fn bgez(self, val: bool) -> Self {
@@ -337,15 +337,15 @@ impl<'a> CodeGen<'a> {
             }
             InsTy::Nop => {
                 self.gen_ins(InsBuilder::special(0x0)
-                    .rd(Register(0))
-                    .rt(Register(0))
+                    .rd(Register::ZERO)
+                    .rt(Register::ZERO)
                     .shift(0));
             }
             InsTy::Move(rd, rs) => {
                 self.gen_ins(InsBuilder::special(0x21)
                     .rd(rd)
                     .rs(rs)
-                    .rt(Register(0)));
+                    .rt(Register::ZERO));
             }
             InsTy::Li(reg, val) => {
                 let (hi, lo) = (val.bit_range(16, 31), val.bit_range(0, 15));
@@ -360,7 +360,7 @@ impl<'a> CodeGen<'a> {
                 } else {
                     self.gen_ins(InsBuilder::op(0xd)
                         .rt(reg)
-                        .rs(Register(0))
+                        .rs(Register::ZERO)
                         .imm(lo));
                 }
             }
@@ -373,22 +373,22 @@ impl<'a> CodeGen<'a> {
             InsTy::B(addr) => {
                 let off = self.branch_offset(ins.line, &addr)?;
                 self.gen_ins(InsBuilder::op(0x4)
-                    .rs(Register(0))
-                    .rt(Register(0))
+                    .rs(Register::ZERO)
+                    .rt(Register::ZERO)
                     .imm(off as u32));
             }
             InsTy::Beqz(reg, addr) => {
                 let off = self.branch_offset(ins.line, &addr)?;
                 self.gen_ins(InsBuilder::op(0x4)
                     .rs(reg)
-                    .rt(Register(0))
+                    .rt(Register::ZERO)
                     .imm(off as u32));
             }
             InsTy::Bnez(reg, addr) => {
                 let off = self.branch_offset(ins.line, &addr)?;
                 self.gen_ins(InsBuilder::op(0x5)
                     .rs(reg)
-                    .rt(Register(0))
+                    .rt(Register::ZERO)
                     .imm(off as u32));
             }
             InsTy::Label(_) => (),

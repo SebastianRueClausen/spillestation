@@ -5,6 +5,7 @@
     binary_heap_retain,
     option_result_contains,
     duration_constants,
+    array_zip,
 )]
 
 #[macro_use]
@@ -25,14 +26,16 @@ pub mod gpu;
 pub mod cpu;
 pub mod time;
 pub mod debug;
+pub mod dump;
 
 use splst_util::Exe;
 use io_port::pad;
 use schedule::Schedule;
 use cpu::irq::IrqState;
 
+pub use cdrom::CdRom;
 pub use time::{SysTime, Timestamp};
-pub use bus::Bus;
+pub use bus::{dma::Dma, Bus};
 pub use timer::Timers;
 pub use gpu::Gpu;
 pub use cpu::Cpu;
@@ -134,8 +137,12 @@ impl System {
     pub fn bus(&self) -> &Bus {
         &self.cpu.bus
     }
+    
+    pub fn dma(&self) -> &Dma {
+        &self.cpu.bus.dma
+    }
 
-    pub fn irq_state(&mut self) -> &IrqState {
+    pub fn irq_state(&self) -> &IrqState {
         &self.cpu.bus.irq_state
     }
 
@@ -153,6 +160,10 @@ impl System {
 
     pub fn io_port(&self) -> &IoPort {
         &self.cpu.bus.io_port
+    }
+
+    pub fn cdrom(&self) -> &CdRom {
+        &self.cpu.bus.cdrom
     }
 }
 

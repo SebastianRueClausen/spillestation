@@ -12,7 +12,7 @@ use splst_util::{Bcd, Msf};
 use crate::bus::{dma, BusMap, AddrUnit};
 use crate::cpu::Irq;
 use crate::schedule::{Event, Schedule};
-use crate::SysTime;
+use crate::{dump, dump::Dumper, SysTime};
 use crate::fifo::Fifo;
 
 use xa_buffer::XaBuffer;
@@ -28,9 +28,9 @@ pub struct CdRom {
     /// The index register. This decides what happens when the CPU writes to and
     /// loads from the CDROM.
     index: u8,
-    /// Which ['Interrupt']s are enabled.
+    /// Which [`Interrupt`]s are enabled.
     irq_mask: u8,
-    /// Which ['Interrupt']s are active.
+    /// Which [`Interrupt`]s are active.
     irq_flags: u8,
     /// The CDROM may or may not have a command waiting to be executed.
     cmd: Option<u8>,
@@ -101,7 +101,7 @@ impl CdRom {
             1 => match self.index {
                 0 => {
                     if self.cmd.is_some() {
-                        warn!("CD-ROM beginning command while command is pending");
+                        warn!("cd-rom beginning command while command is pending");
                     }
                     self.cmd = Some(val as u8);
                 }
@@ -164,7 +164,7 @@ impl CdRom {
         T::from_u32(val)
     }
 
-    /// 'load' without side effects.
+    /// `load` without side effects.
     pub fn peek<T: AddrUnit>(&self, addr: u32) -> T {
         let val = match addr {
             0 => self.status_reg(),
@@ -474,6 +474,30 @@ impl CdRom {
             }
         }
     }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "drive state", "{}", self.state);
+        dump!(d, "position", "{}", self.position);
+
+        let pending = self.pending_seek
+            .map(|msf| msf.to_string())
+            .unwrap_or_else(|| "none".to_string());
+
+        dump!(d, "pending seek", "{pending}");
+
+        // TODO: Mode register.
+       
+        dump!(d, "sector msf", "{}", self.sector.abs_msf);
+        dump!(d, "sector track msf", "{}", &self.sector.track_msf);
+
+        dump!(d, "sector format", "{}", self.sector.format);
+        dump!(d, "sector track", "{}", self.sector.track);
+        dump!(d, "sector index", "{}", self.sector.index);
+
+        dump!(d, "audio frequency", "{}", self.audio_freq);
+        dump!(d, "audio index", "{}", self.audio_index);
+        dump!(d, "audio phase", "{}", self.audio_phase);
+    }
 }
 
 /// Implementation of asynchronous responses for commands.
@@ -523,17 +547,17 @@ pub struct CdRomCmd(u8);
 impl fmt::Display for CdRomCmd {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.0 {
-            0x01 => write!(f, "status"),
-            0x02 => write!(f, "set_loc"),
-            0x06 => write!(f, "read_n"),
-            0x09 => write!(f, "pause"),
-            0x0a => write!(f, "init"),
-            0x0e => write!(f, "set_mode"),
-            0x15 => write!(f, "seek_l"),
-            0x19 => write!(f, "test"),
-            0x1a => write!(f, "get_id"),
-            0x1e => write!(f, "readtoc"),
-            cmd => todo!("CDROM Command {:08x}", cmd),
+            0x01 => f.write_str("status"),
+            0x02 => f.write_str("set_loc"),
+            0x06 => f.write_str("read_n"),
+            0x09 => f.write_str("pause"),
+            0x0a => f.write_str("init"),
+            0x0e => f.write_str("set_mode"),
+            0x15 => f.write_str("seek_l"),
+            0x19 => f.write_str("test"),
+            0x1a => f.write_str("get_id"),
+            0x1e => f.write_str("readtoc"),
+            cmd => todo!("cdrom command {:08x}", cmd),
         }
     }
 }
@@ -555,6 +579,15 @@ enum SeekType {
     Audio,
 }
 
+impl fmt::Display for SeekType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            SeekType::Data => f.write_str("data"),
+            SeekType::Audio => f.write_str("audio"),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum AfterSeek {
     Pause,
@@ -564,12 +597,33 @@ enum AfterSeek {
     Play,
 }
 
+impl fmt::Display for AfterSeek {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AfterSeek::Pause => f.write_str("pause"),
+            AfterSeek::Read => f.write_str("read"),
+            AfterSeek::Play => f.write_str("play"),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum AudioFreq {
     Da1x = 7,
     Da2x = 14,
     Xa18k9 = 3,
     Xa37k8 = 6,
+}
+
+impl fmt::Display for AudioFreq {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AudioFreq::Da1x => f.write_str("da1x"),
+            AudioFreq::Da2x => f.write_str("da2x"),
+            AudioFreq::Xa18k9 => f.write_str("xa18k9"),
+            AudioFreq::Xa37k8 => f.write_str("xa37k8"),
+        }
+    }
 }
 
 /// Represents the state of the CDROM drive.
@@ -585,6 +639,20 @@ enum DriveState {
     Reading,
     /// The drive is reading the table of content.
     ReadingToc,
+}
+
+impl fmt::Display for DriveState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DriveState::Idle => f.write_str("idle"),
+            DriveState::Paused => f.write_str("paused"),
+            DriveState::Reading => f.write_str("reading"),
+            DriveState::ReadingToc => f.write_str("reading table of content"),
+            DriveState::Seeking(target, kind, after) => {
+                write!(f, "seeking {kind} to {target}, {after} after")
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

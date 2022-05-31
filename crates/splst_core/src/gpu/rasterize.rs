@@ -34,7 +34,7 @@ impl Gpu {
         let u = (coord.u & tex_param_cache.tex_win_u) as i32;
         let v = (coord.v & tex_param_cache.tex_win_v) as i32;
        
-        match self.status.texture_depth() {
+        match self.status.texel_depth() {
             TexelDepth::B4 => {
                 let val = self.vram.load_16(
                     self.status.tex_page_x() + u / 4,
@@ -209,8 +209,8 @@ impl Gpu {
             self.tex_win_y,
         );
         
-        if let TexelDepth::B4 | TexelDepth::B8 = self.status.texture_depth() {
-            self.clut_cache.maybe_fetch(clut, self.status.texture_depth(), &self.vram);
+        if let TexelDepth::B4 | TexelDepth::B8 = self.status.texel_depth() {
+            self.clut_cache.maybe_fetch(clut, self.status.texel_depth(), &self.vram);
         }
 
         // The determinant of a 3x3 matrix of where arranged as:
@@ -801,8 +801,8 @@ impl Gpu {
             self.tex_win_y,
         );
         
-        if let TexelDepth::B4 | TexelDepth::B8 = self.status.texture_depth() {
-            self.clut_cache.maybe_fetch(clut, self.status.texture_depth(), &self.vram);
+        if let TexelDepth::B4 | TexelDepth::B8 = self.status.texel_depth() {
+            self.clut_cache.maybe_fetch(clut, self.status.texel_depth(), &self.vram);
         }
 
         // Calculate the uv delta for each step in x and y direction. Nocash specifies that the

@@ -9,6 +9,7 @@ use crate::schedule::{Schedule, Event, EventId};
 use crate::cpu::Irq;
 use crate::SysTime;
 use crate::bus::{self, AddrUnit};
+use crate::{dump, dump::Dumper};
 
 use memcard::MemCard;
 
@@ -22,9 +23,9 @@ pub struct IoPort {
     /// The device currently active. May be either a controller or memory card.
     active_device: Option<Device>,
     /// Control register.
-    ctrl: CtrlReg,
+    control: ControlReg,
     /// Status register.
-    stat: StatReg,
+    status: StatusReg,
     /// Mode register.
     mode: ModeReg,
     /// # Baudrate
@@ -56,13 +57,13 @@ pub struct IoPort {
 }
 
 impl IoPort {
-    pub fn new(controllers: Rc<RefCell<pad::Controllers>>) -> Self {
+    pub(crate) fn new(controllers: Rc<RefCell<pad::Controllers>>) -> Self {
         Self {
             state: State::Idle,
             active_device: None,
 
-            ctrl: CtrlReg(0),
-            stat: StatReg(0),
+            control: ControlReg(0),
+            status: StatusReg(0),
             mode: ModeReg(0),
             baud: 0,
 
@@ -75,11 +76,11 @@ impl IoPort {
         }
     }
 
-    pub fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: T) {
+    pub(crate) fn store<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32, val: T) {
         match addr {
             0 => {
                 if self.tx_fifo.is_some() {
-                    warn!("Write to TX FIFO while full");
+                    warn!("write to TX FIFO while full");
                 }
 
                 self.tx_fifo = Some(val.as_u8());
@@ -90,9 +91,9 @@ impl IoPort {
             }
             8 => self.mode = ModeReg(val.as_u16()),
             10 => {
-                self.ctrl = CtrlReg(val.as_u16());
+                self.control = ControlReg(val.as_u16());
 
-                if self.ctrl.reset() {
+                if self.control.reset() {
                     trace!("io port control reset");
 
                     if let State::InTrans { event, .. } = self.state {
@@ -102,24 +103,24 @@ impl IoPort {
 
                     self.reset_device_states();
 
-                    self.stat = StatReg(0);
+                    self.status = StatusReg(0);
                     self.mode = ModeReg(0);
-                    self.ctrl = CtrlReg(0);
+                    self.control = ControlReg(0);
 
                     self.tx_fifo = None;
                     self.rx_fifo = None;
                 }
 
-                if self.ctrl.ack() {
-                    self.stat.0 = self.stat.0.set_bit(0, false);
+                if self.control.ack() {
+                    self.status.0 = self.status.0.set_bit(0, false);
                 }
 
-                if !self.ctrl.select() {
+                if !self.control.select() {
                     self.reset_device_states();
                     self.active_device = None;
                 }
 
-                if !self.ctrl.select() || !self.ctrl.tx_enabled() {
+                if !self.control.select() || !self.control.tx_enabled() {
                     if let State::InTrans { event, .. } = self.state {
                         schedule.unschedule(event);
                         self.state = State::Idle;
@@ -135,7 +136,7 @@ impl IoPort {
         }
     }
 
-    pub fn load<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32) -> T {
+    pub(crate) fn load<T: AddrUnit>(&mut self, schedule: &mut Schedule, addr: u32) -> T {
         let val: u32 = match addr {
             0 => {
                 if let State::InTrans { event, .. } = self.state {
@@ -154,25 +155,25 @@ impl IoPort {
                     schedule.trigger_early(event);
                 }
 
-                let val: u32 = self.stat_reg().0.into();
+                let val: u32 = self.status_reg().0.into();
 
                 // TODO: Emulate BAUD timer.
 
                 // Set acknownledge input false.
-                self.stat.0 = self.stat.0.set_bit(4, false);
+                self.status.0 = self.status.0.set_bit(4, false);
 
                 val
             }
-            10 => self.ctrl.0.into(),
+            10 => self.control.0.into(),
             14 => self.baud.into(),
-            _ => todo!("IoPort load at offset {addr}"),
+            _ => todo!("io-port load at offset {addr}"),
         };
 
         T::from_u32(val)
     }
 
     /// The same as `load` but without side effects.
-    pub fn peek<T: AddrUnit>(&self, addr: u32) -> T {
+    pub(crate) fn peek<T: AddrUnit>(&self, addr: u32) -> T {
         let val: u32 = match bus::align_as::<u32>(addr) {
             0 => {
                 let val: u32 = self.rx_fifo
@@ -180,8 +181,8 @@ impl IoPort {
                     .into();
                 val | (val << 8) | (val << 16) | (val << 24)
             }
-            4 => self.stat_reg().0.into(),
-            10 => self.ctrl.0.into(),
+            4 => self.status_reg().0.into(),
+            10 => self.control.0.into(),
             14 => self.baud.into(),
             _ => todo!("IoPort load at offset {addr}"),
         };
@@ -189,49 +190,33 @@ impl IoPort {
         T::from_u32_aligned(val, addr)
     }
 
-    pub fn stat_reg(&self) -> StatReg {
-        let status = self.stat.0
+    pub fn status_reg(&self) -> StatusReg {
+        let status = self.status.0
             .set_bit(0, self.tx_fifo.is_none())
             .set_bit(1, self.rx_fifo.is_none())
             .set_bit(2, {
                 self.tx_fifo.is_none() && !self.state.in_transfer()
             });
 
-        StatReg(status)
+        StatusReg(status)
+    }
+    
+    pub fn control_reg(&self) -> ControlReg {
+        self.control
+    }
+    
+    pub fn mode_reg(&self) -> ModeReg {
+        self.mode
     }
     
     pub fn pad_at(&self, slot: IoSlot) -> pad::Connection {
         self.controllers.borrow()[slot].clone()
     }
 
-    pub fn ctrl_reg(&self) -> CtrlReg {
-        self.ctrl
-    }
-
-    pub fn mode_reg(&self) -> ModeReg {
-        self.mode
-    }
-
-    pub fn baud(&self) -> u16 {
-        self.baud
-    }
-
-    pub fn in_transfer(&self) -> bool {
-        self.state.in_transfer()
-    }
-
-    pub fn waiting_for_ack(&self) -> bool {
-        self.state.waiting_for_ack()
-    }
-
-    pub fn active_device(&self) -> Option<Device> {
-        self.active_device
-    }
-
     fn can_begin_transfer(&self) -> bool {
         let can_begin = self.tx_fifo.is_some()
-            && self.ctrl.select()
-            && self.ctrl.tx_enabled();
+            && self.control.select()
+            && self.control.tx_enabled();
         can_begin
     }
     
@@ -245,14 +230,14 @@ impl IoPort {
     /// Calculate the transfer time for a single byte.
     fn transfer_interval(&self) -> SysTime {
         let interval = self.baud as u64
-            * self.mode.baud_reload_factor()
-            * self.mode.char_width();
+            * self.mode.baud_reload_factor() as u64
+            * self.mode.char_width() as u64;
         SysTime::from_cpu_cycles(interval)
     }
 
     fn begin_transfer(&mut self, schedule: &mut Schedule) {
         // Set rx_enabled.
-        self.ctrl.0.set_bit(2, true);
+        self.control.0.set_bit(2, true);
 
         self.tx_val = self.tx_fifo
             .take()
@@ -268,16 +253,16 @@ impl IoPort {
         };
     }
 
-    pub fn transfer(&mut self, schedule: &mut Schedule) {
+    fn transfer(&mut self, schedule: &mut Schedule) {
         match self.state {
             State::InTrans { ref mut event, ref mut waiting_for_ack } if !*waiting_for_ack => {
-                let index = self.ctrl.io_slot() as usize;
+                let index = self.control.io_slot() as usize;
 
-                let ctrl = &mut self.controllers.borrow_mut()[self.ctrl.io_slot()];
+                let ctrl = &mut self.controllers.borrow_mut()[self.control.io_slot()];
                 let memcard = &mut self.memcards[index];
 
                 // Set rx_enabled.
-                self.ctrl.0.set_bit(2, true);
+                self.control.0.set_bit(2, true);
 
                 let (val, ack) = match self.active_device {
                     None => {
@@ -355,13 +340,33 @@ impl IoPort {
     /// Acknowledge input.
     fn ack_input(&mut self, schedule: &mut Schedule) {
         // Set acknowledge input flag.
-        self.stat.0 = self.stat.0.set_bit(7, true);
+        self.status.0 = self.status.0.set_bit(7, true);
 
-        if self.ctrl.ack_irq_enabled() {
+        if self.control.ack_irq_enabled() {
             // Set interrupt flag.
-            self.stat.0 = self.stat.0.set_bit(9, true);
+            self.status.0 = self.status.0.set_bit(9, true);
             schedule.trigger(Event::Irq(Irq::CtrlAndMemCard));
         }
+    }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        let transfer = if self.state.waiting_for_ack() {
+            "waiting for acknowledgement"
+        } else {
+            if self.state.in_transfer() {
+                "active"
+            } else {
+                "inactive"
+            }
+        };
+
+        let active = self.active_device
+            .map(|dev| dev.to_string())
+            .unwrap_or_else(|| "none".to_string());
+
+        dump!(d, "baud rate", "{}", self.baud);
+        dump!(d, "active device", "{active}"); 
+        dump!(d, "transfer", "{transfer}"); 
     }
 }
 
@@ -384,57 +389,65 @@ impl Default for IoSlot {
 }
 
 #[derive(Clone, Copy)]
-pub struct StatReg(u32);
+pub struct StatusReg(u32);
 
-impl StatReg {
-    pub fn tx_ready(self) -> bool {
+impl StatusReg {
+    fn tx_ready(self) -> bool {
         self.0.bit(0)
     }
 
-    pub fn rx_fifo_not_empty(self) -> bool {
+    fn rx_fifo_not_empty(self) -> bool {
         self.0.bit(1)
     }
 
-    pub fn tx_done(self) -> bool {
+    fn tx_done(self) -> bool {
         self.0.bit(2)
     }
 
-    pub fn ack_input_lvl(self) -> bool {
+    fn ack_input_low(self) -> bool {
         self.0.bit(7)
     }
 
-    pub fn irq(self) -> bool {
+    fn irq(self) -> bool {
         self.0.bit(9)
+    }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "tx ready", "{}", self.tx_ready());
+        dump!(d, "rx fifo not empty", "{}", self.rx_fifo_not_empty());
+        dump!(d, "rx done", "{}", self.tx_done());
+        dump!(d, "acknowledge input low", "{}", self.ack_input_low());
+        dump!(d, "irq", "{}", self.irq());
     }
 }
 
 #[derive(Clone, Copy)]
-pub struct CtrlReg(u16);
+pub struct ControlReg(u16);
 
-impl CtrlReg {
-    pub fn tx_enabled(self) -> bool {
+impl ControlReg {
+    fn tx_enabled(self) -> bool {
         self.0.bit(0)
     }
 
-    pub fn select(self) -> bool {
+    fn select(self) -> bool {
         self.0.bit(1)
     }
 
-    pub fn rx_enabled(self) -> bool {
+    fn rx_enabled(self) -> bool {
         self.0.bit(2)
     }
 
-    pub fn ack(self) -> bool {
+    fn ack(self) -> bool {
         self.0.bit(4)
     }
 
-    pub fn reset(self) -> bool {
+    fn reset(self) -> bool {
         self.0.bit(6)
     }
 
     /// RX Interrupt mode. This tells when it should IRQ, in relation to how many bytes the RX FIFO
     /// contains. It's either 1, 2, 4 or 8.
-    pub fn rx_irq_mode(self) -> u32 {
+    fn rx_irq_mode(self) -> u32 {
         match self.0.bit_range(8, 9) {
             0 => 1,
             1 => 2,
@@ -444,24 +457,36 @@ impl CtrlReg {
         }
     }
 
-    pub fn tx_irq_enabled(self) -> bool {
+    fn tx_irq_enabled(self) -> bool {
         self.0.bit(10)
     }
 
-    pub fn rx_irq_enabled(self) -> bool {
+    fn rx_irq_enabled(self) -> bool {
         self.0.bit(11)
     }
 
-    pub fn ack_irq_enabled(self) -> bool {
+    fn ack_irq_enabled(self) -> bool {
         self.0.bit(12)
     }
 
     /// The desired I/O slot to transfer with.
-    pub fn io_slot(self) -> IoSlot {
+    fn io_slot(self) -> IoSlot {
         match self.0.bit(13) {
             false => IoSlot::Slot1,
             true => IoSlot::Slot2,
         }
+    }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "tx enabled", "{}", self.tx_enabled());
+        dump!(d, "select", "{}", self.select());
+        dump!(d, "rx enabled", "{}", self.rx_enabled());
+        dump!(d, "acknowledge", "{}", self.ack());
+        dump!(d, "reset", "{}", self.reset());
+        dump!(d, "rx irq mode", "{}", self.rx_irq_mode());
+        dump!(d, "rx irq enabled", "{}", self.rx_irq_enabled());
+        dump!(d, "acknowledge irq enabled", "{}", self.ack_irq_enabled());
+        dump!(d, "slot", "{}", self.io_slot());
     }
 }
 
@@ -470,7 +495,7 @@ pub struct ModeReg(u16);
 
 impl ModeReg {
     /// The factor that the baud reload value get's multiplied by.
-    pub fn baud_reload_factor(self) -> u64 {
+    fn baud_reload_factor(self) -> u16 {
         match self.0.bit_range(0, 1) {
             0 | 1 => 1,
             2 => 16,
@@ -480,8 +505,13 @@ impl ModeReg {
     }
 
     /// The number of bits in each transfer.
-    pub fn char_width(self) -> u64 {
-        self.0.bit_range(2, 3) as u64 + 5
+    fn char_width(self) -> u16 {
+        self.0.bit_range(2, 3) as u16 + 5
+    }
+
+    pub fn dump(&self, d: &mut impl Dumper) {
+        dump!(d, "baud reload factor", "{}", self.baud_reload_factor());
+        dump!(d, "character width", "{}", self.char_width());
     }
 }
 
@@ -505,7 +535,7 @@ impl State {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
-pub enum Device {
+enum Device {
     Controller,
     MemCard,
 }
