@@ -1,8 +1,7 @@
-use crate::{gui::GuiCtx, RunMode};
+use crate::{gui::Popups, RunMode};
 use splst_core::bus::AddrUnit;
 use splst_core::cpu::{Cpu, Irq, Opcode};
 use splst_core::dump::Dumper;
-use splst_core::io_port::{self, pad};
 use splst_core::{debug, StopReason, System};
 
 use std::time::Duration;
@@ -264,7 +263,7 @@ impl Default for BreakPointMenu {
 }
 
 impl BreakPointMenu {
-    fn show(&mut self, dbg: &mut Debugger, ctx: &mut GuiCtx, ui: &mut egui::Ui) {
+    fn show(&mut self, dbg: &mut Debugger, popups: &mut Popups, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_source("breakpoint_kind")
                 .selected_text(self.kind.to_string())
@@ -278,7 +277,7 @@ impl BreakPointMenu {
                 });
             match self.kind {
                 BreakPointKind::Instruction | BreakPointKind::Load | BreakPointKind::Store => {
-                    if let Some(addr) = show_addr_input(&mut self.addr_input, ctx, ui) {
+                    if let Some(addr) = show_addr_input(&mut self.addr_input, popups, ui) {
                         let breakpoint = BreakPoint {
                             name: mem::take(&mut self.addr_input),
                             on: addr,
@@ -327,9 +326,9 @@ impl BreakPointMenu {
         }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("breakpoint_grid").show(ui, |ui| {
-                ui.label("Address");
-                ui.label("Kind");
+            egui::Grid::new("breakpoint_grid").striped(true).show(ui, |ui| {
+                ui.strong("Address");
+                ui.strong("Kind");
                 ui.end_row();
 
                 show_breakpoints(&mut dbg.instructions, "Instruction", ui);
@@ -343,14 +342,14 @@ impl BreakPointMenu {
 /// Show text input box for addresses.
 ///
 /// Returns `None` if either no address was entered or parsing the address failed, in which case it
-/// will show an error via `ctx`.
-fn show_addr_input(input: &mut String, ctx: &mut GuiCtx, ui: &mut egui::Ui) -> Option<u32> {
-    ui.text_edit_singleline(input);
+/// will show an error via `popups`.
+fn show_addr_input(input: &mut String, popups: &mut Popups, ui: &mut egui::Ui) -> Option<u32> {
+    ui.add_sized([100.0, 15.0], egui::TextEdit::singleline(input));
     if ui.button("Add").clicked() {
         if let Ok(addr) = u32::from_str_radix(input, 16) {
             Some(addr)
         } else {
-            ctx.errors.add(
+            popups.add(
                 "Invalid address",
                 format!("`{input}` is not a valid address"),
             );
@@ -379,45 +378,35 @@ impl Default for WatchPointMenu {
 }
 
 impl WatchPointMenu {
-    fn show(&mut self, system: &System, dbg: &mut Debugger, ctx: &mut GuiCtx, ui: &mut egui::Ui) {
+    fn show(&mut self, system: &System, dbg: &mut Debugger, popups: &mut Popups, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             egui::ComboBox::from_id_source("kind")
                 .selected_text(self.value_kind.name())
                 .show_ui(ui, |ui| {
-                    use ValueKind::*;
-                    if ui
-                        .selectable_label(self.value_kind.is_byte(), "Byte")
-                        .clicked()
-                    {
-                        self.value_kind = Byte(self.int_display_mode);
-                    }
-                    if ui
-                        .selectable_label(self.value_kind.is_half_word(), "Half Word")
-                        .clicked()
-                    {
-                        self.value_kind = HalfWord(self.int_display_mode);
-                    }
-                    if ui
-                        .selectable_label(self.value_kind.is_word(), "Word")
-                        .clicked()
-                    {
-                        self.value_kind = Word(self.int_display_mode);
-                    }
-                    if ui
-                        .selectable_label(self.value_kind.is_ptr(), "Pointer")
-                        .clicked()
-                    {
-                        self.value_kind = Ptr;
-                    }
+                    ui.selectable_label(self.value_kind.is_byte(), "Byte").clicked().then(||
+                        self.value_kind = ValueKind::Byte(self.int_display_mode)
+                    );
+
+                    ui.selectable_label(self.value_kind.is_half_word(), "Byte").clicked().then(||
+                        self.value_kind = ValueKind::HalfWord(self.int_display_mode)
+                    );
+
+                    ui.selectable_label(self.value_kind.is_word(), "Byte").clicked().then(||
+                        self.value_kind = ValueKind::Word(self.int_display_mode)
+                    );
+
+                    ui.selectable_label(self.value_kind.is_ptr(), "Byte").clicked().then(||
+                        self.value_kind = ValueKind::Ptr
+                    );
                 });
 
             if self.value_kind.is_integer() {
                 int_display_mode_selector(&mut self.int_display_mode, ui);
             }
 
-            if let Some(addr) = show_addr_input(&mut self.addr_input, ctx, ui) {
+            if let Some(addr) = show_addr_input(&mut self.addr_input, popups, ui) {
                 if !self.value_kind.addr_aligned(addr) {
-                    ctx.errors.add(
+                    popups.add(
                         "Invalid Address",
                         format!(
                             "Address {} is incorrectly aligned, must have an alignment of {}",
@@ -437,7 +426,11 @@ impl WatchPointMenu {
         ui.separator();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("watchpoints").show(ui, |ui| {
+            egui::Grid::new("watchpoints").striped(true).show(ui, |ui| {
+                ui.strong("Address");
+                ui.strong("Kind");
+                ui.end_row();
+
                 dbg.watch.retain_mut(|point| {
                     use ValueKind::*;
 
@@ -449,7 +442,7 @@ impl WatchPointMenu {
                     ) -> String {
                         use IntDisplayMode::*;
                         match mode {
-                            Signed | Unsigned => format!("{val}"),
+                            Signed | Unsigned => val.to_string(),
                             Hex => format!("{val:0x}"),
                         }
                     }
@@ -496,7 +489,7 @@ impl WatchPointMenu {
 
 fn int_display_mode_selector(mode: &mut IntDisplayMode, ui: &mut egui::Ui) {
     egui::ComboBox::from_id_source("int_display_mode")
-        .selected_text(format!("{mode}"))
+        .selected_text(mode.to_string())
         .show_ui(ui, |ui| {
             use IntDisplayMode::*;
 
@@ -554,7 +547,17 @@ struct MemoryMenu {
 impl MemoryMenu {
     const ROW_COUNT: usize = 8;
 
-    fn show(&mut self, ctx: &mut GuiCtx, system: &System, ui: &mut egui::Ui) {
+    /*
+    fn highlight(addr: u32) -> Self {
+        Self {
+            highlight: Some(addr),
+            addr,
+            ..Default::default()
+        }
+    }
+    */
+
+    fn show(&mut self, errors: &mut Popups, system: &System, ui: &mut egui::Ui) {
         use MemoryDisplayMode::*;
 
         ui.horizontal(|ui| {
@@ -566,9 +569,7 @@ impl MemoryMenu {
         ui.separator();
 
         ui.horizontal(|ui| {
-            ui.add_sized([120.0, 20.0], egui::TextEdit::singleline(&mut self.goto));
-
-            let find = ui.button("Find").clicked();
+            let addr = show_addr_input(&mut self.goto, errors, ui);
 
             let bytes_per_row = match self.display_mode {
                 Value | Instruction => 4,
@@ -583,14 +584,8 @@ impl MemoryMenu {
                 self.addr = self.addr.saturating_add(bytes_per_row);
             }
 
-            if find {
-                match u32::from_str_radix(&self.goto, 16) {
-                    Ok(addr) => self.addr = addr,
-                    Err(_) => ctx.errors.add(
-                        "Invalid address",
-                        format!("`{}` is not a valid address", &self.goto),
-                    ),
-                }
+            if let Some(addr) = addr {
+                self.addr = addr;
             }
         });
 
@@ -770,8 +765,10 @@ impl VramMenu {
             if ui.button("Dump VRAM").clicked() {
                 let raw = system.gpu().vram().to_rgba();
                 let image = egui::ColorImage::from_rgba_unmultiplied([1024, 512], &raw);
+
                 self.image = Some(ui.ctx().load_texture("vram", image));
             }
+
             if self.image.is_some() {
                 ui.add(egui::Slider::new(&mut self.image_scale, 0.1..=1.0).text("Scale"));
             }
@@ -870,11 +867,11 @@ fn show_io_port(system: &System, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         let io_port = system.io_port();
 
-        ui.group(|ui| {
-            egui::Grid::new("grid").striped(true).show(ui, |ui| {
-                io_port.dump(&mut DumpGrid::new(ui));
-            });
+        egui::Grid::new("grid").striped(true).show(ui, |ui| {
+            io_port.dump(&mut DumpGrid::new(ui));
         });
+
+        ui.separator();
 
         egui::CollapsingHeader::new("Status Register").show(ui, |ui| {
             egui::Grid::new("stat_grid").striped(true).show(ui, |ui| {
@@ -893,36 +890,6 @@ fn show_io_port(system: &System, ui: &mut egui::Ui) {
                 io_port.mode_reg().dump(&mut DumpGrid::new(ui));
             })
         });
-
-        fn show_button_state(button_state: pad::ButtonState, ui: &mut egui::Ui) {
-            egui::Grid::new("button_state").striped(true).show(ui, |ui| {
-                for button in pad::Button::ALL.iter() {
-                    ui.strong(button.to_string());
-
-                    if button_state.is_pressed(*button) {
-                        ui.label("✔");
-                    } else {
-                        ui.label(" ");
-                    }
-
-                    ui.end_row();
-                }
-            });
-        }
-
-        use io_port::IoSlot::*;
-
-        if let pad::Connection::Digital(ctrl) = system.io_port().pad_at(Slot1) {
-            egui::CollapsingHeader::new("Joy 1").show(ui, |ui| {
-                show_button_state(ctrl.button_state(), ui);
-            });
-        }
-
-        if let pad::Connection::Digital(ctrl) = system.io_port().pad_at(Slot2) {
-            egui::CollapsingHeader::new("Joy 2").show(ui, |ui| {
-                show_button_state(ctrl.button_state(), ui);
-            });
-        }
     });
 }
 
@@ -1009,6 +976,8 @@ fn show_dma(system: &System, ui: &mut egui::Ui) {
             });
         });
 
+        ui.separator();  
+
         use splst_core::bus::dma::Port;
 
         egui::CollapsingHeader::new("MDEC in").show(ui, |ui| {
@@ -1079,22 +1048,11 @@ fn show_cdrom(system: &System, ui: &mut egui::Ui) {
     });
 }
 
-const STATELESS_MENUS: [(&str, fn(&System, &mut egui::Ui)); 9] = [
-    ("CPU", show_cpu),
-    ("IRQ", show_irq),
-    ("Timers", show_timers),
-    ("I/O port", show_io_port),
-    ("Schedule", show_schedule),
-    ("GPU", show_gpu),
-    ("DMA", show_dma),
-    ("GTE", show_gte),
-    ("CD-ROM", show_cdrom),
-];
-
-#[derive(Default)]
 pub struct DebugMenu {
     pub open: bool,
     debugger: Debugger,
+
+    popups: Popups,
 
     breakpoint: (BreakPointMenu, bool),
     watchpoint: (WatchPointMenu, bool),
@@ -1110,6 +1068,22 @@ pub struct DebugMenu {
     vram: Vec<VramMenu>,
 }
 
+impl Default for DebugMenu {
+    fn default() -> Self {
+        Self {
+            open: false,
+            debugger: Debugger::default(),
+            popups: Popups::new("debug"),
+            breakpoint: (BreakPointMenu::default(), false),
+            watchpoint: (WatchPointMenu::default(), false),
+            executor_open: false,
+            stateless_open: [false; 9],
+            memory: Vec::default(),
+            vram: Vec::default(),
+        }
+    }
+}
+
 impl DebugMenu {
     pub fn toggle_open(&mut self) {
         self.open = !self.open;
@@ -1119,27 +1093,27 @@ impl DebugMenu {
         self.debugger.run(system, dt);
     }
 
-    pub fn show(&mut self, ctx: &mut GuiCtx, system: &mut System, mode: &mut RunMode) {
+    pub fn show(&mut self, ctx: &egui::Context, system: &mut System, mode: &mut RunMode) {
         for br in self.debugger.breaks.drain(..) {
-            ctx.errors
+            self.popups
                 .add(format!("Hit {}", br.name), format!("Broke {}", br.kind));
         }
 
         if let RunMode::Debug = mode {
             if let (menu, open @ true) = &mut self.breakpoint {
                 egui::Window::new("Breakpoints").open(open).show(
-                    &ctx.egui_ctx.clone(),
+                    ctx,
                     |ui| {
-                        menu.show(&mut self.debugger, ctx, ui);
+                        menu.show(&mut self.debugger, &mut self.popups, ui);
                     },
                 );
             }
 
             if let (menu, open @ true) = &mut self.watchpoint {
                 egui::Window::new("Watchpoints").open(open).show(
-                    &ctx.egui_ctx.clone(),
+                    ctx,
                     |ui| {
-                        menu.show(system, &mut self.debugger, ctx, ui);
+                        menu.show(system, &mut self.debugger, &mut self.popups, ui);
                     },
                 );
             }
@@ -1147,9 +1121,7 @@ impl DebugMenu {
             if self.executor_open {
                 egui::Window::new("Executor")
                     .open(&mut self.executor_open)
-                    .show(&ctx.egui_ctx.clone(), |ui| {
-                        show_executor(&mut self.debugger, ui);
-                    });
+                    .show(ctx, |ui| show_executor(&mut self.debugger, ui));
             }
 
             for ((name, show), open) in STATELESS_MENUS
@@ -1159,9 +1131,7 @@ impl DebugMenu {
                 if *open {
                     egui::Window::new(*name)
                         .open(open)
-                        .show(&ctx.egui_ctx.clone(), |ui| {
-                            show(system, ui);
-                        });
+                        .show(ctx, |ui| show(system, ui));
                 }
             }
 
@@ -1172,9 +1142,7 @@ impl DebugMenu {
 
                 egui::Window::new(format!("Memory {i}"))
                     .open(&mut open)
-                    .show(&ctx.egui_ctx.clone(), |ui| {
-                        memory.show(ctx, system, ui);
-                    });
+                    .show(ctx, |ui| memory.show(&mut self.popups, system, ui));
 
                 i += 1;
 
@@ -1188,21 +1156,21 @@ impl DebugMenu {
 
                 egui::Window::new(format!("VRAM {i}"))
                     .open(&mut open)
-                    .show(&ctx.egui_ctx.clone(), |ui| {
-                        vram.show(system, ui);
-                    });
+                    .show(ctx, |ui| vram.show(system, ui));
 
                 i += 1;
 
                 open
             });
+
+            self.popups.show(ctx);
         }
 
         if self.open {
             egui::SidePanel::right("App Menu")
                 .min_width(4.0)
                 .default_width(150.0)
-                .show(&ctx.egui_ctx, |ui| {
+                .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.selectable_value(mode, RunMode::Debug, "Debug");
                         ui.selectable_value(mode, RunMode::Emulation, "Emulation");
@@ -1243,3 +1211,16 @@ impl DebugMenu {
         }
     }
 }
+
+const STATELESS_MENUS: [(&str, fn(&System, &mut egui::Ui)); 9] = [
+    ("CPU", show_cpu),
+    ("IRQ", show_irq),
+    ("Timers", show_timers),
+    ("I/O port", show_io_port),
+    ("Schedule", show_schedule),
+    ("GPU", show_gpu),
+    ("DMA", show_dma),
+    ("GTE", show_gte),
+    ("CD-ROM", show_cdrom),
+];
+

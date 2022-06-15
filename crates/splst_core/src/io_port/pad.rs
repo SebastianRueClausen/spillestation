@@ -1,70 +1,71 @@
 use splst_util::{Bit, BitSet};
 use super::IoSlot;
+use crate::{dump, dump::Dumper};
 
 use serde::{Serialize, Deserialize};
 
 use std::fmt;
-use std::slice::IterMut;
-use std::ops::{Index, IndexMut};
 
-/// Game pad connection.
-#[derive(Clone)]
-pub enum Connection {
-    Unconnected,
+pub enum PadKind {
     Digital(DigitalController),
 }
 
-impl Connection {
-    pub fn reset(&mut self) {
+impl PadKind {
+    pub(super) fn transfer(&mut self, val: u8) -> (u8, bool) {
         match self {
-            Connection::Digital(ctrl) => ctrl.reset_state(),
-            Connection::Unconnected => (),
+            PadKind::Digital(ctrl) => ctrl.transfer(val),
         }
+    }
+
+    pub fn new_digital() -> Self {
+        PadKind::Digital(DigitalController::default())
     }
 
     pub fn set_button(&mut self, button: Button, pressed: bool) {
-        trace!("{button} {}", if pressed { "pressed" } else { "released" });
         match self {
-            Connection::Digital(ctrl) => ctrl.buttons.set_button(button, pressed),
-            Connection::Unconnected => (),
+            PadKind::Digital(pad) => pad.button_state().set_button(button, pressed),
         }
     }
 
-    pub fn unconnected() -> Self {
-        Connection::Unconnected
-    }
+    pub fn dump(&self, d: &mut impl Dumper) {
+        match self {
+            PadKind::Digital(pad) => {
+                for (button, name) in Button::ALL.iter().zip(Button::ALL_NAMES.iter()) {
+                    let pressed = if pad.button_state().is_pressed(*button) {
+                        "✔"
+                    } else {
+                        " "
+                    };
 
-    pub fn digital() -> Self {
-        Connection::Digital(DigitalController::default())
-    }
-}
-
-impl Default for Connection {
-    fn default() -> Self {
-        Connection::Unconnected
+                    dump!(d, *name, "{pressed}");
+                }
+            }
+        }
     }
 }
 
 #[derive(Default)]
-pub struct Controllers(pub(super) [Connection; 2]);
+pub struct GamePads(pub(super) [Option<PadKind>; 2]);
 
-impl Controllers {
-    pub fn iter_mut(&mut self) -> IterMut<Connection> {
+impl GamePads {
+    pub fn get(&self, slot: IoSlot) -> &Option<PadKind> {
+        &self.0[slot as usize]
+    }
+
+    pub fn get_mut(&mut self, slot: IoSlot) -> &mut Option<PadKind> {
+        &mut self.0[slot as usize]
+    }
+    
+    pub fn reset_transfer_state(&mut self) {
+        self.0.iter_mut().flatten().for_each(|c| {
+            match c {
+                PadKind::Digital(pad) => pad.reset_transfer_state(),
+            }
+        });
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Option<PadKind>> {
         self.0.iter_mut()
-    }
-}
-
-impl Index<IoSlot> for Controllers {
-    type Output = Connection;
-
-    fn index(&self, idx: IoSlot) -> &Self::Output {
-        &self.0[idx as usize]
-    }
-}
-
-impl IndexMut<IoSlot> for Controllers {
-    fn index_mut(&mut self, idx: IoSlot) -> &mut Self::Output {
-        &mut self.0[idx as usize]
     }
 }
 
@@ -94,7 +95,7 @@ impl DigitalController {
         self.buttons.clone()
     }
 
-    pub(super) fn reset_state(&mut self) {
+    fn reset_transfer_state(&mut self) {
         self.state = TransferState::Idle;
     }
 
@@ -204,28 +205,30 @@ impl Button {
         Button::Cross,
         Button::Square,
     ];
+
+    pub const ALL_NAMES: [&'static str; Self::COUNT] = [
+        "select",
+        "l3",
+        "r3",
+        "start",
+        "joyup",
+        "joyright",
+        "joydown",
+        "joyleft",
+        "l2",
+        "r2",
+        "l1",
+        "r1",
+        "triangle",
+        "circle",
+        "cross",
+        "square",
+    ];
 }
 
 impl fmt::Display for Button {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(match self {
-            Button::Select => "Select",
-            Button::L3 => "L3",
-            Button::R3 => "R3",
-            Button::Start => "Start",
-            Button::JoyUp => "Up",
-            Button::JoyRight => "Right",
-            Button::JoyDown => "Down",
-            Button::JoyLeft => "Left",
-            Button::L2 => "L2",
-            Button::R2 => "R2",
-            Button::L1 => "L1",
-            Button::R1 => "R1",
-            Button::Triangle => "Triangle",
-            Button::Circle => "Circle",
-            Button::Cross => "Cross",
-            Button::Square => "Square",
-        })
+        f.write_str(Self::ALL_NAMES[*self as usize])
     }
 }
 

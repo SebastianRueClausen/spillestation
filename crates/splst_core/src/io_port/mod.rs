@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 pub mod pad;
-mod memcard;
+pub mod memcard;
 
 use splst_util::{Bit, BitSet};
 use crate::bus::BusMap;
@@ -11,23 +11,29 @@ use crate::SysTime;
 use crate::bus::{self, AddrUnit};
 use crate::{dump, dump::Dumper};
 
-use memcard::MemCard;
+use memcard::MemCards;
+use pad::{PadKind, GamePads};
 
 use std::fmt;
 use std::rc::Rc;
 use std::cell::RefCell;
 
-/// Controller and Memory Card I/O ports.
+/// Game pads and Memory Card I/O ports.
 pub struct IoPort {
     state: State,
+
     /// The device currently active. May be either a controller or memory card.
     active_device: Option<Device>,
+
     /// Control register.
     control: ControlReg,
+
     /// Status register.
     status: StatusReg,
+
     /// Mode register.
     mode: ModeReg,
+
     /// # Baudrate
     ///
     /// Baudrate determines the amount of transfers of data between the I/O port and the connected
@@ -42,22 +48,26 @@ pub struct IoPort {
     /// is set to 'baud' multiplied by the baudrate factor, mode register bits 0..1 (almost always 1),
     /// and then divided by 2.
     baud: u16,
+
     /// Recieve buffer. This is the data that the I/O port recieves from the peripherals. It's
     /// technically a FIFO queue of bits, but we only emulate sending a whole byte at once. It's
     /// cleared whenever the register is read.
     rx_fifo: Option<u8>,
+
     /// Transmit buffer. This is the data that get's send to the peripherals. The buffer is filled
     /// by writing to the register and cleared when send to the either a controller or memory card.
     tx_fifo: Option<u8>,
+
     /// Intermidate buffer to store the content of `tx_fifo` starting a transfer and actually
     /// sending the data to the devices.
     tx_val: u8,
-    memcards: [Option<MemCard>; 2],
-    controllers: Rc<RefCell<pad::Controllers>>,
+
+    memcards: Rc<RefCell<MemCards>>,
+    pads: Rc<RefCell<GamePads>>,
 }
 
 impl IoPort {
-    pub(crate) fn new(controllers: Rc<RefCell<pad::Controllers>>) -> Self {
+    pub(crate) fn new(pads: Rc<RefCell<GamePads>>, memcards: Rc<RefCell<MemCards>>) -> Self {
         Self {
             state: State::Idle,
             active_device: None,
@@ -71,8 +81,8 @@ impl IoPort {
             tx_fifo: None,
             tx_val: 0x0,
 
-            memcards: [None, None],
-            controllers,
+            memcards,
+            pads,
         }
     }
 
@@ -200,17 +210,13 @@ impl IoPort {
 
         StatusReg(status)
     }
-    
+
     pub fn control_reg(&self) -> ControlReg {
         self.control
     }
-    
+
     pub fn mode_reg(&self) -> ModeReg {
         self.mode
-    }
-    
-    pub fn pad_at(&self, slot: IoSlot) -> pad::Connection {
-        self.controllers.borrow()[slot].clone()
     }
 
     fn can_begin_transfer(&self) -> bool {
@@ -221,10 +227,8 @@ impl IoPort {
     }
     
     fn reset_device_states(&mut self) {
-        self.controllers
-            .borrow_mut()
-            .iter_mut()
-            .for_each(|c| c.reset());
+        self.pads.borrow_mut().reset_transfer_state();
+        self.memcards.borrow_mut().reset_transfer_state();
     }
 
     /// Calculate the transfer time for a single byte.
@@ -256,27 +260,27 @@ impl IoPort {
     fn transfer(&mut self, schedule: &mut Schedule) {
         match self.state {
             State::InTrans { ref mut event, ref mut waiting_for_ack } if !*waiting_for_ack => {
-                let index = self.control.io_slot() as usize;
+                let slot = self.control.io_slot();
 
-                let ctrl = &mut self.controllers.borrow_mut()[self.control.io_slot()];
-                let memcard = &mut self.memcards[index];
+                let mut pad = self.pads.borrow_mut();
+                let mut memcard = self.memcards.borrow_mut();
 
-                // Set rx_enabled.
+                // Set `rx_enabled`.
                 self.control.0.set_bit(2, true);
 
                 let (val, ack) = match self.active_device {
                     None => {
                         // Select a new active device if there is no current active devices.
-                        match (ctrl, memcard) {
-                            (pad::Connection::Unconnected, None) => (0xff, false),
-                            (pad::Connection::Digital(ctrl), _) => {
+                        match (pad.get_mut(slot), memcard.get_mut(slot)) {
+                            (None, None) => (0xff, false),
+                            (Some(PadKind::Digital(ctrl)), _) => {
                                 let (val, ack) = ctrl.transfer(self.tx_val);
                                 if ack {
-                                    self.active_device = Some(Device::Controller);
+                                    self.active_device = Some(Device::Pad);
                                 }
                                 (val, ack)
                             }
-                            (pad::Connection::Unconnected, Some(memcard)) => {
+                            (None, Some(memcard)) => {
                                 let (val, ack) = memcard.transfer(self.tx_val);
                                 if ack {
                                     self.active_device = Some(Device::MemCard);
@@ -285,14 +289,11 @@ impl IoPort {
                             }
                         }
                     }
-                    Some(Device::Controller) => match ctrl {
-                        pad::Connection::Digital(ctrl) => {
-                            trace!("controller transfer");
-                            ctrl.transfer(self.tx_val)
-                        }
-                        pad::Connection::Unconnected => (0xff, false),
+                    Some(Device::Pad) => match pad.get_mut(slot) {
+                        Some(pad) => pad.transfer(self.tx_val),
+                        None => (0xff, false),
                     }
-                    Some(Device::MemCard) => match memcard {
+                    Some(Device::MemCard) => match memcard.get_mut(slot) {
                         Some(memcard) => memcard.transfer(self.tx_val),
                         None => (0xff, false),
                     }
@@ -536,14 +537,14 @@ impl State {
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Device {
-    Controller,
+    Pad,
     MemCard,
 }
 
 impl fmt::Display for Device {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", match self {
-            Device::Controller => "controller",
+            Device::Pad => "game pad",
             Device::MemCard => "memory card",
         })
     }

@@ -19,7 +19,7 @@ pub mod opcode;
 use splst_asm::Register;
 use splst_util::Bit;
 
-use crate::io_port::pad;
+use crate::io_port::{pad, memcard};
 use crate::cdrom::Disc;
 use crate::bus::{self, bios::Bios, scratchpad::ScratchPad, AddrUnit, Bus, BusMap};
 use crate::{SysTime, Timestamp, VideoOutput, AudioOutput};
@@ -178,14 +178,16 @@ impl Cpu {
         video_output: Rc<RefCell<dyn VideoOutput>>,
         audio_output: Rc<RefCell<dyn AudioOutput>>,
         disc: Rc<RefCell<Disc>>,
-        controllers: Rc<RefCell<pad::Controllers>>,
+        gamepads: Rc<RefCell<pad::GamePads>>,
+        memcards: Rc<RefCell<memcard::MemCards>>,
     ) -> Box<Self> {
         let bus = Bus::new(
             bios,
             video_output,
             audio_output,
             disc,
-            controllers,
+            gamepads,
+            memcards,
         );
         let icache = Box::new([ICacheLine::valid(); 0x100]);
         Box::new(Cpu {

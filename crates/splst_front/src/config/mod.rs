@@ -2,7 +2,8 @@ mod quick_access;
 
 use splst_core::{Bios, io_port::{IoSlot, pad}, Disc};
 use splst_util::Exe;
-use crate::{gui, keys};
+use crate::keys;
+use crate::gui::Popups;
 use quick_access::QuickAccess;
 
 use winit::event::{VirtualKeyCode, ElementState};
@@ -95,7 +96,7 @@ fn gen_key_map(
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
-pub struct ControllerConfig {
+pub struct GamePadConfig {
     #[serde(rename = "connection-1")]
     conn1: Connection,
 
@@ -118,7 +119,7 @@ pub struct ControllerConfig {
     pub modified: bool,
 }
 
-impl ControllerConfig {
+impl GamePadConfig {
     pub fn is_modified(&self) -> bool {
         self.modified
     }
@@ -132,10 +133,10 @@ impl ControllerConfig {
     /// and error.
     pub fn get_key_map(
         &mut self,
-        ctx: &mut gui::GuiCtx
+        popups: &mut Popups,
     ) -> HashMap<VirtualKeyCode, (IoSlot, pad::Button)> {
         gen_key_map(&self.slot1, &self.slot2)
-            .map_err(|err| ctx.errors.add("Key Error", err))
+            .map_err(|err| popups.add("Key Error", err))
             .unwrap_or_default()
     }
 
@@ -148,7 +149,7 @@ impl ControllerConfig {
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, pad::Button)>,
         key: VirtualKeyCode,
         state: ElementState,
-        ctx: &mut gui::GuiCtx,
+        popups: &mut Popups,
     ) -> bool {
         if state != ElementState::Pressed {
             return false;
@@ -169,7 +170,7 @@ impl ControllerConfig {
             // key map succeeded.
             match gen_key_map(&self.slot1, &self.slot2) {
                 Ok(map) => *key_map = map,
-                Err(err) => ctx.errors.add("Key Error", err),
+                Err(err) => popups.add("Key Error", err),
             }
 
             true
@@ -203,18 +204,18 @@ impl ControllerConfig {
         });
     }
 
-    /// Update [`pad::Controllers`] from config. It should only be called when the configs could
+    /// Update [`pad::GamePads`] from config. It should only be called when the configs could
     /// have changed since it will reset the internal state of the controllers.
-    pub fn update_controllers(&self, controllers: &mut pad::Controllers) {
-        for (ctrl, conn) in controllers.iter_mut().zip([self.conn1, self.conn2].iter()) {
-            *ctrl = match conn {
-                Connection::Unconnected => pad::Connection::unconnected(),
-                Connection::Virtual => pad::Connection::digital(),
+    pub fn update(&self, gamepads: &mut pad::GamePads) {
+        for (pad, conn) in gamepads.iter_mut().zip([self.conn1, self.conn2].iter()) {
+            *pad = match conn {
+                Connection::Unconnected => None,
+                Connection::Virtual => Some(pad::PadKind::new_digital())
             };
         }
     }
 
-    pub fn show(&mut self, controllers: &mut pad::Controllers, ui: &mut egui::Ui) {
+    pub fn show(&mut self, gamepads: &mut pad::GamePads, ui: &mut egui::Ui) {
         ui.add_enabled_ui(self.recording.is_none(), |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.show_slot, IoSlot::Slot1, "Slot 1");
@@ -239,9 +240,9 @@ impl ControllerConfig {
 
             if before != *connection {
                 self.modified = true;
-                controllers[self.show_slot] = match *connection {
-                    Connection::Unconnected => pad::Connection::unconnected(),
-                    Connection::Virtual => pad::Connection::digital(),
+                *gamepads.get_mut(self.show_slot) = match *connection {
+                    Connection::Unconnected => None,
+                    Connection::Virtual => Some(pad::PadKind::new_digital()),
                 };
             }
 
@@ -271,11 +272,11 @@ impl BiosConfig {
         self.bioses.modified = false;
     }
 
-    pub fn take_bios(&mut self, ctx: &mut gui::GuiCtx) -> Option<Bios> {
+    pub fn take_bios(&mut self, popups: &mut Popups) -> Option<Bios> {
         self.loaded.take().or_else(|| {
             if let Some(default) = &self.default {
                 match Bios::from_file(&default) {
-                    Err(err) => ctx.errors.add("BIOS Error", err.to_string()),
+                    Err(err) => popups.add("BIOS Error", err.to_string()),
                     Ok(bios) => return Some(bios),
                 }
             }
@@ -283,7 +284,7 @@ impl BiosConfig {
         })
     }
 
-    pub fn show(&mut self, used: Option<&Bios>, ctx: &mut gui::GuiCtx, ui: &mut egui::Ui) {
+    pub fn show(&mut self, used: Option<&Bios>, popups: &mut Popups, ui: &mut egui::Ui) {
         match used {
             Some(bios) => {
                 ui.add_enabled_ui(false, |ui| ui.label(bios.name()));
@@ -310,7 +311,7 @@ impl BiosConfig {
 
         if let Some(path) = self.bioses.show("bios", ui) {
             match Bios::from_file(&path) {
-                Err(err) =>  ctx.errors.add("BIOS Error", err.to_string()),
+                Err(err) =>  popups.add("BIOS Error", err.to_string()),
                 Ok(bios) => self.loaded = Some(bios),
             }
         }
@@ -331,7 +332,7 @@ impl DiscConfig {
         self.discs.modified = false;
     }
 
-    pub fn show(&mut self, disc: &mut Disc, ctx: &mut gui::GuiCtx, ui: &mut egui::Ui) {
+    pub fn show(&mut self, disc: &mut Disc, popups: &mut Popups, ui: &mut egui::Ui) {
         match disc.cd() {
             None => {
                 ui.label("No Disc Loaded");
@@ -353,7 +354,7 @@ impl DiscConfig {
 
         if let Some(path) = self.discs.show("cue", ui) {
             match splst_cdimg::open_cd(&path) {
-                Err(err) =>  ctx.errors.add("Disc Error", err.to_string()),
+                Err(err) =>  popups.add("Disc Error", err.to_string()),
                 Ok(cd) => disc.load(cd),
             } 
         }
@@ -388,7 +389,7 @@ impl ExeConfig {
         self.loaded.take()
     }
 
-    pub fn show(&mut self, ctx: &mut gui::GuiCtx, ui: &mut egui::Ui) {
+    pub fn show(&mut self, popups: &mut Popups, ui: &mut egui::Ui) {
         match &self.name {
             Some(name) if self.loaded.is_some() => {
                 let unload = ui.horizontal(|ui| {
@@ -413,7 +414,7 @@ impl ExeConfig {
 
         if let Some(path) = self.exes.show("exe", ui) {
             match Exe::load(&path) {
-                Err(err) => ctx.errors.add("Exe Error", err.to_string()),
+                Err(err) => popups.add("Exe Error", err.to_string()),
                 Ok(exe) => {
                     let name = path
                         .file_name()
@@ -451,7 +452,7 @@ pub struct Config {
     saved_to_file: bool,
 
     #[serde(default)]
-    pub controller: ControllerConfig,
+    pub gamepads: GamePadConfig,
 
     #[serde(default)]
     pub bios: BiosConfig,
@@ -467,7 +468,7 @@ impl Config {
     /// If the config is modified compared to either default, loaded from a config file or saved to
     /// a config file.
     fn is_modified(&self) -> bool {
-        self.controller.is_modified()
+        self.gamepads.is_modified()
             || self.bios.is_modified()
             || self.disc.is_modified()
             || self.exe.is_modified()
@@ -488,14 +489,14 @@ impl Config {
 
     /// Try load config from a config file at the default location. If loading or deserializing the
     /// config file fails, the default configs will be returned.
-    pub fn from_file_or_default(ctx: &mut gui::GuiCtx) -> Self {
+    pub fn from_file_or_default(popups: &mut Popups) -> Self {
         let Some(path) = Self::config_path() else {
-            ctx.errors.add("Config Error", "Failed to decide config directory.");
+            popups.add("Config Error", "Failed to decide config directory.");
             return Self::default();
         };
         match fs::read_to_string(&path) {
             Err(err) => {
-                ctx.errors.add("Config Error", format!("Failed to open config file: {err}."));
+                popups.add("Config Error", format!("Failed to open config file: {err}."));
                 return Self { config_path: Some(path), ..Default::default() };
             }
             Ok(toml) => match toml::from_str::<Config>(&toml) {
@@ -506,7 +507,7 @@ impl Config {
                     config
                 }
                 Err(err) => {
-                    ctx.errors.add("Config Error", format!("Failed load config file: {err}."));
+                    popups.add("Config Error", format!("Failed load config file: {err}."));
                     return Self { config_path: Some(path), ..Default::default() }
                 },
             }
@@ -514,13 +515,13 @@ impl Config {
     }
 
     /// Try to save the configs to a config file.
-    fn try_save_to_file(&mut self, ctx: &mut gui::GuiCtx) {
+    fn try_save_to_file(&mut self, popups: &mut Popups) {
         let Some(path) = &self.config_path else {
-            ctx.errors.add("Config Error", "Unable to decide config directory.");
+            popups.add("Config Error", "Unable to decide config directory.");
             return;
         };
         let Some(Ok(_)) = path.parent().map(fs::create_dir_all) else {
-            ctx.errors.add("Config Error", format!("Unable to create config folder for {path:?}"));
+            popups.add("Config Error", format!("Unable to create config folder for {path:?}"));
             return; 
         };
         let file = fs::OpenOptions::new()
@@ -529,22 +530,22 @@ impl Config {
             .truncate(true)
             .open(path);
         match file {
-            Err(err) => ctx.errors.add("Config Error", format!("Failed to open config file: {err}.")),
+            Err(err) => popups.add("Config Error", format!("Failed to open config file: {err}.")),
             Ok(mut file) => {
                 let source = match toml::to_string_pretty(self) {
                     Ok(source) => source,
                     Err(err) => {
-                        ctx.errors.add("Config Error", format!("Failed to deserialize config: {err}."));
+                        popups.add("Config Error", format!("Failed to deserialize config: {err}."));
                         return;
                     }
                 };
                 if let Err(err) = file.write_all(source.as_bytes()) {
-                    ctx.errors.add("Config Error", format!("Failed to write to config file: {err}."));
+                    popups.add("Config Error", format!("Failed to write to config file: {err}."));
                 }
 
                 self.saved_to_file = true;
 
-                self.controller.mark_as_saved();
+                self.gamepads.mark_as_saved();
                 self.disc.mark_as_saved();
                 self.bios.mark_as_saved();
                 self.exe.mark_as_saved();
@@ -558,9 +559,9 @@ impl Config {
         key_map: &mut HashMap<VirtualKeyCode, (IoSlot, pad::Button)>,
         key: VirtualKeyCode,
         state: ElementState,
-        ctx: &mut gui::GuiCtx,
+        popups: &mut Popups,
     ) -> bool {
-        self.controller.handle_key_event(key_map, key, state, ctx)
+        self.gamepads.handle_key_event(key_map, key, state, popups)
     }
 
     pub fn handle_dropped_file(&mut self, _: &Path) {
@@ -570,9 +571,9 @@ impl Config {
     pub fn show_inside(
         &mut self,
         used_bios: Option<&Bios>,
-        controllers: &mut pad::Controllers,
+        controllers: &mut pad::GamePads,
         disc: &mut Disc,
-        ctx: &mut gui::GuiCtx,
+        popups: &mut Popups,
         ui: &mut egui::Ui,
     ) {
         ui.horizontal(|ui| {
@@ -589,25 +590,25 @@ impl Config {
 
             if !self.saved_to_file || self.is_modified() {
                 if ui.button(format!("Save to {name}")).clicked() {
-                    self.try_save_to_file(ctx);
+                    self.try_save_to_file(popups);
                 }
                 if ui.button(format!("Reload from {name}")).clicked() {
-                    *self = Self::from_file_or_default(ctx);
+                    *self = Self::from_file_or_default(popups);
                 }
             } else {
                 ui.label(format!("Saved to {name}"));
             }
         });
         
-        ui.collapsing("Controller", |ui| self.controller.show(controllers, ui));
+        ui.collapsing("Controller", |ui| self.gamepads.show(controllers, ui));
 
         let bios_open = if self.show_bios { Some(true) } else { None };
         let bios = egui::CollapsingHeader::new("Bios")
             .open(bios_open)
-            .show(ui, |ui| self.bios.show(used_bios, ctx, ui));
+            .show(ui, |ui| self.bios.show(used_bios, popups, ui));
 
-        ui.collapsing("Disc", |ui| self.disc.show(disc, ctx, ui));
-        ui.collapsing("Executable", |ui| self.exe.show(ctx, ui));
+        ui.collapsing("Disc", |ui| self.disc.show(disc, popups, ui));
+        ui.collapsing("Executable", |ui| self.exe.show(popups, ui));
         
         if self.show_bios {
             self.show_bios = false;
@@ -618,13 +619,14 @@ impl Config {
     pub fn show(
         &mut self,
         used_bios: Option<&Bios>,
-        controllers: &mut pad::Controllers,
+        gamepads: &mut pad::GamePads,
         disc: &mut Disc,
-        ctx: &mut gui::GuiCtx,
+        popups: &mut Popups,
+        ctx: &egui::Context,
     ) {
-        egui::SidePanel::left("settings").show(&ctx.egui_ctx.clone(), |ui| {
+        egui::SidePanel::left("settings").show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                self.show_inside(used_bios, controllers, disc, ctx, ui)
+                self.show_inside(used_bios, gamepads, disc, popups, ui)
             });
         });
     }

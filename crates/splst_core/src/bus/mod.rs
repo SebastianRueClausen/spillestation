@@ -14,7 +14,7 @@ use crate::cdrom::{CdRom, Disc};
 use crate::cpu::IrqState;
 use crate::timer::Timers;
 use crate::spu::Spu;
-use crate::io_port::{IoPort, pad};
+use crate::io_port::{IoPort, pad, memcard};
 use bios::Bios;
 use dma::Dma;
 use ram::Ram;
@@ -47,7 +47,8 @@ impl Bus {
         video_output: Rc<RefCell<dyn VideoOutput>>,
         audio_output: Rc<RefCell<dyn AudioOutput>>,
         disc: Rc<RefCell<Disc>>,
-        controllers: Rc<RefCell<pad::Controllers>>,
+        gamepads: Rc<RefCell<pad::GamePads>>,
+        memcards: Rc<RefCell<memcard::MemCards>>,
     ) -> Self {
         let mut schedule = Schedule::new();
 
@@ -66,7 +67,7 @@ impl Bus {
             dma: Dma::new(),
             timers: Timers::new(),
             spu,
-            io_port: IoPort::new(controllers),
+            io_port: IoPort::new(gamepads, memcards),
             mem_ctrl: MemCtrl::new(),
             cache_ctrl: CacheCtrl(0),
             ram_size: RamSize(0),

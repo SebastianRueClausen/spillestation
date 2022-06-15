@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 pub enum BiosError {
     #[error("failed to load BIOS: {0}")]
     IoError(#[from] io::Error),
-
     #[error("invalid BIOS file: must be 512 kb, is {0} bytes")]
     InvalidSize(usize),
 }
@@ -20,6 +19,8 @@ pub enum BiosError {
 pub struct Bios {
     data: Box<[u8]>,
     path: PathBuf,
+
+    /// Name of the BIOS. For now it's just the file name.
     name: String, 
 }
 

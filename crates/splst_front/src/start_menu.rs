@@ -1,49 +1,64 @@
 use splst_core::{Bios, io_port::pad, Disc};
-use crate::gui;
+use crate::gui::Popups;
 use crate::RunMode;
 use super::config::Config;
 
-pub fn show(
-    config: &mut Config,
-    controllers: &mut pad::Controllers,
-    disc: &mut Disc,
-    ctx: &mut gui::GuiCtx,
-) -> Option<(Bios, RunMode)> {
-    egui::CentralPanel::default().show(&ctx.egui_ctx.clone(), |ui| {
-        let space = ui.available_size() / 16.0;
+pub struct StartMenu {
+    popups: Popups,
+}
 
-        ui.allocate_space(space);
-        ui.vertical_centered_justified(|ui| {
-            ui.heading("Spillestation")
-        });
+impl Default for StartMenu {
+    fn default() -> Self {
+        Self { popups: Popups::new("start_menu") }
+    }
+}
 
-        ui.allocate_space(space);
+impl StartMenu {
+    pub fn show(
+        &mut self, 
+        config: &mut Config,
+        gamepads: &mut pad::GamePads,
+        disc: &mut Disc,
+        ctx: &egui::Context,
+    ) -> Option<(Bios, RunMode)> {
+        self.popups.show(ctx);
 
-        let mut out: Option<(Bios, RunMode)> = None;
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let space = ui.available_size() / 16.0;
 
-        egui::ScrollArea::vertical()
-            .max_width(ui.available_width())
-            .show(ui, |ui| {
-                ui.group(|ui| {
-                    config.show_inside(None, controllers, disc, ctx, ui);
-                    ui.horizontal(|ui| {
-                        let mut take_bios = || {
-                            config.bios.take_bios(ctx).or_else(|| {
-                                config.show_bios_menu();
-                                ctx.errors.add("No BIOS", "A BIOS must be loaded to start the emulator");
-                                None
-                            })
-                        };
-                        if ui.button("Start").clicked() {
-                            out = take_bios().map(|bios| (bios, RunMode::Emulation));
-                        }
-                        if ui.button("Start in debug mode").clicked() {
-                            out = take_bios().map(|bios| (bios, RunMode::Debug));
-                        }
+            ui.allocate_space(space);
+            ui.vertical_centered_justified(|ui| {
+                ui.heading("Spillestation")
+            });
+
+            ui.allocate_space(space);
+
+            let mut out: Option<(Bios, RunMode)> = None;
+
+            egui::ScrollArea::vertical()
+                .max_width(ui.available_width())
+                .show(ui, |ui| {
+                    ui.group(|ui| {
+                        config.show_inside(None, gamepads, disc, &mut self.popups, ui);
+                        ui.horizontal(|ui| {
+                            let mut take_bios = || {
+                                config.bios.take_bios(&mut self.popups).or_else(|| {
+                                    config.show_bios_menu();
+                                    self.popups.add("No BIOS", "A BIOS must be loaded to start the emulator");
+                                    None
+                                })
+                            };
+                            if ui.button("Start").clicked() {
+                                out = take_bios().map(|bios| (bios, RunMode::Emulation));
+                            }
+                            if ui.button("Start in debug mode").clicked() {
+                                out = take_bios().map(|bios| (bios, RunMode::Debug));
+                            }
+                        });
                     });
                 });
-            });
-        out
-    })
-    .inner
+            out
+        })
+        .inner
+    }
 }

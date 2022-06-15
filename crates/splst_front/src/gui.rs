@@ -7,37 +7,47 @@ use egui_wgpu_backend::{BackendError, RenderPass, ScreenDescriptor};
 use egui_winit::State as WinState;
 use winit::window::Window;
 
-struct ErrorPopup {
+use core::hash::Hash;
+
+struct Popup {
     heading: String,
     text: String,
 }
 
-#[derive(Default)]
-pub struct Errors {
-    errors: Vec<ErrorPopup>,
+pub struct Popups {
+    popups: Vec<Popup>,
+    /// Since there may be more `Popups`, we each one must have an unique `egui::Id`.
+    base_id: egui::Id,
 }
 
-impl Errors {
+impl Popups {
+    pub fn new(base_id: impl Hash) -> Self {
+        Self {
+            popups: Vec::default(),
+            base_id: egui::Id::new(base_id),
+        }
+    }
+
     pub fn add(&mut self, heading: impl Into<String>, text: impl Into<String>) {
-        self.errors.push(ErrorPopup {
+        self.popups.push(Popup {
             heading: heading.into(),
             text: text.into(),
         });
     }
 
-    fn show(&mut self, egui_ctx: &egui::Context) {
+    pub fn show(&mut self, ctx: &egui::Context) {
         let mut i = 0;
 
-        self.errors.retain(|error| {
+        self.popups.retain(|popup| {
             let mut open = true;
 
-            egui::Window::new(&error.heading)
+            egui::Window::new(&popup.heading)
                 .open(&mut open)
-                .id(egui::Id::new(i))
+                .id(egui::Id::new(i).with(self.base_id))
                 .resizable(false)
                 .collapsible(false)
-                .show(egui_ctx, |ui| {
-                    ui.label(&error.text);
+                .show(ctx, |ui| {
+                    ui.label(&popup.text);
                 });
 
             i += 1;
@@ -47,15 +57,10 @@ impl Errors {
     }
 }
 
-#[derive(Default)]
-pub struct GuiCtx {
-    pub egui_ctx: egui::Context,
-    pub errors: Errors,
-}
-
 /// All the egui stuff required to draw gui to the screen.
 pub struct GuiRenderer {
-    ctx: GuiCtx,
+    pub ctx: egui::Context,
+    pub popups: Popups,
     win_state: WinState,
     screen_descriptor: ScreenDescriptor,
     render_pass: RenderPass,
@@ -64,12 +69,8 @@ pub struct GuiRenderer {
 }
 
 impl GuiRenderer {
-    pub fn ctx(&mut self) -> &mut GuiCtx {
-        &mut self.ctx
-    }
-
     pub fn new(scale_factor: f32, renderer: &Renderer) -> Self {
-        let ctx = GuiCtx::default();
+        let ctx = egui::Context::default();
 
         let max_texture_dim = renderer.device.limits().max_texture_dimension_2d as usize;
         let win_state = WinState::from_pixels_per_point(max_texture_dim, scale_factor);
@@ -89,6 +90,7 @@ impl GuiRenderer {
 
         Self {
             ctx,
+            popups: Popups::new("default"),
             win_state,
             screen_descriptor,
             render_pass,
@@ -98,7 +100,7 @@ impl GuiRenderer {
     }
 
     pub fn handle_window_event(&mut self, event: &winit::event::WindowEvent) {
-        self.win_state.on_event(&self.ctx.egui_ctx, event);
+        self.win_state.on_event(&self.ctx, event);
     }
 
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
@@ -123,19 +125,19 @@ impl GuiRenderer {
         func: F,
     ) -> Result<(), BackendError>
     where
-        F: FnOnce(&mut GuiCtx),
+        F: FnOnce(&egui::Context, &mut Popups),
     {
         let input = self.win_state.take_egui_input(window);
-        let output = self.ctx.egui_ctx.clone().run(input, |ctx| {
-            self.ctx.errors.show(ctx);
-            func(&mut self.ctx)
+        let output = self.ctx.run(input, |ctx| {
+            self.popups.show(ctx);
+            func(&self.ctx, &mut self.popups)
         });
 
         self.textures.append(output.textures_delta);
         self.win_state
-            .handle_platform_output(window, &self.ctx.egui_ctx, output.platform_output);
+            .handle_platform_output(window, &self.ctx, output.platform_output);
 
-        self.jobs = self.ctx.egui_ctx.tessellate(output.shapes);
+        self.jobs = self.ctx.tessellate(output.shapes);
 
         self.render_pass
             .add_textures(&renderer.device, &renderer.queue, &self.textures)?;

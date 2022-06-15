@@ -17,7 +17,8 @@ use audio_stream::AudioStream;
 use config::Config;
 use debug::DebugMenu;
 use gui::GuiRenderer;
-use splst_core::{io_port::pad, Disc, System};
+use start_menu::StartMenu;
+use splst_core::{io_port::pad, io_port::memcard, Disc, System};
 use splst_render::{Renderer, SurfaceSize};
 
 use winit::event::{ElementState, Event, VirtualKeyCode, WindowEvent};
@@ -39,7 +40,7 @@ pub enum RunMode {
 
 enum Stage {
     /// The start menu shown when starting the emulator.
-    StartMenu,
+    StartMenu(StartMenu),
     Running {
         system: System,
         app_menu: Box<DebugMenu>,
@@ -58,7 +59,10 @@ pub fn run() {
         .expect("failed to create window");
 
     let renderer = Rc::new(RefCell::new(Renderer::new(&window)));
-    let controllers = Rc::new(RefCell::new(pad::Controllers::default()));
+
+    let gamepads = Rc::new(RefCell::new(pad::GamePads::default()));
+    let memcards = Rc::new(RefCell::new(memcard::MemCards::default()));
+
     let disc = Rc::new(RefCell::new(Disc::default()));
 
     // TODO: Show and error in the settings menu, but still allow the emulator to run without audio.
@@ -66,14 +70,12 @@ pub fn run() {
     let audio_stream = Rc::new(RefCell::new(audio_stream));
 
     let mut gui_renderer = GuiRenderer::new(window.scale_factor() as f32, &renderer.borrow());
-    let mut stage = Stage::StartMenu;
+    let mut stage = Stage::StartMenu(StartMenu::default());
 
-    let mut config = Config::from_file_or_default(&mut gui_renderer.ctx());
-    let mut key_map = config.controller.get_key_map(&mut gui_renderer.ctx());
+    let mut config = Config::from_file_or_default(&mut gui_renderer.popups);
+    let mut key_map = config.gamepads.get_key_map(&mut gui_renderer.popups);
 
-    config
-        .controller
-        .update_controllers(&mut controllers.borrow_mut());
+    config.gamepads.update(&mut gamepads.borrow_mut());
 
     // The instant the last frame was drawn.
     let mut last_draw = Instant::now();
@@ -138,7 +140,7 @@ pub fn run() {
                             config.handle_dropped_file(&path.as_path());
                         }
                     }
-                    Stage::StartMenu => {
+                    Stage::StartMenu(_) => {
                         config.handle_dropped_file(&path.as_path());
                     }
                 },
@@ -161,7 +163,7 @@ pub fn run() {
                                 &mut key_map,
                                 key,
                                 state,
-                                gui_renderer.ctx(),
+                                &mut gui_renderer.popups,
                             ) {
                                 gui_renderer.handle_window_event(event);
                             }
@@ -170,8 +172,9 @@ pub fn run() {
                             let consumed = key_map
                                 .get(&key)
                                 .map(|(slot, button)| {
-                                    controllers.borrow_mut()[*slot]
-                                        .set_button(*button, state == ElementState::Pressed);
+                                    if let Some(pad) = gamepads.borrow_mut().get_mut(*slot) {
+                                        pad.set_button(*button, state == ElementState::Pressed);
+                                    }
                                 })
                                 .is_some();
 
@@ -189,7 +192,7 @@ pub fn run() {
                                 &mut key_map,
                                 key,
                                 key_event.state,
-                                gui_renderer.ctx(),
+                                &mut gui_renderer.popups,
                             ) {
                                 gui_renderer.handle_window_event(event);
                             }
@@ -209,34 +212,37 @@ pub fn run() {
                     ..
                 } => {
                     renderer.borrow_mut().render(|encoder, view, renderer| {
-                        let res = gui_renderer.render(renderer, encoder, view, &window, |ctx| {
-                            app_menu.show(ctx, system, mode);
+                        let res =
+                            gui_renderer.render(renderer, encoder, view, &window, |ctx, popups| {
+                                app_menu.show(ctx, system, mode);
 
-                            if show_settings {
-                                config.show(
-                                    Some(system.bios()),
-                                    &mut controllers.borrow_mut(),
-                                    &mut disc.borrow_mut(),
-                                    ctx,
-                                );
-                            }
-                        });
+                                if show_settings {
+                                    config.show(
+                                        Some(system.bios()),
+                                        &mut gamepads.borrow_mut(),
+                                        &mut disc.borrow_mut(),
+                                        popups,
+                                        ctx,
+                                    );
+                                }
+                            });
                         if let Err(err) = res {
                             error!("failed to render gui: {err}");
                         }
                     });
                 }
-                Stage::StartMenu => {
+                Stage::StartMenu(ref mut menu) => {
                     let mut out: Option<(splst_core::Bios, RunMode)> = None;
                     renderer.borrow_mut().render(|encoder, view, renderer| {
-                        let res = gui_renderer.render(renderer, encoder, view, &window, |ctx| {
-                            out = start_menu::show(
-                                &mut config,
-                                &mut controllers.borrow_mut(),
-                                &mut disc.borrow_mut(),
-                                ctx,
-                            );
-                        });
+                        let res =
+                            gui_renderer.render(renderer, encoder, view, &window, |ctx, _| {
+                                out = menu.show(
+                                    &mut config,
+                                    &mut gamepads.borrow_mut(),
+                                    &mut disc.borrow_mut(),
+                                    ctx,
+                                );
+                            });
                         if let Err(err) = res {
                             error!("failed to render gui: {err}");
                         }
@@ -248,7 +254,8 @@ pub fn run() {
                             renderer.clone(),
                             audio_stream.clone(),
                             disc.clone(),
-                            controllers.clone(),
+                            gamepads.clone(),
+                            memcards.clone(),
                         );
 
                         if let Some(exe) = config.exe.take_exe() {

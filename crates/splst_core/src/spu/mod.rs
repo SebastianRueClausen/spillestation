@@ -235,7 +235,7 @@ impl dma::Channel for Spu {
         self.transfer_store(schedule, hi);
     }
 
-    fn dma_ready(&self, dir: dma::Direction) -> bool {
+    fn dma_ready(&self, _: dma::Direction) -> bool {
         true
     }
 }
@@ -578,7 +578,7 @@ impl VolEnvelope {
         if self.counter > 0 {
             level
         } else {
-            let (ticks, step) = ADSR_TABLE[self.direction as usize][self.rate as usize];
+            let (_, step) = ADSR_TABLE[self.direction as usize][self.rate as usize];
                     
             let step = match self.mode {
                 ScalingMode::Linear => step,

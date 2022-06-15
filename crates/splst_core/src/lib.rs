@@ -29,7 +29,7 @@ pub mod debug;
 pub mod dump;
 
 use splst_util::Exe;
-use io_port::pad;
+use io_port::{pad, memcard};
 use schedule::Schedule;
 use cpu::irq::IrqState;
 
@@ -58,9 +58,10 @@ impl System {
         video_output: Rc<RefCell<dyn VideoOutput>>,
         audio_output: Rc<RefCell<dyn AudioOutput>>,
         disc: Rc<RefCell<Disc>>,
-        controllers: Rc<RefCell<pad::Controllers>>,
+        gamepads: Rc<RefCell<pad::GamePads>>,
+        memcards: Rc<RefCell<memcard::MemCards>>,
     ) -> Self {
-        Self { cpu: Cpu::new(bios, video_output, audio_output, disc, controllers) }
+        Self { cpu: Cpu::new(bios, video_output, audio_output, disc, gamepads, memcards) }
     }
 
     /// Load executable file into RAM and path the BIOS to run `exe`.
