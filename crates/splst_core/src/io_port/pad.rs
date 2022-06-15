@@ -57,7 +57,7 @@ impl GamePads {
     }
     
     pub fn reset_transfer_state(&mut self) {
-        self.0.iter_mut().flatten().for_each(|c| {
+        self.iter_mut().flatten().for_each(|c| {
             match c {
                 PadKind::Digital(pad) => pad.reset_transfer_state(),
             }
@@ -72,7 +72,7 @@ impl GamePads {
 /// The Sony digital controller.
 ///      ___                      ___
 ///   __/_L_\__  Digital Pad   __/_R_\__
-///  /    _    \--------------/         \
+///  /    _    \-------------/         \
 /// |   _| |_   |            |     /\    |
 /// |  |_ X _|  |            |  []    () |
 /// |    |_|    |  SEL  STA  |     ><    |
@@ -232,8 +232,9 @@ impl fmt::Display for Button {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 pub(super) enum TransferState {
+    #[default]
     Idle,
     Ready,
     /// Get ID high bits.
@@ -242,10 +243,4 @@ pub(super) enum TransferState {
     ButtonsLow,
     /// Get buttons high bits.
     ButtonsHigh,
-}
-
-impl Default for TransferState {
-    fn default() -> Self {
-        TransferState::Idle
-    }
 }

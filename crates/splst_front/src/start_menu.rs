@@ -1,4 +1,4 @@
-use splst_core::{Bios, io_port::pad, Disc};
+use splst_core::{Bios, io_port::{memcard, pad}, Disc};
 use crate::gui::Popups;
 use crate::RunMode;
 use super::config::Config;
@@ -18,6 +18,7 @@ impl StartMenu {
         &mut self, 
         config: &mut Config,
         gamepads: &mut pad::GamePads,
+        memcards: &mut memcard::MemCards,
         disc: &mut Disc,
         ctx: &egui::Context,
     ) -> Option<(Bios, RunMode)> {
@@ -39,7 +40,7 @@ impl StartMenu {
                 .max_width(ui.available_width())
                 .show(ui, |ui| {
                     ui.group(|ui| {
-                        config.show_inside(None, gamepads, disc, &mut self.popups, ui);
+                        config.show_inside(None, gamepads, memcards, disc, &mut self.popups, ui);
                         ui.horizontal(|ui| {
                             let mut take_bios = || {
                                 config.bios.take_bios(&mut self.popups).or_else(|| {

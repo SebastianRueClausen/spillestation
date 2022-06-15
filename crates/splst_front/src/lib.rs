@@ -220,6 +220,7 @@ pub fn run() {
                                     config.show(
                                         Some(system.bios()),
                                         &mut gamepads.borrow_mut(),
+                                        &mut memcards.borrow_mut(),
                                         &mut disc.borrow_mut(),
                                         popups,
                                         ctx,
@@ -239,6 +240,7 @@ pub fn run() {
                                 out = menu.show(
                                     &mut config,
                                     &mut gamepads.borrow_mut(),
+                                    &mut memcards.borrow_mut(),
                                     &mut disc.borrow_mut(),
                                     ctx,
                                 );

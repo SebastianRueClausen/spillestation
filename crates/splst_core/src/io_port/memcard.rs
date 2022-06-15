@@ -17,12 +17,12 @@ pub enum MemCardError {
 pub struct MemCards([Option<MemCard>; 2]);
 
 impl MemCards {
-    pub fn get(&self, slot: IoSlot) -> Option<&MemCard> {
-        self.0[slot as usize].as_ref()
+    pub fn get(&self, slot: IoSlot) -> &Option<MemCard> {
+        &self.0[slot as usize]
     }
 
-    pub fn get_mut(&mut self, slot: IoSlot) -> Option<&mut MemCard> {
-        self.0[slot as usize].as_mut()
+    pub fn get_mut(&mut self, slot: IoSlot) -> &mut Option<MemCard> {
+        &mut self.0[slot as usize]
     }
 
     pub(super) fn reset_transfer_state(&mut self) {
@@ -61,13 +61,12 @@ pub struct MemCard {
     /// valid state.
     write_sector: [u8; SECTOR_SIZE],
 
-    save_path: PathBuf,
-
-    error: Option<MemCardError>,
+    pub save_path: Option<PathBuf>,
+    pub error: Option<MemCardError>,
 }
 
 impl MemCard {
-    fn new(save_path: PathBuf, flash: Box<[u8]>) -> Self {
+    fn new(save_path: Option<PathBuf>, flash: Box<[u8]>) -> Self {
         Self {
             flash,
             save_path,
@@ -83,11 +82,13 @@ impl MemCard {
     }
 
     /// Create new freshly formatted memory card, which will be saved to `path`.
-    pub fn fresh_to(path: &Path) -> Self {
+    pub fn fresh_to(path: Option<&Path>) -> Self {
         let mut flash = Box::new([0x0; FLASH_SIZE]);
         format(&mut flash);
 
-        Self::new(path.to_path_buf(), flash)
+        let save_path = path.map(|path| path.to_path_buf());
+
+        Self::new(save_path, flash)
     }
 
     pub fn load_from(path: &Path) -> Result<Self, MemCardError> {
@@ -99,21 +100,23 @@ impl MemCard {
         if data.len() < FLASH_SIZE {
             Err(MemCardError::InvalidSize(data.len()))
         } else {
-            Ok(Self::new(path.to_path_buf(), data.into_boxed_slice()))
+            Ok(Self::new(Some(path.to_path_buf()), data.into_boxed_slice()))
         }
     }
 
     fn save(&mut self) {
-        let mut file = match File::open(&self.save_path) {
-            Ok(file) => file,
-            Err(err) => {
+        if let Some(path) = &self.save_path {
+            let mut file = match File::open(path) {
+                Ok(file) => file,
+                Err(err) => {
+                    self.error = Some(err.into());
+                    return
+                }
+            };
+            if let Err(err) = file.set_len(0).and_then(|()| file.write_all(&self.flash)) {
                 self.error = Some(err.into());
-                return
-            }
-        };
-        if let Err(err) = file.set_len(0).and_then(|()| file.write_all(&self.flash)) {
-            self.error = Some(err.into());
-        };
+            };
+        }
     }
 
     /// Return flags register.
@@ -125,13 +128,11 @@ impl MemCard {
         let out = match self.state {
             TransferState::Idle if val == 0x81 => {
                 self.state = TransferState::Command; 
-
                 (0xff, true)
             }
             // Do nothing. The first byte should always contain 0x81.
             TransferState::Idle => {
                 warn!("weird first memory card byte recieved {val:0x}"); 
-
                 (0xff, false)
             }
             TransferState::Command => {
@@ -257,6 +258,8 @@ impl MemCard {
                             ^ self.addr as u8;
 
                         let out = if sum != 0 { b'N' } else { b'G' };
+
+                         self.save();
 
                         return (out, true);
                     }

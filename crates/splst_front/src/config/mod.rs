@@ -1,29 +1,24 @@
 mod quick_access;
 
-use splst_core::{Bios, io_port::{IoSlot, pad}, Disc};
+use splst_core::{Bios, io_port::{IoSlot, pad, memcard}, Disc};
 use splst_util::Exe;
 use crate::keys;
 use crate::gui::Popups;
-use quick_access::QuickAccess;
 
 use winit::event::{VirtualKeyCode, ElementState};
+use native_dialog::FileDialog;
 
 use std::io::Write;
 use std::path::{PathBuf, Path};
 use std::collections::HashMap;
-use std::fs;
+use std::{fmt, fs};
 
-#[derive(Debug, Copy, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-enum Connection {
+#[derive(Default, Debug, Copy, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+enum PadConnection {
+    #[default]
     Unconnected,
     Virtual,
     // DualShock,
-}
-
-impl Default for Connection {
-    fn default() -> Self {
-        Connection::Unconnected
-    }
 }
 
 #[repr(C)]
@@ -98,10 +93,10 @@ fn gen_key_map(
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct GamePadConfig {
     #[serde(rename = "connection-1")]
-    conn1: Connection,
+    conn1: PadConnection,
 
     #[serde(rename = "connection-2")]
-    conn2: Connection,
+    conn2: PadConnection,
 
     #[serde(rename = "slot-1")]
     slot1: ButtonBindings,
@@ -209,8 +204,8 @@ impl GamePadConfig {
     pub fn update(&self, gamepads: &mut pad::GamePads) {
         for (pad, conn) in gamepads.iter_mut().zip([self.conn1, self.conn2].iter()) {
             *pad = match conn {
-                Connection::Unconnected => None,
-                Connection::Virtual => Some(pad::PadKind::new_digital())
+                PadConnection::Unconnected => None,
+                PadConnection::Virtual => Some(pad::PadKind::new_digital())
             };
         }
     }
@@ -234,15 +229,15 @@ impl GamePadConfig {
             egui::ComboBox::from_label("Connection")
                 .selected_text(format!("{:?}", connection))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(connection, Connection::Unconnected, "Unconnected");
-                    ui.selectable_value(connection, Connection::Virtual, "Virtual");
+                    ui.selectable_value(connection, PadConnection::Unconnected, "Unconnected");
+                    ui.selectable_value(connection, PadConnection::Virtual, "Virtual");
                 });
 
             if before != *connection {
                 self.modified = true;
                 *gamepads.get_mut(self.show_slot) = match *connection {
-                    Connection::Unconnected => None,
-                    Connection::Virtual => Some(pad::PadKind::new_digital()),
+                    PadConnection::Unconnected => None,
+                    PadConnection::Virtual => Some(pad::PadKind::new_digital()),
                 };
             }
 
@@ -252,6 +247,139 @@ impl GamePadConfig {
                 self.show_buttons(self.show_slot, ui);
             });
         });
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+enum MemCardType {
+    #[default]
+    Persistent,
+    NonPersistent,
+    Unconnected,
+}
+
+impl fmt::Display for MemCardType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            MemCardType::Persistent => f.write_str("Persistent"),
+            MemCardType::NonPersistent => f.write_str("Non Persistent"),
+            MemCardType::Unconnected => f.write_str("Unconnected"),
+        }
+    }
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct MemCardConfig {
+    #[serde(rename = "connection-1")]
+    type1: MemCardType,
+
+    #[serde(rename = "connection-2")]
+    type2: MemCardType,
+
+    #[serde(rename = "path-1")]
+    path1: String,
+
+    #[serde(rename = "path-2")]
+    path2: String,
+
+    #[serde(skip)]
+    path1_input: String,
+
+    #[serde(skip)]
+    path2_input: String,
+
+    #[serde(skip)]
+    show_slot: IoSlot,
+
+    #[serde(skip)]
+    pub modified: bool,
+}
+
+impl MemCardConfig {
+    fn is_modified(&self) -> bool {
+        self.modified
+    }
+   
+    fn mark_as_saved(&mut self) {
+        self.modified = false;
+    }
+
+    pub fn show(&mut self, memcards: &mut memcard::MemCards, popups: &mut Popups, ui: &mut egui::Ui) {
+        if let Some(card) = memcards.get_mut(self.show_slot) {
+            if let Some(err) = card.error.take() {
+                popups.add("Memory Card Error", err.to_string());
+            }
+        }
+
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.show_slot, IoSlot::Slot1, "Slot 1");
+            ui.selectable_value(&mut self.show_slot, IoSlot::Slot2, "Slot 2");
+        });
+
+        ui.add_space(10.0);
+
+        let (ty, path, path_input) = match self.show_slot {
+            IoSlot::Slot1 => (&mut self.type1, &mut self.path1, &mut self.path1_input),
+            IoSlot::Slot2 => (&mut self.type2, &mut self.path2, &mut self.path2_input),
+        };
+
+        let before = *ty;
+
+        if !path.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label("Current Path"); 
+                ui.label(&*path);
+            });
+
+            ui.add_space(10.0);
+        }
+
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(path_input);
+
+            if ui.button("Select").clicked() {
+                if let Some(loaded) = select_file(popups) {
+                    *path_input = loaded;
+                }
+            }
+
+            if ui.button("Change").clicked() {
+                *path = path_input.clone(); 
+
+                if let Some(card) = memcards.get_mut(self.show_slot) {
+                    card.save_path = Some(PathBuf::from(&path));
+                }
+            }
+        });
+
+        ui.add_space(10.0);
+
+        egui::ComboBox::from_label("Connection")
+            .selected_text(format!("{ty}"))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(ty, MemCardType::Unconnected, "Unconnected");
+                ui.selectable_value(ty, MemCardType::Persistent, "Persistent");
+                ui.selectable_value(ty, MemCardType::NonPersistent, "Non Persistent");
+            });
+
+        if before != *ty {
+            self.modified = true;
+            match *ty {
+                MemCardType::Unconnected => *memcards.get_mut(self.show_slot) = None,
+                MemCardType::NonPersistent => match memcards.get_mut(self.show_slot) {
+                    Some(card) => card.save_path = None,
+                    card @ None => *card = Some(memcard::MemCard::fresh_to(None)),
+                }
+                MemCardType::Persistent => match memcards.get_mut(self.show_slot) {
+                    Some(card) => card.save_path = Some(PathBuf::from(&path)),
+                    card @ None => {
+                        *card = memcard::MemCard::load_from(&Path::new(path))
+                            .map_err(|err| popups.add("Memory Card error", err.to_string()))
+                            .ok()
+                    }
+                }
+            };
+        }
     }
 }
 
@@ -309,7 +437,7 @@ impl BiosConfig {
 
         ui.add_space(10.0);
 
-        if let Some(path) = self.bioses.show("bios", ui) {
+        if let Some(path) = self.bioses.show("bios", popups, ui) {
             match Bios::from_file(&path) {
                 Err(err) =>  popups.add("BIOS Error", err.to_string()),
                 Ok(bios) => self.loaded = Some(bios),
@@ -352,7 +480,7 @@ impl DiscConfig {
 
         ui.add_space(10.0);
 
-        if let Some(path) = self.discs.show("cue", ui) {
+        if let Some(path) = self.discs.show("cue", popups, ui) {
             match splst_cdimg::open_cd(&path) {
                 Err(err) =>  popups.add("Disc Error", err.to_string()),
                 Ok(cd) => disc.load(cd),
@@ -412,7 +540,7 @@ impl ExeConfig {
 
         ui.add_space(10.0);
 
-        if let Some(path) = self.exes.show("exe", ui) {
+        if let Some(path) = self.exes.show("exe", popups, ui) {
             match Exe::load(&path) {
                 Err(err) => popups.add("Exe Error", err.to_string()),
                 Ok(exe) => {
@@ -462,6 +590,9 @@ pub struct Config {
 
     #[serde(default)]
     pub exe: ExeConfig,
+
+    #[serde(default)]
+    pub memcard: MemCardConfig,
 }
 
 impl Config {
@@ -472,6 +603,7 @@ impl Config {
             || self.bios.is_modified()
             || self.disc.is_modified()
             || self.exe.is_modified()
+            || self.memcard.is_modified()
     }
 
     /// Show the BIOS menu. Used when trying to start the emulator without a loaded BIOS.
@@ -549,6 +681,7 @@ impl Config {
                 self.disc.mark_as_saved();
                 self.bios.mark_as_saved();
                 self.exe.mark_as_saved();
+                self.memcard.mark_as_saved();
             }
         }
     }
@@ -571,7 +704,8 @@ impl Config {
     pub fn show_inside(
         &mut self,
         used_bios: Option<&Bios>,
-        controllers: &mut pad::GamePads,
+        gamepads: &mut pad::GamePads,
+        memcards: &mut memcard::MemCards,
         disc: &mut Disc,
         popups: &mut Popups,
         ui: &mut egui::Ui,
@@ -600,7 +734,7 @@ impl Config {
             }
         });
         
-        ui.collapsing("Controller", |ui| self.gamepads.show(controllers, ui));
+        ui.collapsing("Controller", |ui| self.gamepads.show(gamepads, ui));
 
         let bios_open = if self.show_bios { Some(true) } else { None };
         let bios = egui::CollapsingHeader::new("Bios")
@@ -609,6 +743,7 @@ impl Config {
 
         ui.collapsing("Disc", |ui| self.disc.show(disc, popups, ui));
         ui.collapsing("Executable", |ui| self.exe.show(popups, ui));
+        ui.collapsing("Memory Card", |ui| self.memcard.show(memcards, popups, ui));
         
         if self.show_bios {
             self.show_bios = false;
@@ -620,14 +755,104 @@ impl Config {
         &mut self,
         used_bios: Option<&Bios>,
         gamepads: &mut pad::GamePads,
+        memcards: &mut memcard::MemCards,
         disc: &mut Disc,
         popups: &mut Popups,
         ctx: &egui::Context,
     ) {
         egui::SidePanel::left("settings").show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                self.show_inside(used_bios, gamepads, disc, popups, ui)
+                self.show_inside(used_bios, gamepads, memcards, disc, popups, ui)
             });
         });
     }
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+pub struct QuickAccess {
+    #[serde(skip)] 
+    input: String, 
+
+    #[serde(skip)]
+    pub modified: bool,
+
+    paths: Vec<PathBuf>,
+}
+
+impl QuickAccess {
+    pub fn show(&mut self, file_hint: &str, popups: &mut Popups, ui: &mut egui::Ui) -> Option<PathBuf> {
+        let mut load = None;
+
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.input).hint_text(file_hint));
+
+            if ui.button("Select").clicked() {
+                if let Some(input) = select_file(popups) {
+                    self.input = input;
+                }
+            }
+
+            if ui.button("Save").clicked() {
+                self.modified = true;
+                self.paths.push(PathBuf::from(&self.input));
+            }
+
+            if ui.button("Load").clicked() {
+                load = Some(PathBuf::from(&self.input)); 
+            }
+        });
+
+        ui.add_space(10.0);
+
+        if self.paths.is_empty() {
+            ui.label(format!("No {file_hint} saved"));
+            return load;
+        }
+
+        egui::Grid::new("grid").show(ui, |ui| {
+            let len_before = self.paths.len(); 
+            self.paths.retain(|path| {
+                let short = path
+                    .as_path()
+                    .file_name()
+                    .unwrap_or(path.as_os_str())
+                    .to_string_lossy();
+                let long = path.as_path().to_string_lossy();
+
+                ui.label(&*short).on_hover_text(&*long);
+
+                let retain = !ui.button("Remove").clicked();
+                if ui.button("Load").clicked() {
+                    load = Some(path.to_path_buf());
+                }
+
+                ui.end_row();
+
+                retain
+            });
+
+            if len_before != self.paths.len() {
+                self.modified = true; 
+            }
+        });
+
+        load
+    }
+}
+
+fn select_file(popups: &mut Popups) -> Option<String> {
+    FileDialog::new()
+        .set_location(".")
+        .show_open_single_file()
+        .map_err(|err| popups.add("Invalid path", err.to_string()))
+        .ok()
+        .flatten()
+        .map(|path| {
+            path
+                .into_os_string()
+                .into_string()
+                .map_err(|_| popups.add("Invalid path", ""))
+                .ok()
+        })
+        .flatten()
 }

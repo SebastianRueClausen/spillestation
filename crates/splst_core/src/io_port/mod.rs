@@ -220,10 +220,9 @@ impl IoPort {
     }
 
     fn can_begin_transfer(&self) -> bool {
-        let can_begin = self.tx_fifo.is_some()
+        self.tx_fifo.is_some()
             && self.control.select()
-            && self.control.tx_enabled();
-        can_begin
+            && self.control.tx_enabled()
     }
     
     fn reset_device_states(&mut self) {
