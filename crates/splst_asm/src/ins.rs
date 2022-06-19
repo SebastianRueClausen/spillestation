@@ -95,6 +95,12 @@ pub enum Address<'a> {
     Abs(u32),
 }
 
+impl From<u32> for Address<'_> {
+    fn from(val: u32) -> Self {
+        Address::Abs(val)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum InsTy<'a> {
     Sll(Register, Register, u32),

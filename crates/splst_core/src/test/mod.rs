@@ -1,3 +1,4 @@
+/*
 mod cpu;
 mod dma;
 
@@ -27,3 +28,4 @@ pub fn run_code(input: &str) -> Box<Cpu> {
 
     cpu
 }
+*/

@@ -23,7 +23,9 @@ impl PadKind {
 
     pub fn set_button(&mut self, button: Button, pressed: bool) {
         match self {
-            PadKind::Digital(pad) => pad.button_state().set_button(button, pressed),
+            PadKind::Digital(pad) => {
+                pad.button_state().set_button(button, pressed)
+            }
         }
     }
 
@@ -211,10 +213,10 @@ impl Button {
         "l3",
         "r3",
         "start",
-        "joyup",
-        "joyright",
-        "joydown",
-        "joyleft",
+        "joy up",
+        "joy right",
+        "joy down",
+        "joy left",
         "l2",
         "r2",
         "l1",

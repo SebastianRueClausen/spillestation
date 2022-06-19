@@ -39,6 +39,8 @@ pub struct Bus {
     mem_ctrl: MemCtrl,
     ram_size: RamSize,
     pub(super) io_port: IoPort,
+
+    tty_buffer: String,
 }
 
 impl Bus {
@@ -71,6 +73,7 @@ impl Bus {
             mem_ctrl: MemCtrl::new(),
             cache_ctrl: CacheCtrl(0),
             ram_size: RamSize(0),
+            tty_buffer: String::default(),
         }
     }
 
@@ -218,7 +221,20 @@ impl Bus {
                 self.spu.store(&mut self.schedule, addr - Spu::BUS_BEGIN, val)
             }
             EXP1_BEGIN..=EXP1_END => {}
-            EXP2_BEGIN..=EXP2_END => {}
+            EXP2_BEGIN..=EXP2_END => {
+                let offset = addr - EXP2_BEGIN;
+
+                if offset == 0x23 || offset == 0x80 {
+                    let c = char::from_u32(val.as_u32()).unwrap_or('.');
+
+                    if c == '\n' {
+                        debug!("tty: {}", self.tty_buffer);
+                        self.tty_buffer.clear();
+                    } else {
+                        self.tty_buffer.push(c);
+                    }
+                }
+            }
             IrqState::BUS_BEGIN..=IrqState::BUS_END => {
                 self.irq_state.store(
                     &mut self.schedule,
@@ -406,7 +422,7 @@ pub trait AddrUnit: Into<u32> + From<u8> + Copy + fmt::Display + fmt::LowerHex {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```ignore
     /// let val: u8 = u8::from_u32(0xff00, 1);
     /// assert_eq!(val, 0xff);
     /// ```
@@ -425,7 +441,7 @@ pub trait AddrUnit: Into<u32> + From<u8> + Copy + fmt::Display + fmt::LowerHex {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```ignore
     /// let val: u16 = 0xff00;
     /// assert_eq!(val.as_u32(2), 0xff00_0000);
     /// ```
@@ -456,8 +472,8 @@ pub trait AddrUnit: Into<u32> + From<u8> + Copy + fmt::Display + fmt::LowerHex {
 /// # Example
 ///
 /// ```
-/// assert_eq!(align_as::<u16>(3), 2);
-/// assert_eq!(align_as::<u32>(3), 0);
+/// assert_eq!(splst_core::bus::align_as::<u16>(3), 2);
+/// assert_eq!(splst_core::bus::align_as::<u32>(3), 0);
 /// ```
 pub fn align_as<T: AddrUnit>(addr: u32) -> u32 {
     addr & !(T::WIDTH as u32 - 1)
@@ -468,8 +484,8 @@ pub fn align_as<T: AddrUnit>(addr: u32) -> u32 {
 /// # Example
 ///
 /// ```
-/// assert_eq!(is_aligned_as::<u16>(3), false);
-/// assert_eq!(is_aligned_as::<u32>(4), true);
+/// assert_eq!(splst_core::bus::is_aligned_to::<u16>(3), false);
+/// assert_eq!(splst_core::bus::is_aligned_to::<u32>(4), true);
 /// ```
 pub fn is_aligned_to<T: AddrUnit>(addr: u32) -> bool {
     (addr % T::WIDTH as u32) == 0

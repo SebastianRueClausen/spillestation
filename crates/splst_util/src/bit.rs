@@ -20,11 +20,13 @@ macro_rules! impl_bit_set {
     ($t:ident) => {
         impl BitSet for $t {
             #[inline(always)]
+            #[must_use]
             fn set_bit(self, bit: usize, val: bool) -> Self {
                 (self & !(1 << bit)) | ((val as Self) << bit)
             }
 
             #[inline(always)]
+            #[must_use]
             fn set_bit_range(self, ls: usize, ms: usize, val: Self) -> Self {
                 let mask = (1 << (ms - ls + 1)) - 1;
                 (self & !(mask << ls)) | ((val & mask) << ls)

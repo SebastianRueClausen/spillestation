@@ -1,4 +1,4 @@
-use splst_asm::{InsTy, Register, assemble_ins};
+use splst_asm::{InsTy, Register, Address, assemble_ins};
 use splst_util::Exe;
 use super::{AddrUnit, BusMap};
 

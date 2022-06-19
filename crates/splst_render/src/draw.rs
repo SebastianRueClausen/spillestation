@@ -221,15 +221,19 @@ fn gen_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect) {
         .min(screen.y / texture.y)
         .max(1.0)
         .floor();
+
     // Scaled tetxure dimension.
     let scaled = texture * scale;
+
     // Scaling of the vertices.
     let s = scaled / screen;
+
     // Translation of the vertices. The min/max just makes sure the texture doesn't go off screen.
     let t = Vec2::new(
         (texture.x / screen.x - 1.0).max(0.0),
         (1.0 - texture.y / screen.y).min(0.0),
     );
+
     // Transformation matrix. It flips the image vertically since the Playstations coordinates in VRAM
     // are the opposite of wgpu.
     let transform = Mat4::from([
@@ -238,16 +242,20 @@ fn gen_transform_matrix(texture: Vec2, screen: Vec2) -> (Mat4, ScissorRect) {
         [0.0, 0.0, 1.0, 0.0],
         [t.x, t.y, 0.0, 1.0],
     ]);
+
     // The clipping rectangle width and height.
     let clip_wh = Vec2::new(scaled.x.min(screen.x), scaled.y.min(screen.y));
+
     // The clipping rectangle upper right corner.
     let clip_xy = (screen - clip_wh) * 0.5;
+
     let scissor_rect = ScissorRect {
         x: clip_xy.x as u32,
         y: clip_xy.y as u32,
         width: clip_wh.x as u32,
         height: clip_wh.y as u32,
     };
+
     (transform, scissor_rect)
 }
 

@@ -1321,6 +1321,7 @@ impl Cpu {
 
         if cop.bit(4) {
             self.fetch_load_slot();
+
             self.gte.exec(op.0);
         } else {
             match cop {

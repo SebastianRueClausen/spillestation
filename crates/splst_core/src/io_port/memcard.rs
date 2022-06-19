@@ -126,14 +126,10 @@ impl MemCard {
 
     pub fn transfer(&mut self, val: u8) -> (u8, bool) {
         let out = match self.state {
+            // Memory card access command.
             TransferState::Idle if val == 0x81 => {
                 self.state = TransferState::Command; 
                 (0xff, true)
-            }
-            // Do nothing. The first byte should always contain 0x81.
-            TransferState::Idle => {
-                warn!("weird first memory card byte recieved {val:0x}"); 
-                (0xff, false)
             }
             TransferState::Command => {
                 self.state = match val {
@@ -292,6 +288,7 @@ impl MemCard {
 
                 (out, true)
             }
+            _ => (0xff, false),
         };
 
         self.last_byte = val;

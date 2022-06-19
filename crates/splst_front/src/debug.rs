@@ -277,7 +277,7 @@ impl BreakPointMenu {
                 });
             match self.kind {
                 BreakPointKind::Instruction | BreakPointKind::Load | BreakPointKind::Store => {
-                    if let Some(addr) = show_addr_input(&mut self.addr_input, popups, ui) {
+                    if let Some(addr) = show_addr_input(&mut self.addr_input, "Add", popups, ui) {
                         let breakpoint = BreakPoint {
                             name: mem::take(&mut self.addr_input),
                             on: addr,
@@ -343,9 +343,14 @@ impl BreakPointMenu {
 ///
 /// Returns `None` if either no address was entered or parsing the address failed, in which case it
 /// will show an error via `popups`.
-fn show_addr_input(input: &mut String, popups: &mut Popups, ui: &mut egui::Ui) -> Option<u32> {
+fn show_addr_input(
+    input: &mut String,
+    enter_text: &str,
+    popups: &mut Popups,
+    ui: &mut egui::Ui,
+) -> Option<u32> {
     ui.add_sized([100.0, 15.0], egui::TextEdit::singleline(input));
-    if ui.button("Add").clicked() {
+    if ui.button(enter_text).clicked() {
         if let Ok(addr) = u32::from_str_radix(input, 16) {
             Some(addr)
         } else {
@@ -404,7 +409,7 @@ impl WatchPointMenu {
                 int_display_mode_selector(&mut self.int_display_mode, ui);
             }
 
-            if let Some(addr) = show_addr_input(&mut self.addr_input, popups, ui) {
+            if let Some(addr) = show_addr_input(&mut self.addr_input, "Add", popups, ui) {
                 if !self.value_kind.addr_aligned(addr) {
                     popups.add(
                         "Invalid Address",
@@ -569,7 +574,7 @@ impl MemoryMenu {
         ui.separator();
 
         ui.horizontal(|ui| {
-            let addr = show_addr_input(&mut self.goto, errors, ui);
+            let addr = show_addr_input(&mut self.goto, "Find", errors, ui);
 
             let bytes_per_row = match self.display_mode {
                 Value | Instruction => 4,

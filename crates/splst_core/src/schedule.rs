@@ -9,7 +9,6 @@ use crate::{SysTime, Timestamp};
 use crate::bus::dma;
 
 use std::collections::BinaryHeap;
-use std::collections::binary_heap::Iter as BinaryHeapIter;
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -57,7 +56,7 @@ impl Schedule {
     }
 
     /// Returns iter of all event entries in the event heap in arbitary order.
-    pub fn iter_event_entries<'a>(&'a self) -> BinaryHeapIter<'a, EventEntry> {
+    pub fn iter_event_entries<'a>(&'a self) -> impl Iterator<Item = &'a EventEntry> {
         self.events.iter()
     }
 
@@ -140,6 +139,7 @@ impl Schedule {
     }
 
     /// Trigger a scheduled [`Event`] early.
+    #[allow(dead_code)]
     pub(crate) fn trigger_early(&mut self, id: EventId) {
         if let Some(entry) = self.events.iter().find(|e| e.id == id) {
             let mut entry = entry.clone();
