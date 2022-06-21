@@ -503,7 +503,7 @@ impl Gpu {
                 self.gp0_copy_rect_cpu_to_vram();
                 None
             }
-            0xc0 => {
+            0xc0 | 0xd2 => {
                 self.gp0_copy_rect_vram_to_cpu();
                 
                 // There might be data in the FIFO here to be transfered to VRAM, and if no data

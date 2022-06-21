@@ -15,8 +15,6 @@ pub struct Gte {
 
 impl Gte {
     pub(super) fn control_store(&mut self, offset: u32, val: u32) {
-        debug!("GTE control store");
-
         assert!(offset < 32, "invalid control register store at {offset}");
 
         match offset {
@@ -35,15 +33,11 @@ impl Gte {
     }
 
     pub(super) fn control_load(&mut self, offset: u32) -> u32 {
-        debug!("GTE control load");
-
         assert!(offset < 32, "invalid control register store at {offset}");
         unsafe { self.control.load_unchecked(offset) }
     }
 
     pub(super) fn data_store(&mut self, offset: u32, val: u32) {
-        debug!("GTE data store");
-
         assert!(offset < 32, "invalid control register store at {offset}");
 
         match offset {
@@ -51,7 +45,7 @@ impl Gte {
                 // Sign extend z values of vectors and accumulators.
                 let val = (val as i16) as i32;
                 self.data.store_unchecked(offset, val as u32);
-            },
+            }
             15 => unsafe {
                 // Writes to `sxyp` pushes it onto the screen xy coordinate FIFO, which means that
                 // the rest of the values in the FIFO get's pushed one spot down.
@@ -60,10 +54,10 @@ impl Gte {
                 self.data.sxy2 = self.data.sxyp;
 
                 self.data.store_unchecked(offset, val);
-            },
+            }
             7 | 16..=19 => unsafe {
                 self.data.store_unchecked(offset, val & 0xffff);
-            },
+            }
             28 => unsafe {
                 // truncate to 16 bit intergs for rgb values.
                 self.data.irgb = val & 0x7fff;
@@ -75,7 +69,7 @@ impl Gte {
                 self.data.store_unchecked(09, as_ir(val) as u32);
                 self.data.store_unchecked(10, as_ir(val >> 05) as u32);
                 self.data.store_unchecked(11, as_ir(val >> 10) as u32);
-            },
+            }
             30 => {
                 self.data.lzcs = val as i32;
                 // `val` is in this case a signed 32 bit int. If bit 31 is set, it's a negative
@@ -89,7 +83,7 @@ impl Gte {
             }
             _ => unsafe {
                 self.data.store_unchecked(offset, val);
-            },
+            }
         }
     }
 
@@ -102,9 +96,9 @@ impl Gte {
             // `sxyp` is a mirror of `sxy2`.
             15 => unsafe { self.data.load_unchecked(14) },
             28 | 29 => {
-                let r = (self.data.ir[0].0 >> 7).clamp(0x0, 0x1f) as u32;
-                let g = (self.data.ir[1].0 >> 7).clamp(0x0, 0x1f) as u32;
-                let b = (self.data.ir[2].0 >> 7).clamp(0x0, 0x1f) as u32;
+                let r = (self.data.ir[0].get() >> 7).clamp(0x0, 0x1f) as u32;
+                let g = (self.data.ir[1].get() >> 7).clamp(0x0, 0x1f) as u32;
+                let b = (self.data.ir[2].get() >> 7).clamp(0x0, 0x1f) as u32;
 
                 r | (g << 5) | (b << 10)
             }
@@ -173,7 +167,17 @@ impl Gte {
     /// Saturate `val` at set `ir[idx]`.
     #[inline]
     fn set_ir(&mut self, idx: usize, clamp: bool, val: i32) {
-        self.data.ir[idx].0 = saturate_to_ir(&mut self.control.flags, idx, clamp, val);
+        let (val, of) = if clamp {
+            saturate(0, i16::MAX as i32, val)
+        } else {
+            saturate(i16::MIN as i32, i16::MAX as i32, val)
+        };
+
+        self.control.flags.or_flag(24 - idx, of);
+
+        unsafe {
+            self.data.store_unchecked((9 + idx) as u32, val as u32);
+        }
     }
 
     /// Saturate `val` and set `ir0`.
@@ -192,7 +196,7 @@ impl Gte {
     #[inline]
     fn set_otz(&mut self, val: i32) {
         let (val, of) = saturate(0x0, 0xffff, val);
-        self.control.flags.set_flag(18, of);
+        self.control.flags.or_flag(18, of);
         self.data.otz = val as u16;
     }
 
@@ -203,40 +207,6 @@ impl Gte {
             y: self.data.ir[1].0,
             z: self.data.ir[2].0,
         }
-    }
-
-    /// Push `val` into `sz` FIFO.
-    ///
-    /// Returns saturated `val`.
-    fn sz_push(&mut self, val: i32) -> u16 {
-        const MAX: i32 = 0xffff;
-        const MIN: i32 = 0x0000;
-
-        self.control.flags.set_flag(18, !(MIN..=MAX).contains(&val));
-        let val = val.clamp(MIN, MAX) as u16;
-
-        self.data.sz[0] = self.data.sz[1];
-        self.data.sz[1] = self.data.sz[2];
-        self.data.sz[2] = self.data.sz[3];
-        self.data.sz[3] = (val, 0);
-
-        val
-    }
-
-    fn sxy_push(&mut self, x: i32, y: i32) {
-        const MAX: i32 = 0x3ff;
-        const MIN: i32 = -0x400;
-
-        self.control.flags.set_flag(14, !(MIN..=MAX).contains(&x));
-        self.control.flags.set_flag(13, !(MIN..=MAX).contains(&y));
-
-        let xy = [x.clamp(MIN, MAX) as i16, y.clamp(MIN, MAX) as i16];
-
-        self.data.sxy0 = self.data.sxy1;
-        self.data.sxy1 = self.data.sxy2;
-        self.data.sxy2 = self.data.sxyp;
-
-        self.data.sxyp = xy;
     }
 
     fn rgb_push_from_mac(&mut self) {
@@ -260,12 +230,10 @@ impl Gte {
 
         let mut dot_row = |add: i32, row: usize| {
             let v0 = i64::from(add) << 12;
-            let v1 = i64::from(self.control.rt.0[row].x)
-                * i64::from(vec.x);
-            let v2 = i64::from(self.control.rt.0[row].y)
-                * i64::from(vec.y);
-            let v3 = i64::from(self.control.rt.0[row].z)
-                * i64::from(vec.z);
+
+            let v1 = i64::from(self.control.rt.0[row].x) * i64::from(vec.x);
+            let v2 = i64::from(self.control.rt.0[row].y) * i64::from(vec.y);
+            let v3 = i64::from(self.control.rt.0[row].z) * i64::from(vec.z);
             
             let v1 = sign_extend_mac(&mut self.control.flags, 0, v0 + v1);
             let v2 = sign_extend_mac(&mut self.control.flags, 1, v1 + v2);
@@ -292,48 +260,80 @@ impl Gte {
 
         self.set_ir(2, false, z_shift);
 
-        // Set the value as usual.
+        // Calculate the value is usual.
         self.data.ir[2].0 = {
-            let val = self.data.mac[2];
-            let min = if clamp { 0 } else { -(1 << 15) };
-            val.clamp(min, (1 << 15) - 1) as i16
+            let min = if clamp { 0 } else { i16::MIN as i32 };
+            self.data.mac[2].clamp(min, i16::MAX as i32) as i16
         };
 
-        let z = self.sz_push(z_shift);
+        // Saturate `z_shift` into u16 and set saturate flag.
+        let z_saturated = {
+            const MAX: i32 = u16::MAX as i32;
+            const MIN: i32 = 0;
+
+            let (val, of) = saturate(MIN, MAX, z_shift);
+
+            self.control.flags.or_flag(18, of);
+
+            val as u16
+        };
+
+        // Push `z_saturated` onto the z-fifo.
+        self.data.sz[0] = self.data.sz[1];
+        self.data.sz[1] = self.data.sz[2];
+        self.data.sz[2] = self.data.sz[3];
+        self.data.sz[3] = (z_saturated, 0);
 
         // Calculate projection factor. `pf` is a 1.16 unsigned fixed-point integer.
-
-        let pf: i64 = if z > self.control.h / 2 {
-            nr_divide(self.control.h, z).into()
+        let pf: i64 = if z_saturated > self.control.h / 2 {
+            nr_divide(self.control.h, z_saturated).into()
         } else {
-            self.control.flags.set_flag(17, true);
+            self.control.flags.or_flag(17, true);
             0x1ffff
         };
 
-        let sx = i64::from(self.data.ir[0].0) + pf + i64::from(self.control.ofx);
-        let sy = i64::from(self.data.ir[1].0) + pf + i64::from(self.control.ofy);
+        let sx = i64::from(self.data.ir[0].get()) * pf + i64::from(self.control.ofx);
+        let sy = i64::from(self.data.ir[1].get()) * pf + i64::from(self.control.ofy);
 
         check_mac0_overflow(&mut self.control.flags, sx);
         check_mac0_overflow(&mut self.control.flags, sy);
 
-        self.sxy_push((sx >> 16) as i32, (sy >> 16) as i32);
+        let sx = (sx >> 16) as i32;
+        let sy = (sy >> 16) as i32;
+
+        // Saturate `sx` and `sy` into 11 bit signed integers.
+        let xy = {
+            const MAX: i32 = 0x3ff;
+            const MIN: i32 = -0x400;
+
+            self.control.flags.or_flag(14, !(MIN..=MAX).contains(&sx));
+            self.control.flags.or_flag(13, !(MIN..=MAX).contains(&sy));
+
+            [sx.clamp(MIN, MAX) as i16, sy.clamp(MIN, MAX) as i16]
+        };
+
+        self.data.sxyp = xy;
+
+        self.data.sxy0 = self.data.sxy1;
+        self.data.sxy1 = self.data.sxy2;
+        self.data.sxy2 = self.data.sxyp;
 
         pf
     }
 
     #[inline]
     fn color_interp(&mut self, rgb: &[i64; 3], shift: u8, clamp: bool) {
-        let v0 = i64::from(self.control.fc.x << 12) - rgb[0];
-        let v1 = i64::from(self.control.fc.y << 12) - rgb[1];
-        let v2 = i64::from(self.control.fc.z << 12) - rgb[2];
+        let v0 = (i64::from(self.control.fc.x) << 12) - rgb[0];
+        let v1 = (i64::from(self.control.fc.y) << 12) - rgb[1];
+        let v2 = (i64::from(self.control.fc.z) << 12) - rgb[2];
 
         self.set_ir_and_mac(0, shift, false, v0);
         self.set_ir_and_mac(1, shift, false, v1);
         self.set_ir_and_mac(2, shift, false, v2);
 
-        let v0: i64 = (self.data.ir[0].0 as i32 * self.data.ir0 as i32).into();
-        let v1: i64 = (self.data.ir[1].0 as i32 * self.data.ir0 as i32).into();
-        let v2: i64 = (self.data.ir[2].0 as i32 * self.data.ir0 as i32).into();
+        let v0: i64 = (self.data.ir[0].get() as i32 * self.data.ir0.get() as i32).into();
+        let v1: i64 = (self.data.ir[1].get() as i32 * self.data.ir0.get() as i32).into();
+        let v2: i64 = (self.data.ir[2].get() as i32 * self.data.ir0.get() as i32).into();
 
         self.set_ir_and_mac(0, shift, clamp, v0 + rgb[0]);
         self.set_ir_and_mac(1, shift, clamp, v1 + rgb[1]);
@@ -411,9 +411,9 @@ impl Gte {
             clamp,
         );
 
-        let r = (i64::from(self.data.rgbc[0]) * i64::from(self.data.ir[0].0)) << 4;
-        let g = (i64::from(self.data.rgbc[1]) * i64::from(self.data.ir[1].0)) << 4;
-        let b = (i64::from(self.data.rgbc[2]) * i64::from(self.data.ir[2].0)) << 4;
+        let r = (i64::from(self.data.rgbc[0]) * i64::from(self.data.ir[0].get())) << 4;
+        let g = (i64::from(self.data.rgbc[1]) * i64::from(self.data.ir[1].get())) << 4;
+        let b = (i64::from(self.data.rgbc[2]) * i64::from(self.data.ir[2].get())) << 4;
 
         self.set_ir_and_mac(0, shift, clamp, r);
         self.set_ir_and_mac(1, shift, clamp, g);
@@ -491,9 +491,9 @@ impl Gte {
         let d1: i64 = self.control.rt.0[1].y.into();
         let d2: i64 = self.control.rt.0[2].z.into();
 
-        let ir0: i64 = self.data.ir[0].0.into();
-        let ir1: i64 = self.data.ir[1].0.into();
-        let ir2: i64 = self.data.ir[2].0.into();
+        let ir0: i64 = self.data.ir[0].get().into();
+        let ir1: i64 = self.data.ir[1].get().into();
+        let ir2: i64 = self.data.ir[2].get().into();
 
         let v0 = (ir2 * d1) - (ir1 * d2);
         let v1 = (ir0 * d2) - (ir2 * d0);
@@ -511,9 +511,9 @@ impl Gte {
 
     fn cmd_intpl(&mut self, op: Opcode) {
         let rgb = [
-            i64::from(self.data.ir[0].0) << 12,
-            i64::from(self.data.ir[1].0) << 12,
-            i64::from(self.data.ir[2].0) << 12,
+            i64::from(self.data.ir[0].get()) << 12,
+            i64::from(self.data.ir[1].get()) << 12,
+            i64::from(self.data.ir[2].get()) << 12,
         ];
 
         self.color_interp(&rgb, op.shift(), op.clamp());
@@ -580,9 +580,9 @@ impl Gte {
             clamp,
         );
 
-        let r = (i64::from(self.data.rgbc[0]) * i64::from(self.data.ir[0].0)) << 4;
-        let g = (i64::from(self.data.rgbc[1]) * i64::from(self.data.ir[1].0)) << 4;
-        let b = (i64::from(self.data.rgbc[2]) * i64::from(self.data.ir[2].0)) << 4;
+        let r = (i64::from(self.data.rgbc[0]) * i64::from(self.data.ir[0].get())) << 4;
+        let g = (i64::from(self.data.rgbc[1]) * i64::from(self.data.ir[1].get())) << 4;
+        let b = (i64::from(self.data.rgbc[2]) * i64::from(self.data.ir[2].get())) << 4;
 
         self.set_ir_and_mac(0, shift, clamp, r);
         self.set_ir_and_mac(1, shift, clamp, g);
@@ -617,9 +617,9 @@ impl Gte {
         let shift = op.shift();
         let clamp = op.clamp();
 
-        self.data.mac[0] = (i32::from(self.data.ir[0].0) * i32::from(self.data.ir[0].0)) >> shift;
-        self.data.mac[1] = (i32::from(self.data.ir[1].0) * i32::from(self.data.ir[1].0)) >> shift;
-        self.data.mac[2] = (i32::from(self.data.ir[2].0) * i32::from(self.data.ir[2].0)) >> shift;
+        self.data.mac[0] = (i32::from(self.data.ir[0].get()) * i32::from(self.data.ir[0].get())) >> shift;
+        self.data.mac[1] = (i32::from(self.data.ir[1].get()) * i32::from(self.data.ir[1].get())) >> shift;
+        self.data.mac[2] = (i32::from(self.data.ir[2].get()) * i32::from(self.data.ir[2].get())) >> shift;
 
         self.set_ir(0, clamp, self.data.mac[0]);
         self.set_ir(1, clamp, self.data.mac[1]);
@@ -631,9 +631,9 @@ impl Gte {
         let clamp = op.clamp();
 
         let rgb = [
-            (i64::from(self.data.rgbc[0]) * i64::from(self.data.ir[0].0)) << 4,
-            (i64::from(self.data.rgbc[1]) * i64::from(self.data.ir[1].0)) << 4,
-            (i64::from(self.data.rgbc[2]) * i64::from(self.data.ir[2].0)) << 4,
+            (i64::from(self.data.rgbc[0]) * i64::from(self.data.ir[0].get())) << 4,
+            (i64::from(self.data.rgbc[1]) * i64::from(self.data.ir[1].get())) << 4,
+            (i64::from(self.data.rgbc[2]) * i64::from(self.data.ir[2].get())) << 4,
         ];
 
         self.color_interp(&rgb, shift, clamp);
@@ -671,9 +671,9 @@ impl Gte {
         let shift = op.shift();
         let clamp = op.clamp();
 
-        let ir1 = i64::from(self.data.ir[0].0) * i64::from(self.data.ir0);
-        let ir2 = i64::from(self.data.ir[1].0) * i64::from(self.data.ir0);
-        let ir3 = i64::from(self.data.ir[2].0) * i64::from(self.data.ir0);
+        let ir1 = i64::from(self.data.ir[0].get()) * i64::from(self.data.ir0.get());
+        let ir2 = i64::from(self.data.ir[1].get()) * i64::from(self.data.ir0.get());
+        let ir3 = i64::from(self.data.ir[2].get()) * i64::from(self.data.ir0.get());
 
         self.set_ir_and_mac(0, shift, clamp, ir1);
         self.set_ir_and_mac(1, shift, clamp, ir2);
@@ -686,9 +686,9 @@ impl Gte {
         let shift = op.shift();
         let clamp = op.clamp();
 
-        let ir1 = i64::from(self.data.ir[0].0) * i64::from(self.data.ir0);
-        let ir2 = i64::from(self.data.ir[1].0) * i64::from(self.data.ir0);
-        let ir3 = i64::from(self.data.ir[2].0) * i64::from(self.data.ir0);
+        let ir1 = i64::from(self.data.ir[0].get()) * i64::from(self.data.ir0.get());
+        let ir2 = i64::from(self.data.ir[1].get()) * i64::from(self.data.ir0.get());
+        let ir3 = i64::from(self.data.ir[2].get()) * i64::from(self.data.ir0.get());
 
         let ir1 = ir1 + (i64::from(self.data.mac[0]) << shift);
         let ir2 = ir2 + (i64::from(self.data.mac[1]) << shift);
@@ -731,6 +731,24 @@ impl fmt::Display for Rgb {
     }
 }
 
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct Ir(i16, u16);
+
+impl From<i32> for Ir {
+    fn from(val: i32) -> Self {
+        unsafe {
+            std::mem::transmute::<u32, Self>(val as u32)
+        }
+    }
+}
+
+impl Ir {
+    fn get(&self) -> i16 {
+        self.0 
+    }
+}
+
 /// GTE data registers (0..=31).
 #[repr(C)]
 #[derive(Default)]
@@ -750,10 +768,9 @@ pub struct DataRegs {
     otz: u16,
     _pad3: u16,
     /// Interpolation accumulator.
-    ir0: i16,
-    _pad4: u16,
+    ir0: Ir,
     /// 16 bit vector accumulator, each followed by u16 padding.
-    ir: [(i16, u16); 3],
+    ir: [Ir; 3],
     /// Screen xy coordinate FIFO stage 0.
     sxy0: [i16; 2],
     /// Screen xy coordinate FIFO stage 1.
@@ -802,10 +819,10 @@ impl DataRegs {
             self.rgbc[3],
         );
 
-        dump!(d, "ir0", "{}", self.ir0);
-        dump!(d, "ir1", "{}", self.ir[0].0);
-        dump!(d, "ir2", "{}", self.ir[1].0);
-        dump!(d, "ir3", "{}", self.ir[2].0);
+        dump!(d, "ir0", "{}", self.ir0.get());
+        dump!(d, "ir1", "{}", self.ir[0].get());
+        dump!(d, "ir2", "{}", self.ir[1].get());
+        dump!(d, "ir3", "{}", self.ir[2].get());
 
         dump!(d, "sxy0", "{}, {}", self.sxy0[0], self.sxy0[1]);
         dump!(d, "sxy1", "{}, {}", self.sxy1[0], self.sxy1[1]);
@@ -943,7 +960,7 @@ fn mat_mul(
     flags: &mut Flags,
     shift: u8,
     clamp: bool,
-) -> ([i32; 3], [(i16, u16); 3]) {
+) -> ([i32; 3], [Ir; 3]) {
     let mut mul_row = |add: i32, row: usize| {
         let v0 = i64::from(add) << 12;
         let v1 = i64::from(mat.0[row].x) * i64::from(vec.x);
@@ -964,11 +981,11 @@ fn mat_mul(
     let (mac2, ir2) = mul_row(trans.y, 1);
     let (mac3, ir3) = mul_row(trans.z, 2);
 
-    ([mac1, mac2, mac3], [(ir1, 0), (ir2, 0), (ir3, 0)])
+    ([mac1, mac2, mac3], [ir1, ir2, ir3])
 }
 
 /// Saturate `val` between `min` and `max`. Returns true of overflow occurs.
-#[inline]
+#[inline(always)]
 fn saturate<T: Ord + Copy>(min: T, max: T, val: T) -> (T, bool) {
     let of = !(min..=max).contains(&val);
     let val = val.clamp(min, max);
@@ -980,18 +997,18 @@ fn saturate<T: Ord + Copy>(min: T, max: T, val: T) -> (T, bool) {
 /// `idx` is the index into `mac` and not for instance 1 for mac1.
 #[inline]
 fn check_mac_overflow(flags: &mut Flags, idx: usize, val: i64) {
-    flags.set_flag(30 - idx, val > (1 << 43) - 1);
-    flags.set_flag(27 - idx, val < -(1 << 43));
+    flags.or_flag(30 - idx, val > (1 << 43) - 1);
+    flags.or_flag(27 - idx, val < -(1 << 43));
 }
 
 /// Check for overflow (and underflow) for `mac0` values.
 #[inline]
 fn check_mac0_overflow(flags: &mut Flags, val: i64) {
-    flags.set_flag(16, val > (1 << 31) - 1);
-    flags.set_flag(15, val < -(1 << 31));
+    flags.or_flag(16, val > (1 << 31) - 1);
+    flags.or_flag(15, val < -(1 << 31));
 }
 
-/// Sign extend `mac` values, and check for overflow.
+/// Sign extend i44 mac values and check for overflow.
 #[inline]
 fn sign_extend_mac(flags: &mut Flags, idx: usize, val: i64) -> i64 {
     check_mac_overflow(flags, idx, val);
@@ -1004,7 +1021,7 @@ fn sign_extend_mac(flags: &mut Flags, idx: usize, val: i64) -> i64 {
 #[inline]
 fn saturate_to_rgb(flags: &mut Flags, idx: usize, val: i32) -> u8 {
     let (val, of) = saturate(0x0, 0xff, val);
-    flags.set_flag(21 - idx, of);
+    flags.or_flag(21 - idx, of);
 
     val as u8
 }
@@ -1025,23 +1042,22 @@ fn saturate_to_mac0(flags: &mut Flags, val: i64) -> i32 {
 
 /// Saturate `val` to `ir` registers.
 #[inline]
-fn saturate_to_ir(flags: &mut Flags, idx: usize, clamp: bool, val: i32) -> i16 {
-    let min: i32 = if clamp { 0 } else { i16::MIN.into() };
-    let max: i32 = i16::MAX.into();
-
-    let (val, of) = saturate(min, max, val);
-    flags.set_flag(24 - idx, of);
-
-    val as i16
+fn saturate_to_ir(flags: &mut Flags, idx: usize, clamp: bool, val: i32) -> Ir {
+    let (val, of) = if clamp {
+        saturate(0, i16::MAX as i32, val)
+    } else {
+        saturate(i16::MIN as i32, i16::MAX as i32, val)
+    };
+    flags.or_flag(24 - idx, of);
+    Ir::from(val)
 }
 
 /// Saturate `val` to the `ir0` register.
 #[inline]
-fn saturate_to_ir0(flags: &mut Flags, val: i32) -> i16 {
+fn saturate_to_ir0(flags: &mut Flags, val: i32) -> Ir {
     let (val, of) = saturate(0x0, 0x1000, val);
-
-    flags.set_flag(12, of);
-    val as i16
+    flags.or_flag(12, of);
+    Ir::from(val)
 }
 
 /// Flags register.
@@ -1049,8 +1065,9 @@ fn saturate_to_ir0(flags: &mut Flags, val: i32) -> i16 {
 struct Flags(u32);
 
 impl Flags {
-    fn set_flag(&mut self, flag: usize, val: bool) {
-        self.0 = self.0.set_bit(flag, val);
+    /// Or `val` with the value of flag at index `flag`.
+    fn or_flag(&mut self, flag: usize, val: bool) {
+        self.0 |= (val as u32) << flag;
     }
 
     fn update_error_flag(&mut self) {
@@ -1168,3159 +1185,3 @@ fn test_reg_size() {
     assert_eq!(std::mem::size_of::<DataRegs>(), 128);
     assert_eq!(std::mem::size_of::<ControlRegs>(), 128);
 }
-
-#[test]
-
-fn gte_lzcr() {
-    let expected = [
-        (0x00000000, 32),
-        (0xffffffff, 32),
-        (0x00000001, 31),
-        (0x80000000, 1),
-        (0x7fffffff, 1),
-        (0xdeadbeef, 2),
-        (0x000c0ffe, 12),
-        (0xfffc0ffe, 14),
-    ];
-
-    let mut gte = Gte::default();
-
-    for &(lzcs, lzcr) in &expected {
-        gte.data_store(30, lzcs);
-        let r = gte.data_load(31);
-        assert!(r == lzcr);
-    }
-}
-
-#[test]
-fn gte_ops() {
-    for test in TESTS {
-        println!("Test: '{}'", test.desc);
-
-        let opcode = Opcode(test.command);
-
-        println!("Command: 0x{:08x}", opcode.cmd());
-        let mut gte = test.initial.make_gte();
-        gte.exec(test.command);
-        test.result.validate(gte);
-
-    }
-
-}
-
-#[cfg(test)]
-struct Test {
-    /// Test description
-    desc: &'static str,
-    /// Initial GTE configuration
-    initial: Config,
-    /// GTE command being executed
-    command: u32,
-    /// GTE configuration post-command
-    result: Config,
-}
-
-/// GTE register config: slice of couples `(register_offset, register_value)`. Missing registers
-/// are set to 0.
-#[cfg(test)]
-struct Config {
-    /// Control registers
-    controls: &'static [(u8, u32)],
-    /// Data registers
-    data: &'static [(u8, u32)],
-}
-
-#[cfg(test)]
-impl Config {
-    fn make_gte(&self) -> Gte {
-        let mut gte = Gte::default();
-
-        for &(reg, val) in self.controls {
-            gte.control_store(reg.into(), val);
-        }
-
-        for &(reg, val) in self.data {
-            if reg == 15 {
-                // Writing to 14 should set this register and writing here will push a new entry
-                // onto the XY_FIFO which will change the previous values.
-                continue;
-            }
-
-            if reg == 28 {
-                // This sets the IR1...3 registers MSB but those values should have been set
-                // through registers 9...11
-                continue;
-            }
-
-            if reg == 29 {
-                // This register is read only
-                continue;
-            }
-
-            gte.data_store(reg.into(), val);
-        }
-
-        gte
-    }
-
-    fn validate(&self, mut gte: Gte) {
-        let mut error_count = 0u32;
-
-        for &(reg, val) in self.controls {
-            let v = gte.control_load(reg.into());
-
-            if v != val {
-                println!(
-                    "Control register {}: expected 0x{:08x} got 0x{:08x}",
-                    reg, val, v
-                );
-                error_count += 1;
-            }
-        }
-
-        for &(reg, val) in self.data {
-            let v = gte.data_load(reg.into());
-
-            if v != val {
-                println!(
-                    "Data register {}: expected 0x{:08x} got 0x{:08x}",
-                    reg, val, v
-                );
-                error_count += 1;
-            }
-        }
-
-        if error_count > 0 {
-            panic!("{} registers errors", error_count);
-        }
-    }
-}
-
-/// Reference data generated using tests/gte_commands/main.s in
-/// https://github.com/simias/psx-hardware-tests and running it on the real console.
-#[cfg(test)]
-static TESTS: &'static [Test] = &[
-    /*
-    Test {
-        desc: "GTE_RTPT, lm=0, cv=0, v=0, mx=0, sf=1",
-        initial: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-            ],
-            data: &[
-                (0, 0x00e70119),
-                (1, 0xfffffe65),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080030,
-        result: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-                (31, 0x00001000),
-            ],
-            data: &[
-                (0, 0x00e70119),
-                (1, 0xfffffe65),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (8, 0x00001000),
-                (9, 0x0000012b),
-                (10, 0xfffffff0),
-                (11, 0x000015d9),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (24, 0x0106e038),
-                (25, 0x0000012b),
-                (26, 0xfffffff0),
-                (27, 0x000015d9),
-                (28, 0x00007c02),
-                (29, 0x00007c02),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    */
-    Test {
-        desc: "GTE_NCLIP, lm=0, cv=0, v=0, mx=0, sf=0",
-        initial: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-                (31, 0x00001000),
-            ],
-            data: &[
-                (0, 0x00e70119),
-                (1, 0xfffffe65),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (8, 0x00001000),
-                (9, 0x0000012b),
-                (10, 0xfffffff0),
-                (11, 0x000015d9),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (24, 0x0106e038),
-                (25, 0x0000012b),
-                (26, 0xfffffff0),
-                (27, 0x000015d9),
-                (28, 0x00007c02),
-                (29, 0x00007c02),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00000006,
-        result: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-            ],
-            data: &[
-                (0, 0x00e70119),
-                (1, 0xfffffe65),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (8, 0x00001000),
-                (9, 0x0000012b),
-                (10, 0xfffffff0),
-                (11, 0x000015d9),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (24, 0x0000004d),
-                (25, 0x0000012b),
-                (26, 0xfffffff0),
-                (27, 0x000015d9),
-                (28, 0x00007c02),
-                (29, 0x00007c02),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_AVSZ3, lm=0, cv=0, v=0, mx=0, sf=1",
-        initial: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-            ],
-            data: &[
-                (0, 0x00e70119),
-                (1, 0xfffffe65),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (8, 0x00001000),
-                (9, 0x0000012b),
-                (10, 0xfffffff0),
-                (11, 0x000015d9),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (24, 0x0000004d),
-                (25, 0x0000012b),
-                (26, 0xfffffff0),
-                (27, 0x000015d9),
-                (28, 0x00007c02),
-                (29, 0x00007c02),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x0008002d,
-        result: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-            ],
-            data: &[
-                (0, 0x00e70119),
-                (1, 0xfffffe65),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (7, 0x00000572),
-                (8, 0x00001000),
-                (9, 0x0000012b),
-                (10, 0xfffffff0),
-                (11, 0x000015d9),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (24, 0x00572786),
-                (25, 0x0000012b),
-                (26, 0xfffffff0),
-                (27, 0x000015d9),
-                (28, 0x00007c02),
-                (29, 0x00007c02),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_NCDS, lm=1, cv=0, v=0, mx=0, sf=1",
-        initial: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-            ],
-            data: &[
-                (0, 0x00000b50),
-                (1, 0xfffff4b0),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (6, 0x2094a539),
-                (7, 0x00000572),
-                (8, 0x00001000),
-                (9, 0x0000012b),
-                (10, 0xfffffff0),
-                (11, 0x000015d9),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (24, 0x00572786),
-                (25, 0x0000012b),
-                (26, 0xfffffff0),
-                (27, 0x000015d9),
-                (28, 0x00007c02),
-                (29, 0x00007c02),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080413,
-        result: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-                (31, 0x81f00000),
-            ],
-            data: &[
-                (0, 0x00000b50),
-                (1, 0xfffff4b0),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (6, 0x2094a539),
-                (7, 0x00000572),
-                (8, 0x00001000),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (22, 0x20000000),
-                (24, 0x00572786),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_DCPS, lm=0, cv=0, v=0, mx=0, sf=1",
-        initial: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-            ],
-            data: &[
-                (0, 0x00000b50),
-                (1, 0xfffff4b0),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (6, 0x2094a539),
-                (7, 0x00000572),
-                (8, 0x00001000),
-                (9, 0x0000012b),
-                (10, 0xfffffff0),
-                (11, 0x000015d9),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (24, 0x00572786),
-                (25, 0x0000012b),
-                (26, 0xfffffff0),
-                (27, 0x000015d9),
-                (28, 0x00007c02),
-                (29, 0x00007c02),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080010,
-        result: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-            ],
-            data: &[
-                (0, 0x00000b50),
-                (1, 0xfffff4b0),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (6, 0x2094a539),
-                (7, 0x00000572),
-                (8, 0x00001000),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (22, 0x20000000),
-                (24, 0x00572786),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_RTPS, lm=0, cv=0, v=0, mx=0, sf=1",
-        initial: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-            ],
-            data: &[
-                (0, 0x00000b50),
-                (1, 0xfffff4b0),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (6, 0x2094a539),
-                (8, 0x00001000),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080001,
-        result: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-                (31, 0x80004000),
-            ],
-            data: &[
-                (0, 0x00000b50),
-                (1, 0xfffff4b0),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (6, 0x2094a539),
-                (8, 0x00000e08),
-                (9, 0x00000bd1),
-                (10, 0x000002dc),
-                (11, 0x00000d12),
-                (14, 0x01d003ff),
-                (15, 0x01d003ff),
-                (19, 0x00000d12),
-                (24, 0x00e08388),
-                (25, 0x00000bd1),
-                (26, 0x000002dc),
-                (27, 0x00000d12),
-                (28, 0x000068b7),
-                (29, 0x000068b7),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_NCCT, lm=0, cv=0, v=0, mx=0, sf=1",
-        initial: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-            ],
-            data: &[
-                (0, 0x00000b50),
-                (1, 0xfffff4b0),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (6, 0x2094a539),
-                (7, 0x00000572),
-                (8, 0x00001000),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (24, 0x00572786),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x0008003f,
-        result: Config {
-            controls: &[
-                (0, 0x00000ffb),
-                (1, 0xffb7ff44),
-                (2, 0xf9ca0ebc),
-                (3, 0x063700ad),
-                (4, 0x00000eb7),
-                (6, 0xfffffeac),
-                (7, 0x00001700),
-                (9, 0x00000fa0),
-                (10, 0x0000f060),
-                (11, 0x0000f060),
-                (13, 0x00000640),
-                (14, 0x00000640),
-                (15, 0x00000640),
-                (16, 0x0bb80fa0),
-                (17, 0x0fa00fa0),
-                (18, 0x0fa00bb8),
-                (19, 0x0bb80fa0),
-                (20, 0x00000fa0),
-                (24, 0x01400000),
-                (25, 0x00f00000),
-                (26, 0x00000400),
-                (27, 0xfffffec8),
-                (28, 0x01400000),
-                (29, 0x00000155),
-                (30, 0x00000100),
-                (31, 0x00380000),
-            ],
-            data: &[
-                (0, 0x00000b50),
-                (1, 0xfffff4b0),
-                (2, 0x00e700d5),
-                (3, 0xfffffe21),
-                (4, 0x00b90119),
-                (5, 0xfffffe65),
-                (6, 0x2094a539),
-                (7, 0x00000572),
-                (8, 0x00001000),
-                (9, 0x000000b3),
-                (10, 0x00000207),
-                (11, 0x000001d1),
-                (12, 0x00f40176),
-                (13, 0x00f9016b),
-                (14, 0x00ed0176),
-                (15, 0x00ed0176),
-                (17, 0x000015eb),
-                (18, 0x000015aa),
-                (19, 0x000015d9),
-                (20, 0x20000000),
-                (21, 0x201b1f0a),
-                (22, 0x201d200b),
-                (24, 0x00572786),
-                (25, 0x000000b3),
-                (26, 0x00000207),
-                (27, 0x000001d1),
-                (28, 0x00000c81),
-                (29, 0x00000c81),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_RTPT, lm=0, cv=0, v=0, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080030,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x80061000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xfffefffe),
-                (13, 0xfffefffe),
-                (14, 0xfffefffe),
-                (15, 0xfffefffe),
-                (16, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xfffe0000),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_RTPS, lm=0, cv=0, v=0, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080001,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x80061000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xfffefffe),
-                (15, 0xfffefffe),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xfffe0000),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_NCLIP, lm=0, cv=0, v=0, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080006,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_DPCS, lm=0, cv=0, v=0, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080010,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000ff0),
-                (10, 0x00000ff0),
-                (11, 0x00000ff0),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0x00000ff0),
-                (26, 0x00000ff0),
-                (27, 0x00000ff0),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_NCDS, lm=0, cv=0, v=0, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080013,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x00380000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xff000000),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_NCCT, lm=0, cv=0, v=0, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x0008003f,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x00380000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xff000000),
-                (21, 0xff000000),
-                (22, 0xff000000),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_AVSZ3, lm=0, cv=0, v=0, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x0008002d,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x80040000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xfffd0003),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_MVMVA, lm=0, cv=0, v=0, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080012,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_MVMVA, lm=0, cv=3, v=3, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x0009e012,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0xfffffffd),
-                (10, 0xfffffffd),
-                (11, 0xfffffffd),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xfffffffd),
-                (26, 0xfffffffd),
-                (27, 0xfffffffd),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_OP GTE_DCPL, lm=0, cv=0, v=0, mx=0, sf=1 full 0xffffffff",
-        initial: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-                (31, 0xfffff000),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f80),
-                (10, 0x00000f80),
-                (11, 0x00000f80),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-        command: 0x00080029,
-        result: Config {
-            controls: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0xffffffff),
-                (8, 0xffffffff),
-                (9, 0xffffffff),
-                (10, 0xffffffff),
-                (11, 0xffffffff),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0xffffffff),
-                (17, 0xffffffff),
-                (18, 0xffffffff),
-                (19, 0xffffffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xffffffff),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0xffffffff),
-                (26, 0xffffffff),
-                (27, 0xffffffff),
-                (28, 0xffffffff),
-                (29, 0xffffffff),
-                (30, 0xffffffff),
-            ],
-            data: &[
-                (0, 0xffffffff),
-                (1, 0xffffffff),
-                (2, 0xffffffff),
-                (3, 0xffffffff),
-                (4, 0xffffffff),
-                (5, 0xffffffff),
-                (6, 0xffffffff),
-                (7, 0x0000ffff),
-                (8, 0xffffffff),
-                (9, 0x00000f71),
-                (10, 0x00000f71),
-                (11, 0x00000f71),
-                (12, 0xffffffff),
-                (13, 0xffffffff),
-                (14, 0xffffffff),
-                (15, 0xffffffff),
-                (16, 0x0000ffff),
-                (17, 0x0000ffff),
-                (18, 0x0000ffff),
-                (19, 0x0000ffff),
-                (20, 0xffffffff),
-                (21, 0xffffffff),
-                (22, 0xfff7f7f7),
-                (23, 0xffffffff),
-                (24, 0xffffffff),
-                (25, 0x00000f71),
-                (26, 0x00000f71),
-                (27, 0x00000f71),
-                (28, 0x00007bde),
-                (29, 0x00007bde),
-                (30, 0xffffffff),
-                (31, 0x00000020),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_OP GTE_MVMVA, lm=0, cv=0, v=0, mx=0, sf=1 random",
-        initial: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0xb07c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0xc741f000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0xffffe2ff),
-                (10, 0xffffe0f8),
-                (11, 0xffffe1b6),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0xdb01b77a),
-                (21, 0x19cd28cd),
-                (22, 0x1a75d97a),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0x4aa5a1e5),
-                (26, 0x3b1a1977),
-                (27, 0x39fb3f5f),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-        command: 0x00080012,
-        result: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0xb07c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0x81c00000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0xffff8000),
-                (10, 0xffff8000),
-                (11, 0xffff8000),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0xdb01b77a),
-                (21, 0x19cd28cd),
-                (22, 0x1a75d97a),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0xcad5dc86),
-                (26, 0xb9c34e06),
-                (27, 0xa943a529),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_OP GTE_RTPS, lm=0, cv=0, v=0, mx=0, sf=1 random",
-        initial: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0x307c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0xc741f000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0xffffe2ff),
-                (10, 0xffffe0f8),
-                (11, 0xffffe1b6),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0xdb01b77a),
-                (21, 0x19cd28cd),
-                (22, 0x1a75d97a),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0x4aa5a1e5),
-                (26, 0x3b1a1977),
-                (27, 0x39fb3f5f),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-        command: 0x00080001,
-        result: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0x307c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0x81c7f000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x00001000),
-                (9, 0xffff8000),
-                (10, 0xffff8000),
-                (11, 0xffff8000),
-                (12, 0xff60f0ed),
-                (13, 0xbf5961ab),
-                (14, 0xfc00fc00),
-                (15, 0xfc00fc00),
-                (16, 0x0000dda6),
-                (17, 0x0000ce75),
-                (18, 0x0000b2d1),
-                (20, 0xdb01b77a),
-                (21, 0x19cd28cd),
-                (22, 0x1a75d97a),
-                (23, 0xe91dc0ad),
-                (24, 0x0f3fb2a7),
-                (25, 0xcad5dc86),
-                (26, 0xb9c34e06),
-                (27, 0xa943a529),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_OP GTE_RTPT, lm=0, cv=0, v=0, mx=0, sf=1 random",
-        initial: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0x307c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0xc741f000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0xffffe2ff),
-                (10, 0xffffe0f8),
-                (11, 0xffffe1b6),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0xdb01b77a),
-                (21, 0x19cd28cd),
-                (22, 0x1a75d97a),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0x4aa5a1e5),
-                (26, 0x3b1a1977),
-                (27, 0x39fb3f5f),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-        command: 0x00080030,
-        result: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0x307c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0x81c7f000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x00001000),
-                (9, 0xffff8000),
-                (10, 0xffff8000),
-                (11, 0xffff8000),
-                (12, 0xfc00fc00),
-                (13, 0xfc00fc00),
-                (14, 0xfc00fc00),
-                (15, 0xfc00fc00),
-                (16, 0x0000b2d1),
-                (20, 0xdb01b77a),
-                (21, 0x19cd28cd),
-                (22, 0x1a75d97a),
-                (23, 0xe91dc0ad),
-                (24, 0x0f3fb2a7),
-                (25, 0xcad557c8),
-                (26, 0xb9c0d37c),
-                (27, 0xa9407212),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_OP GTE_DCPL, lm=0, cv=0, v=0, mx=0, sf=1 random",
-        initial: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0xb07c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0xc741f000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0xffffe2ff),
-                (10, 0xffffe0f8),
-                (11, 0xffffe1b6),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0xdb01b77a),
-                (21, 0x19cd28cd),
-                (22, 0x1a75d97a),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0x4aa5a1e5),
-                (26, 0x3b1a1977),
-                (27, 0x39fb3f5f),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-        command: 0x00080029,
-        result: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0xb07c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0x81f80000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0x00007fff),
-                (10, 0x00007fff),
-                (11, 0x00007fff),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0x19cd28cd),
-                (21, 0x1a75d97a),
-                (22, 0x17ffffff),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0x0001bbae),
-                (26, 0x0001a4e4),
-                (27, 0x0001b87d),
-                (28, 0x00007fff),
-                (29, 0x00007fff),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_OP GTE_NCS, lm=0, cv=0, v=0, mx=0, sf=1 random",
-        initial: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0x307c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0xc741f000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0xffffe2ff),
-                (10, 0xffffe0f8),
-                (11, 0xffffe1b6),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0xdb01b77a),
-                (21, 0x19cd28cd),
-                (22, 0x1a75d97a),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0x4aa5a1e5),
-                (26, 0x3b1a1977),
-                (27, 0x39fb3f5f),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-        command: 0x0008001e,
-        result: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0x307c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0x81f80000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0x00007fff),
-                (10, 0xffff8000),
-                (11, 0x00007fff),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0x19cd28cd),
-                (21, 0x1a75d97a),
-                (22, 0x17ff00ff),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0x0a38da48),
-                (26, 0xdbe897a7),
-                (27, 0x23958063),
-                (28, 0x00007c1f),
-                (29, 0x00007c1f),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-    },
-    Test {
-        desc: "GTE_OP GTE_NCT, lm=0, cv=0, v=0, mx=0, sf=1 random",
-        initial: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0x307c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0xc741f000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0xffffe2ff),
-                (10, 0xffffe0f8),
-                (11, 0xffffe1b6),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0xdb01b77a),
-                (21, 0x19cd28cd),
-                (22, 0x1a75d97a),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0x4aa5a1e5),
-                (26, 0x3b1a1977),
-                (27, 0x39fb3f5f),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-        command: 0x00080020,
-        result: Config {
-            controls: &[
-                (0, 0xff35cdf4),
-                (1, 0xf8acd6a6),
-                (2, 0x1954aa70),
-                (3, 0xae7b5062),
-                (4, 0x00000c63),
-                (5, 0xcad4cc39),
-                (6, 0xb9c11958),
-                (7, 0xa942b312),
-                (8, 0xaf436779),
-                (9, 0x3c2d507a),
-                (10, 0x95f99741),
-                (11, 0x72413224),
-                (12, 0x0000499d),
-                (13, 0x0a37d280),
-                (14, 0xdbe8feec),
-                (15, 0x2395909a),
-                (16, 0x47364c98),
-                (17, 0x795c2ed7),
-                (18, 0x637e48f4),
-                (19, 0x89557da5),
-                (20, 0xffff997a),
-                (21, 0x690eb551),
-                (22, 0x3dfb368e),
-                (23, 0x2bbe355f),
-                (24, 0x307c9d22),
-                (25, 0x030c876b),
-                (26, 0x00003b7d),
-                (27, 0x0000765a),
-                (28, 0x228c2901),
-                (29, 0xffffe86f),
-                (30, 0xffffaf93),
-                (31, 0x81f80000),
-            ],
-            data: &[
-                (0, 0x91d5c574),
-                (1, 0xffffdf9c),
-                (2, 0xcea213bc),
-                (3, 0x0000143e),
-                (4, 0x2360a947),
-                (5, 0x00003248),
-                (6, 0x1747e72e),
-                (7, 0x0000cc08),
-                (8, 0x0000381d),
-                (9, 0x00007fff),
-                (10, 0xffff8000),
-                (11, 0x00007fff),
-                (12, 0x9da7438d),
-                (13, 0xff60f0ed),
-                (14, 0xbf5961ab),
-                (15, 0xbf5961ab),
-                (16, 0x0000b1c1),
-                (17, 0x0000dda6),
-                (18, 0x0000ce75),
-                (19, 0x0000b2d1),
-                (20, 0x17ff00ff),
-                (21, 0x17ff00ff),
-                (22, 0x17ff00ff),
-                (23, 0xe91dc0ad),
-                (24, 0x764e464f),
-                (25, 0x0a34aac5),
-                (26, 0xdbe60855),
-                (27, 0x239224a0),
-                (28, 0x00007c1f),
-                (29, 0x00007c1f),
-                (30, 0xfe8de0c9),
-                (31, 0x00000007),
-            ],
-        },
-    },
-];

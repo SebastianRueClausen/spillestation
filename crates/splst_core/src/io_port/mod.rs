@@ -260,8 +260,6 @@ impl IoPort {
     }
 
     fn transfer(&mut self, schedule: &mut Schedule) {
-        debug!("transfer");
-
         let slot = self.control.io_slot();
 
         let (val, ack) = {
